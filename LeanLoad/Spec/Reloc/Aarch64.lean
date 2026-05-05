@@ -105,9 +105,9 @@ end UnitTest
 end LeanLoad.Spec.Reloc.Aarch64
 
 -- ============================================================================
--- IO test runner. The Reloc planner is parametric over the per-arch
--- formula; this suite exercises it on AArch64 (the only formula we
--- have today) against `build/main`.
+-- IO test runner. Lives here (rather than `Plan/Reloc.lean`) because
+-- it instantiates the planner with this Aarch64 formula, and putting
+-- it in `Plan/Reloc` would create an import cycle.
 -- ============================================================================
 namespace LeanLoad.Plan.Reloc.Test
 

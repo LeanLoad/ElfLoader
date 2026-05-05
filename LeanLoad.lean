@@ -1,8 +1,9 @@
 /-
 Root of the `LeanLoad` library; re-exports every public module.
 
-For the pipeline diagram and the spec surface, open `LeanLoad.Spec`.
-For the proven-property catalogue, open `LeanLoad.Thm`.
+For the proven-property catalogue, open `LeanLoad.Thm`. For the spec
+surface (gabi/abi transcriptions), open any `LeanLoad.Spec.*` module
+— each cites its specific gabi/abi section in its header.
 -/
 import LeanLoad.Spec.Header
 import LeanLoad.Spec.Program
