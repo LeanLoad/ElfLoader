@@ -1,0 +1,10 @@
+name = "LeanLoad"
+version = "0.1.0"
+defaultTargets = ["leanload"]
+
+[[lean_lib]]
+name = "LeanLoad"
+
+[[lean_exe]]
+name = "leanload"
+root = "Main"
