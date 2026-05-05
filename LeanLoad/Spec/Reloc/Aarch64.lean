@@ -103,23 +103,3 @@ private def relocLM : LeanLoad.Discover.LinkMap := {
 end UnitTest
 
 end LeanLoad.Spec.Reloc.Aarch64
-
--- ============================================================================
--- IO test runner. Lives here (rather than `Plan/Reloc.lean`) because
--- it instantiates the planner with this Aarch64 formula, and putting
--- it in `Plan/Reloc` would create an import cycle.
--- ============================================================================
-namespace LeanLoad.Plan.Reloc.Test
-
-def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
-  let mut failures := 0
-  let rt := LeanLoad.Plan.Resolve.buildTable lm
-  let bases : LeanLoad.Plan.Reloc.Bases := Array.replicate lm.objects.size 0
-  let writes := LeanLoad.Plan.Reloc.plan
-    LeanLoad.Spec.Reloc.Aarch64.formula lm bases rt
-  if writes.size == 0 then
-    IO.eprintln "expected nonzero relocation writes"
-    failures := failures + 1
-  return failures
-
-end LeanLoad.Plan.Reloc.Test

@@ -41,9 +41,11 @@ See `LeanLoad.Thm` for the canonical list. As of writing:
 - `Parse.File.vaToOffset_correct` — VA → file-offset soundness (O3).
 - `Plan.Layout.fromLinkMap_layouts_size` — one layout per object (O4).
 - `Plan.Layout.fromLinkMap_deterministic` — same input, same output (O4).
-- `Spec.Reloc.Aarch64.formula_is_total` — formula table is total.
-- `Spec.Reloc.Aarch64.formula_size_valid` — every result has size ∈ {4,8};
-  bridges the planner to `Load.Apply` (which panics on other widths).
+- `Thm.Aarch64.formula_is_total` / `Thm.X86_64.formula_is_total` — each
+  per-arch formula table is total.
+- `Thm.Aarch64.formula_size_valid` / `Thm.X86_64.formula_size_valid` —
+  every result has size ∈ {4,8}; bridges the planner to `Load.Apply`
+  (which panics on other widths).
 
 ## Project organization policy
 
@@ -99,12 +101,12 @@ duplicates.
 For each supported relocation type, the planned write matches the
 formula in the per-arch ABI supplement.
 
-**Status: AArch64 covered.** `formula_is_total` proves the table is
-defined on every input. `formula_size_valid` proves every result has
-size ∈ {4,8} — the bridge to `Load.Apply` which panics on other
-widths. Per-type spot checks live as `#guard` canaries next to the
-`formula` def in `Spec/Reloc/Aarch64.lean` (one per row of the gabi
-table). x86-64 awaits an `EM_X86_64` formula table.
+**Status: AArch64 and x86-64 covered.** For each, `formula_is_total`
+proves the table is defined on every input, and `formula_size_valid`
+proves every result has size ∈ {4,8} — the bridge to `Load.Apply`
+which panics on other widths. Per-type spot checks live as `#guard`
+canaries next to each `formula` def (`Spec/Reloc/Aarch64.lean`,
+`Spec/Reloc/X86_64.lean`), one per row of the per-arch ABI table.
 
 ## Not currently in scope
 

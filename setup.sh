@@ -15,8 +15,13 @@ if ! command -v elan >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
     | sh -s -- -y --default-toolchain none
 fi
-# Make this shell session see elan immediately.
-. "$HOME/.elan/env" 2>/dev/null || export PATH="$HOME/.elan/bin:$PATH"
+# Persist elan on PATH. elan-init.sh patches ~/.profile, ~/.bashrc,
+# ~/.zshenv etc., but not fish — handle it ourselves.
+if command -v fish >/dev/null 2>&1; then
+  fish -c 'fish_add_path -m ~/.elan/bin/'
+else
+  export PATH="$HOME/.elan/bin:$PATH"
+fi
 
 # Submodules: gabi, musl, x86-64-ABI, …
 git submodule update --init --recursive

@@ -130,3 +130,21 @@ def plan (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
   return all
 
 end LeanLoad.Plan.Reloc
+
+-- ============================================================================
+-- IO test runner. Parametric over the per-arch formula; the test
+-- driver picks the formula based on `e_machine` and calls this once.
+-- ============================================================================
+namespace LeanLoad.Plan.Reloc.Test
+
+def run (formula : LeanLoad.Plan.Reloc.Formula) (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
+  let mut failures := 0
+  let rt := LeanLoad.Plan.Resolve.buildTable lm
+  let bases : LeanLoad.Plan.Reloc.Bases := Array.replicate lm.objects.size 0
+  let writes := LeanLoad.Plan.Reloc.plan formula lm bases rt
+  if writes.size == 0 then
+    IO.eprintln "expected nonzero relocation writes"
+    failures := failures + 1
+  return failures
+
+end LeanLoad.Plan.Reloc.Test

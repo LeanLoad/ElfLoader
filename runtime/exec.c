@@ -24,7 +24,7 @@
  * these for runtime feature detection, identity, and the vDSO; without
  * them it crashes or hangs.
  *
- * AArch64 only at present.
+ * AArch64 and x86-64 supported.
  */
 
 #include "exec.h"
@@ -176,8 +176,24 @@ LEAN_EXPORT lean_object * leanload_exec_run(
         :
         : "r"(sp), "r"(entry)
         : "memory");
+#elif defined(__x86_64__)
+    /* SysV x86-64 § Initial Stack and Register State:
+     *   - RSP must be 16-byte aligned and point at argc
+     *   - RBP zeroed marks the deepest frame
+     *   - RDX holds an atexit() function pointer; NULL means "none"
+     * The kernel zeroes other registers; for our purposes the
+     * inputs alone suffice — the loaded `_start` saves whatever it
+     * needs from the stack. */
+    asm volatile(
+        "movq %0, %%rsp\n"
+        "xorq %%rbp, %%rbp\n"
+        "xorq %%rdx, %%rdx\n"
+        "jmpq *%1\n"
+        :
+        : "r"(sp), "r"(entry)
+        : "memory");
 #else
-# error "leanload_exec_run: only AArch64 implemented"
+# error "leanload_exec_run: unsupported architecture (need __aarch64__ or __x86_64__)"
 #endif
     __builtin_unreachable();
 }

@@ -59,18 +59,32 @@ invokes `exit(rc)`.
 Without these, musl's `__libc_start_main` crashes or hangs in
 feature-detection / identity / vDSO code paths.
 
+SP is rounded down to a 16-byte boundary — required by both the
+AArch64 ABI and the SysV x86-64 ABI § Initial Stack and Register
+State.
+
 ## The trampoline
 
-After the layout is in place, two AArch64 instructions do the handover:
+After the layout is in place, a few instructions do the handover.
+On AArch64:
 
 ```asm
 mov sp, x0    ; switch SP to our prepared stack
 br  x1        ; jump to entry (no return address pushed)
 ```
 
-`br` (not `bl`) is deliberate: there is no return. Once we transfer
-control, leanload's process *is* the loaded program. It terminates
-the process via `exit_group(2)`.
+On x86-64 (per SysV § Initial Stack and Register State):
+
+```asm
+movq %rax, %rsp   ; switch SP to our prepared stack
+xorq %rbp, %rbp   ; mark deepest frame
+xorq %rdx, %rdx   ; no atexit handler to register
+jmpq *%rbx        ; jump to entry (no return address pushed)
+```
+
+`br` / `jmp` (not `bl` / `call`) is deliberate: there is no return.
+Once we transfer control, leanload's process *is* the loaded
+program. It terminates the process via `exit_group(2)`.
 
 ## Signal-handler reset
 
