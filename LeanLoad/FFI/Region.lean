@@ -2,8 +2,14 @@
 FFI: memory regions backed by `mmap`.
 
 A `Region` is an opaque handle for a foreign-owned `mmap`'d range.
-The finalizer in `runtime/region.c` calls `munmap` when the refcount
-drops to zero, so callers do not need to release explicitly.
+The C shim picks the `MAP_*` flag set per usage pattern (anonymous,
+anonymous fixed, anonymous stack), so Lean callers don't reason about
+flag bitmasks. `prot` (R/W/X) does cross the boundary because the
+planner tracks per-segment permissions (gabi 07 § Segment Permissions).
+
+The semantics of each operation matches Linux `mmap(2)` / `mprotect(2)`.
+
+Mappings live for the process lifetime; the kernel reclaims at exit.
 -/
 
 namespace LeanLoad.FFI.Region
@@ -13,32 +19,42 @@ def Region : Type := RegionPointed.type
 instance : Nonempty Region := RegionPointed.property
 
 -- ============================================================================
--- Constants — Linux <sys/mman.h>
+-- Protection bits (PROT_*) — these are first-class because the
+-- planner reasons about per-segment R/W/X.
 -- ============================================================================
 
--- Protection bits (PROT_*)
 def PROT_NONE  : UInt32 := 0
 def PROT_READ  : UInt32 := 1
 def PROT_WRITE : UInt32 := 2
 def PROT_EXEC  : UInt32 := 4
 
--- Mapping flags (MAP_*)
-def MAP_PRIVATE         : UInt32 := 0x02
-def MAP_FIXED           : UInt32 := 0x10
-def MAP_ANONYMOUS       : UInt32 := 0x20
-def MAP_FIXED_NOREPLACE : UInt32 := 0x100000
-
 #guard PROT_READ + PROT_WRITE + PROT_EXEC = 7
 
 -- ============================================================================
--- Externs
+-- mmap variants. The C shim picks the matching `MAP_*` flag set;
+-- Lean code never sees them.
 -- ============================================================================
 
-/-- Allocate a fresh `mmap`'d region.
-    `vaddr = 0` lets the kernel choose an address; otherwise the request
-    is honoured per `flags` (typically `MAP_FIXED` or `MAP_FIXED_NOREPLACE`). -/
-@[extern "leanload_region_mmap"]
-opaque mmap (vaddr : UInt64) (len : USize) (prot flags : UInt32) : IO Region
+/-- Anonymous private mapping (RW); kernel chooses the address. Used
+    for ET_DYN whole-object regions. The caller `mprotect`s to the
+    final per-segment permissions after copying bytes in. -/
+@[extern "leanload_region_mmap_anon"]
+opaque mmapAnon (len : USize) : IO Region
+
+/-- Anonymous private mapping (RW) pinned at `vaddr` (`MAP_FIXED`).
+    Used for ET_EXEC per-mapping placement at link-time-fixed
+    addresses. Caller `mprotect`s after writing. -/
+@[extern "leanload_region_mmap_anon_fixed"]
+opaque mmapAnonFixed (vaddr : UInt64) (len : USize) : IO Region
+
+/-- Anonymous private RW stack mapping (`MAP_STACK`). Used for the
+    kernel-style stack of the loaded program; permissions stay RW. -/
+@[extern "leanload_region_mmap_stack"]
+opaque mmapStack (len : USize) : IO Region
+
+-- ============================================================================
+-- Other operations on regions
+-- ============================================================================
 
 /-- Change protection of the entire region. -/
 @[extern "leanload_region_mprotect"]

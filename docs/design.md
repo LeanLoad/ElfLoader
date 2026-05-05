@@ -10,19 +10,19 @@ Four pipeline stages, each named for the verb it performs:
 | Stage        | Type | Input → Output                                |
 | ------------ | ---- | --------------------------------------------- |
 | **Parse**    | pure | `ByteArray` → `ParsedElf` (single file)       |
-| **Discover** | IO   | main `ParsedElf` → `Closure` (transitive) |
-| **Link**     | pure | `Closure` → `LoaderPlan`                  |
+| **Discover** | IO   | main `ParsedElf` → `LinkMap` (transitive) |
+| **Plan**     | pure | `LinkMap` → `LoaderPlan`                  |
 | **Load**     | IO   | `LoaderPlan` → live image + transfer          |
 
 Three rules:
 
 1. Stage names are verbs ("what we do"), not nouns. `Plan` is tempting
-   but `Link` is the gabi/x86-64-ABI term and matches the surrounding
+   but `Plan` is the gabi/x86-64-ABI term and matches the surrounding
    spec vocabulary.
-2. Stages alternate pure / IO. The boundary between Discover and Link
+2. Stages alternate pure / IO. The boundary between Discover and Plan
    is exactly where files become bytes-in-memory; the boundary between
-   Link and Load is where pure plans become live mappings.
-3. The `LoaderPlan` is the refinement seam. Output of Link, input of
+   Plan and Load is where pure plans become live mappings.
+3. The `LoaderPlan` is the refinement seam. Output of Plan, input of
    Load. Verification targets are stated against it.
 
 Two boundary modules sit alongside but are not stages:
@@ -49,8 +49,8 @@ A reader-facing index module:
    Shared Object Dependencies). Resolve via `DT_RUNPATH` /
    `LD_LIBRARY_PATH` / default paths. Read each dependency with
    `IO.FS.readBinFile`, call `Parse` on its bytes. Returns a
-   `Closure` mapping path → parsed ELF.
-3. **Link** (pure): operate on the full input set. Resolve symbols
+   `LinkMap` mapping path → parsed ELF.
+3. **Plan** (pure): operate on the full input set. Resolve symbols
    breadth-first (gabi 08, § Shared Object Dependencies); compute
    mmap layout from `PT_LOAD` (gabi 07); build relocation writes
    using x86-64 formulas (`x86-64-ABI/object-files.tex`, § Relocation
@@ -62,7 +62,7 @@ A reader-facing index module:
    (gabi 08, § Initialization and Termination), transfer control to
    entry, run destructors on exit.
 
-The plan is the refinement boundary. Proofs target `Parse` and `Link`.
+The plan is the refinement boundary. Proofs target `Parse` and `Plan`.
 `Discover` and `Load` are trusted IO code.
 
 ## Scope
@@ -93,11 +93,11 @@ Module split (each module's source spec in parens):
 | `Parse/Symbol`     | gabi 04 `04-strtab.rst`, 05 `05-symtab.rst`        |
 | `Parse/Reloc`      | gabi 06 `06-reloc.rst`                             |
 | `Parse/File`       | aggregate                                          |
-| `Link/Resolve`     | gabi 08 § Shared Object Dependencies               |
-| `Link/Search`      | gabi 08 § Shared Object Dependencies (`DT_RUNPATH`, `LD_LIBRARY_PATH`) |
-| `Link/Layout`      | gabi 07 § Base Address, Segment Permissions        |
-| `Link/Reloc`       | x86-64-ABI `object-files.tex` § Relocation Types   |
-| `Link/Init`        | gabi 08 § Initialization and Termination Functions |
+| `Plan/Resolve`     | gabi 08 § Shared Object Dependencies               |
+| `Plan/Search`      | gabi 08 § Shared Object Dependencies (`DT_RUNPATH`, `LD_LIBRARY_PATH`) |
+| `Plan/Layout`      | gabi 07 § Base Address, Segment Permissions        |
+| `Plan/Reloc`       | x86-64-ABI `object-files.tex` § Relocation Types   |
+| `Plan/Init`        | gabi 08 § Initialization and Termination Functions |
 
 **Reference docs (in `third_party/`):**
 - `gabi/docsrc/elf/{02-eheader,07-pheader,08-dynamic,...}.rst` for
@@ -116,18 +116,18 @@ Main.lean                  CLI entry
 LeanLoad/                  Lean modules
   Basic.lean
   Parse/                   ELF decoding (pure)
-  Link/                    resolution, layout, relocation planning (pure)
+  Plan/                    resolution, layout, relocation planning (pure)
   FFI/                     @[extern] declarations (trusted)
     Fd.lean
     Region.lean
     Exec.lean
-  Load.lean                IO orchestration: Parse + Link + FFI
+  Load.lean                IO orchestration: Parse + Plan + FFI
 runtime/                   C shims (unverified)
   fd.h    fd.c             open / read / fstat / close
   region.h region.c        mmap / munmap / mprotect / accessors
   exec.h  exec.c           ctor / entry / dtor invocation
 docs/
-  bg-ffi.md                FFI background (general reference)
+  ffi.md                FFI background (general reference)
   design.md                this file (high-level architecture)
   exec.md                  kernel-style exec — stack layout, trampoline
   plan.md                  phased implementation plan
@@ -139,7 +139,7 @@ third_party/               submodules
 
 ## Trust boundary
 
-- **Verified**: `LeanLoad/Parse/` and `LeanLoad/Link/`. Pure Lean,
+- **Verified**: `LeanLoad/Parse/` and `LeanLoad/Plan/`. Pure Lean,
   no `IO`, no `LeanLoad.FFI` imports.
 - **Trusted**: `LeanLoad/FFI/*` and `runtime/*`. Audited by inspection.
 - **Glue**: `LeanLoad/Load.lean` — the only module allowed to import
@@ -160,20 +160,20 @@ A grep for `import LeanLoad.FFI` outside `Load.lean` is a smell.
 
 See `docs/verification.md` for the running list of proof obligations
 and theorem statements. In summary: the architecture's verified core
-(`Parse/`, `Link/`) is targeted for proofs; the trusted IO layer
+(`Parse/`, `Plan/`) is targeted for proofs; the trusted IO layer
 (`Discover`, `Load`, `runtime/`) is audited and validated by
 differential testing against `ld.so`.
 
 ## Memory ownership
 
 - **Inputs** (ELF files): read via `IO.FS.readBinFile` into a
-  `ByteArray`. Small enough that the copy is free, and `Link` reasons
+  `ByteArray`. Small enough that the copy is free, and `Plan` reasons
   over pure data.
 - **Outputs** (loaded image): `mmap` regions wrapped as opaque
   `Region` external objects. Finalizer calls `munmap`. Writes happen
   during `Load`.
 
-See `docs/bg-ffi.md` for the underlying FFI patterns.
+See `docs/ffi.md` for the underlying FFI patterns.
 
 ## Build
 
@@ -194,11 +194,11 @@ Two invocations:
 
 ```
 leanload <elf>             # run the binary
-leanload --inspect <elf>   # run Parse + Discover + Link, dump the plan, exit
+leanload --inspect <elf>   # run Parse + Discover + Plan, dump the plan, exit
 ```
 
 `--inspect` stops before `Load`. No `mmap`, no execution. The dump is
-the union of `Closure` (parsed deps) and `LoaderPlan` (mmap
+the union of `LinkMap` (parsed deps) and `LoaderPlan` (mmap
 layout, relocation writes, init/fini order).
 
 No subcommands, no `--debug=` topics, no `--stop-at`. The pipeline is
@@ -208,7 +208,7 @@ short enough that a single dump covers every interesting state.
 
 Three rules that pay off across the whole project:
 
-1. **`deriving Repr` on every type in `Parse/` and `Link/`.** Then
+1. **`deriving Repr` on every type in `Parse/` and `Plan/`.** Then
    `--inspect` is `IO.println (repr plan)`. Verbose dumps fall out of
    the structure for free.
 2. **Deterministic output.** No timestamps, no hash-iteration order,
@@ -233,8 +233,8 @@ Two directories, two roles:
   exercising specific loader features (mutual recursion, TLS,
   init_array, etc.). They are the inputs the loader runs against,
   and double as fixture data for tests.
-- `Tests/` — Lean test files. Pure `Parse`/`Link` unit tests, golden
-  comparisons against `examples/build/*` outputs, and a differential
+- `Tests/` — Lean test files. Pure `Parse`/`Plan` unit tests, golden
+  comparisons against `build/*` outputs, and a differential
   driver against the system `ld.so`.
 
 ## Testing
@@ -242,9 +242,9 @@ Two directories, two roles:
 Four layers, in increasing fidelity:
 
 1. **Inline unit tests with `#guard`.** Tiny invariants on `Parse`
-   and `Link` over hand-crafted byte arrays. Cheap to write, run at
+   and `Plan` over hand-crafted byte arrays. Cheap to write, run at
    compile time.
-2. **Golden tests against `examples/build/*` outputs.** Capture
+2. **Golden tests against `build/*` outputs.** Capture
    `repr (parse bytes)` and `repr (link input)` to checked-in
    `Tests/golden/*.txt`. Diff on every change. Determinism (rule 2
    under Debuggability) is what makes this work.
@@ -265,7 +265,7 @@ Tests/
     main.parse.txt
     main.link.txt
   Parse.lean          #guard + golden
-  Link.lean           #guard + golden
+  Plan.lean           #guard + golden
   Differential.lean   ld.so comparison
   Test.lean           lake test entry point
 ```

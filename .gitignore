@@ -1,2 +1,4 @@
-/.lake
-examples/build/
+/.lake/
+/build/
+/compile_commands.json
+/.cache/

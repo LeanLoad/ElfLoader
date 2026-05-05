@@ -6,7 +6,7 @@ Identification, ELF Header.
 
 LeanLoad commits to ELFCLASS64 + ELFDATA2LSB. `parse` rejects 32-bit and
 big-endian inputs. `e_machine` is recorded but not checked here;
-architecture validation happens in `Link`.
+architecture validation happens in `Plan`.
 -/
 
 import LeanLoad.Parse.Bytes
@@ -64,7 +64,7 @@ structure Ident where
   ei_osabi      : UInt8
   ei_abiversion : UInt8
   -- bytes 9..15 are EI_PAD; ignored
-  deriving Repr
+  deriving Repr, Inhabited
 
 def parseIdent : Parser Ident := do
   expect #[ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3]
@@ -96,7 +96,7 @@ structure ElfHeader64 where
   e_shentsize : UInt16
   e_shnum     : UInt16
   e_shstrndx  : UInt16
-  deriving Repr
+  deriving Repr, Inhabited
 
 /-- Parse a 64-bit little-endian ELF header. Rejects non-ELF, 32-bit, and
     big-endian inputs. `e_machine` is captured as-is. -/

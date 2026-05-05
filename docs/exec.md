@@ -13,7 +13,7 @@ When a normal program runs, the kernel:
 5. Builds the **kernel exec stack** on it (layout below).
 6. Sets `SP` to the base of that layout and jumps to `e_entry`.
 
-LeanLoad's `Load.load` mirrors steps 1-2 in pure Lean (`Link.Layout`)
+LeanLoad's `Load.load` mirrors steps 1-2 in pure Lean (`Plan.Layout`)
 plus an FFI `mmap`, then steps 4-6 in `runtime/exec.c`.
 
 ## Stack layout

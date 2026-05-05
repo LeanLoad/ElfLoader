@@ -51,7 +51,7 @@ structure Header64 where
   p_filesz : UInt64
   p_memsz  : UInt64
   p_align  : UInt64
-  deriving Repr
+  deriving Repr, Inhabited
 
 /-- Size of one entry on disk (gabi 07: 4+4+8*6 = 56). -/
 def entrySize : Nat := 56

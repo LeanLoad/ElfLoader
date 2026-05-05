@@ -1,7 +1,7 @@
 # Verification
 
 What we want to prove, in roughly increasing fidelity. The architecture
-in `design.md` already isolates verifiable code (`Parse/`, `Link/`)
+in `design.md` already isolates verifiable code (`Parse/`, `Plan/`)
 from trusted IO (`Discover`, `Load`, `runtime/`); the `LoaderPlan` is
 the refinement boundary.
 
@@ -26,11 +26,11 @@ either an algebraic invariant or a theorem about it.
 | ----------------------------- | --------------------- | ------------------------------------------------------- |
 | `Parser α`                    | `Parse.Bytes`         | Stateful read; advances the cursor or returns `Except`. |
 | `ParsedElf`                   | `Parse.File`          | Result of decoding one ELF byte sequence.               |
-| `Closure`                     | `Discover`            | Transitively-discovered dependency graph.               |
-| `Resolve.SymRef`              | `Link.Resolve`        | A resolved symbol: `(objectIdx, symIdx)`.               |
-| `LoaderPlan`                  | `Link.Layout`         | Layouts + init/fini orders. **Refinement boundary.**    |
-| `Reloc.Formula`               | `Link.Reloc`          | `(type, S, A, B, P) → Option write`. Pluggable per-arch.|
-| `Reloc.RelocWrite`            | `Link.Reloc`          | One planned memory write.                               |
+| `LinkMap`                     | `Discover`            | Transitively-discovered dependency graph.               |
+| `Resolve.SymRef`              | `Plan.Resolve`        | A resolved symbol: `(objectIdx, symIdx)`.               |
+| `LoaderPlan`                  | `Plan.Layout`         | Layouts + init/fini orders. **Refinement boundary.**    |
+| `Reloc.Formula`               | `Plan.Reloc`          | `(type, S, A, B, P) → Option write`. Pluggable per-arch.|
+| `Reloc.RelocWrite`            | `Plan.Reloc`          | One planned memory write.                               |
 | `FFI.Region.Region`           | `FFI.Region`          | Opaque mmap'd handle. Finalizer calls `munmap`.         |
 | `Load.Handle`                 | `Load`                | Owns regions for the lifetime of a load.                |
 
@@ -39,7 +39,7 @@ either an algebraic invariant or a theorem about it.
 Each entry below is verbatim from the code; the reader may treat the
 proof as a black box (Lean's kernel checks it).
 
-- **AArch64 R_AARCH64_RELATIVE = B + A** (`Link.Reloc.Aarch64.formula_relative_correct`):
+- **AArch64 R_AARCH64_RELATIVE = B + A** (`Plan.Reloc.Aarch64.formula_relative_correct`):
 
   ```lean
   theorem formula_relative_correct (inp : FormulaInputs) :
@@ -89,27 +89,29 @@ proof as a black box (Lean's kernel checks it).
 
 The reader who wants to confirm "AArch64 relocations are
 specification-faithful" reads only this section. They never need to
-open `LeanLoad/Link/Reloc/Aarch64.lean`.
+open `LeanLoad/Plan/Reloc/Aarch64.lean`.
 
 Concretely:
 
 1. **Module docstring as a spec contract.** Each `LeanLoad.Parse.*` /
-   `LeanLoad.Link.*` module opens with (a) the gabi / x86-64-ABI
+   `LeanLoad.Plan.*` module opens with (a) the gabi / x86-64-ABI
    section it implements (e.g. "gabi 06 § Relocation"), (b) the
    public API in one paragraph, (c) any obligations from this file
    (e.g. "addresses O3").
-2. **Theorems live next to the definitions they're about.** Reader
-   sees the function and its proven properties in one place. Move to
-   `Thm/` only if proofs grow past a screen.
+2. **All theorems live in `LeanLoad/Thm.lean`.** Single audit surface;
+   the reader scans one file to see what we prove. Proofs in our
+   project are short (1–5 lines); colocation with defs would buy
+   refactor locality but lose the consolidated view. When a single
+   topic's proofs grow past one screen, split into
+   `LeanLoad/Thm/<Topic>.lean`.
 3. **One file per spec concept.** Already true: `Parse/Header.lean`
    ↔ gabi 02, `Parse/Program.lean` ↔ gabi 07, etc.
 4. **No separate `Spec/` directory.** Cedar's split makes sense
    when an abstract semantics has multiple implementations. We have
    one implementation that **is** the spec (the relocation formula
    table is both); a separate `Spec/` would just duplicate code.
-5. **Cite this file's obligation IDs (O1–O6) in theorem doc-comments**,
-   so a reader of `Reloc/Aarch64.lean` knows where to find the
-   broader story.
+5. **Cite this file's obligation IDs (O1–O6) in theorem doc-comments
+   inside `Thm.lean`**, so the prose context is one click away.
 
 Closest reference projects we have in `third_party/` for this style:
 
@@ -136,27 +138,31 @@ specifications; we restate existing ones in machine-checked form.
 
 ### O1. Totality
 
-Every `Parse.*` and `Link.*` definition terminates and returns
+Every `Parse.*` and `Plan.*` definition terminates and returns
 `Except String α` rather than panicking.
 
 ```
 ∀ (b : ByteArray), Parse.File.parse b terminates.
 ```
 
-Status: most definitions are `def` (Lean infers termination); a few
-are `partial def` (e.g. `Parse.Dynamic.collect`) and need work. The
-linksem paper devoted ~1500 lines to termination; we can do better
-with Lean's `decreasing_by` / fuel-based recursion.
+Status: every `def` in `Parse/` and `Plan/` is total — Lean's
+elaborator certifies it at type-check time. `Plan.Init.dfs` uses
+fuel-based recursion (caller passes `lm.objects.size`, the recursion
+decrements). The remaining `partial def`s are `Discover.discover`
+(IO; the filesystem and BFS dedup are the well-foundedness argument)
+and `Parse.Dynamic.collect` (could be fueled the same way as `dfs`).
+The linksem paper devoted ~1500 lines to ELF parser termination; the
+fuel pattern keeps ours cheap.
 
 ### O2. Layout disjointness
 
-Within one ELF, `Link.Layout.fromClosure` produces regions that do not
+Within one ELF, `Plan.Layout.fromLinkMap` produces regions that do not
 overlap in virtual address space.
 
 ```
 ∀ (elf : ParsedElf) (i j : Nat),
   i ≠ j →
-  let regions := (Link.Layout.fromClosure elf).regions
+  let regions := (Plan.Layout.fromLinkMap elf).regions
   i < regions.size → j < regions.size →
   ¬overlap regions[i]! regions[j]!
 where
@@ -174,29 +180,40 @@ implies but doesn't state this); model that as a parser invariant.
 `Parse.File.vaToOffset phdrs va = some off` implies `off` is the file
 position of the byte that should appear at virtual address `va`.
 
-```
-∀ phdrs va off,
-  vaToOffset phdrs va = some off →
-  ∃ ph ∈ phdrs,
-    ph.p_type = PT_LOAD ∧
-    ph.p_vaddr ≤ va ∧
-    va < ph.p_vaddr + ph.p_memsz ∧
-    off = ph.p_offset.toNat + (va - ph.p_vaddr).toNat
-```
-
-Status: provable by case analysis on `Array.findSome?`. Trivial.
-
-### O4. Plan determinism
-
-`Link.Layout.fromClosure` is a pure function; same input → same output.
-
-```
-∀ elf, Link.Layout.fromClosure elf = Link.Layout.fromClosure elf
+```lean
+theorem vaToOffset_correct
+    (phdrs : Array Program.Header64) (va : UInt64) (off : Nat) :
+    vaToOffset phdrs va = some off →
+    ∃ ph ∈ phdrs,
+      ph.p_type = Program.PT_LOAD ∧
+      ph.p_vaddr ≤ va ∧
+      va < ph.p_vaddr + ph.p_memsz ∧
+      off = (va - ph.p_vaddr).toNat + ph.p_offset.toNat
 ```
 
-Status: trivial (pure function). Worth stating to commit to determinism
-as a design requirement (no maps with non-deterministic iteration, no
-randomness, no timestamps).
+Status: **proved** (`Parse.File.vaToOffset_correct`). Soundness only —
+the converse (every covering `PT_LOAD` is found) follows from
+`Array.findSome?`'s "first match" semantics and is left as future work.
+
+### O4. Plan determinism + structural integrity
+
+`Plan.Layout.fromLinkMap` is pure (same input → same output) and
+produces exactly one layout per discovered object — no drops, no
+duplicates.
+
+```lean
+theorem fromLinkMap_deterministic (cl : Discover.LinkMap)
+    (initOrder finiOrder : Array Nat) :
+    fromLinkMap cl initOrder finiOrder = fromLinkMap cl initOrder finiOrder
+
+theorem fromLinkMap_layouts_size (cl : Discover.LinkMap)
+    (initOrder finiOrder : Array Nat) :
+    (fromLinkMap cl initOrder finiOrder).layouts.size = cl.objects.size
+```
+
+Status: **proved** (`Plan.Layout.fromLinkMap_deterministic`,
+`Plan.Layout.fromLinkMap_layouts_size`). The second is structural
+(refines the `LoaderPlan` contract from one-to-one with the link map).
 
 ### O5. Bytes preserved (Phase 2 specific)
 
@@ -206,13 +223,13 @@ the file-backed portion of each `PT_LOAD`. The BSS tail is zero.
 
 ```
 ∀ elf bytes va,
-  let plan := Link.Layout.fromClosure elf
+  let plan := Plan.Layout.fromLinkMap elf
   va ∈ fileBackedRange plan →
   loadedByte va = bytes[fileOffset va]!
 ```
 
 Status: requires modelling the loaded image abstractly first. The
-`Region` type in `Link.Layout` already has `fileOff`, `fileLen`,
+`Region` type in `Plan.Layout` already has `fileOff`, `fileLen`,
 `pageInset` — these are the operational ingredients.
 
 ### O6. Relocation correctness
@@ -224,7 +241,7 @@ formula in `x86-64-ABI/object-files.tex` § Relocation Types.
 -- For R_X86_64_64 = S + A:
 ∀ (r : RelaEntry),
   r.type = R_X86_64_64 →
-  let plan := Link.Reloc.compute env r
+  let plan := Plan.Reloc.compute env r
   plan.targetAddr = r.r_offset + base ∧
   plan.value = symbolValue env r.sym + r.r_addend
 ```
@@ -256,7 +273,7 @@ transfers control without first replacing the process image. Real
 `execve(2)` resets the entire process; we do not. Verification of
 `Load` is conditioned on the following assumptions about the host
 process. Violations void the soundness of the runtime executor;
-they do **not** affect proofs about `Parse` or `Link`.
+they do **not** affect proofs about `Parse` or `Plan`.
 
 1. **Address-space disjointness.** The virtual-address ranges named
    by the `LoaderPlan`'s regions (`p_vaddr` … `p_vaddr + p_memsz`,
@@ -300,7 +317,7 @@ when the proof effort starts in earnest.
 
 ## Suggested order
 
-1. Make every `Parse.*` and `Link.*` total (O1) — pre-requisite for
+1. Make every `Parse.*` and `Plan.*` total (O1) — pre-requisite for
    everything else.
 2. O3 (VA→offset) — small, useful, builds confidence.
 3. O4 (determinism) — trivial; states the rule.

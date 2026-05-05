@@ -11,7 +11,7 @@ Spec basis: gabi 07 §§ Program Header, Base Address, Segment Permissions.
 import LeanLoad.Parse
 import LeanLoad.Discover
 
-namespace LeanLoad.Link.Layout
+namespace LeanLoad.Plan.Layout
 
 open LeanLoad.Parse
 
@@ -99,7 +99,7 @@ def mappingOfPhdr (ph : Program.Header64) : Mapping :=
 -- ============================================================================
 -- Per-object and combined plans
 --
--- For each object in a discovered closure, compute its set of mmap
+-- For each object in a discovered link map, compute its set of mmap
 -- mappings plus a `preferredBase` hint:
 --   * `ET_EXEC` (non-PIE): mappings sit at absolute `p_vaddr`,
 --     `preferredBase = 0` means "honour those addresses literally".
@@ -125,7 +125,7 @@ structure ObjectLayout where
   deriving Repr
 
 /-- Layout for a single parsed ELF, given its index in the
-    `Closure.objects` array. -/
+    `LinkMap.objects` array. -/
 def objectLayout (objectIdx : Nat) (isMain : Bool) (elf : File.ParsedElf) : ObjectLayout :=
   let loads    := elf.phdrs.filter (·.p_type == Program.PT_LOAD)
   let mappings := loads.map mappingOfPhdr
@@ -136,7 +136,7 @@ def objectLayout (objectIdx : Nat) (isMain : Bool) (elf : File.ParsedElf) : Obje
 
     Relocations are not part of `LoaderPlan` — they depend on the
     actual chosen bases and are computed at load time via
-    `Link.Reloc.plan`. The single-static case is just a `LoaderPlan`
+    `Plan.Reloc.plan`. The single-static case is just a `LoaderPlan`
     with one layout, no init/fini. -/
 structure LoaderPlan where
   layouts   : Array ObjectLayout
@@ -144,17 +144,15 @@ structure LoaderPlan where
   finiOrder : Array Nat
   deriving Repr
 
-/-- Plan for a discovered closure. The first object (index 0) is main.
-    A single-element closure (a static binary with no `DT_NEEDED`) is
+/-- Plan for a discovered link map. The first object (index 0) is main.
+    A single-element link map (a static binary with no `DT_NEEDED`) is
     just the N=1 case of this. -/
-def fromClosure (cl : Discover.Closure) (initOrder finiOrder : Array Nat) : LoaderPlan :=
-  let layouts : Array ObjectLayout := Id.run do
-    let mut acc : Array ObjectLayout := Array.mkEmpty cl.objects.size
-    let mut idx := 0
-    for obj in cl.objects do
-      acc := acc.push (objectLayout idx (idx == 0) obj.elf)
-      idx := idx + 1
-    return acc
-  { layouts, initOrder, finiOrder }
+def fromLinkMap (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) : LoaderPlan :=
+  { layouts   := lm.objects.mapIdx fun idx obj => objectLayout idx (idx = 0) obj.elf
+    initOrder
+    finiOrder }
 
-end LeanLoad.Link.Layout
+-- Empty-link map edge case (the strong size-equality is in `LeanLoad.Thm`).
+#guard (fromLinkMap { objects := #[] } #[] #[]).layouts.isEmpty
+
+end LeanLoad.Plan.Layout

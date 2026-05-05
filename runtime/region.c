@@ -45,22 +45,14 @@ lean_external_class * leanload_region_class(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* mmap: allocate a fresh region with the given permissions.
- *
- * Lean signature:
- *   leanload_region_mmap (vaddr : UInt64) (len : USize)
- *                        (prot flags : UInt32) : IO Region
- *
- * `vaddr=0` means "kernel chooses". `flags` is the raw mmap flags
- * value (e.g. MAP_PRIVATE | MAP_ANONYMOUS); the planner picks.
- */
-LEAN_EXPORT lean_object * leanload_region_mmap(uint64_t vaddr,
-                                               size_t   len,
-                                               uint32_t prot,
-                                               uint32_t flags,
-                                               lean_object * /* world */) {
+/* mmap variants. Each variant picks the appropriate `MAP_*` flag set
+ * for its usage pattern; Lean side never sees raw flags. All three
+ * map RW initially — caller `mprotect`s to the final permission once
+ * bytes are written in (or, for the stack, leaves it RW). */
+
+static lean_object * mmap_rw(uint64_t vaddr, size_t len, int flags) {
     void * hint = (vaddr == 0) ? NULL : (void *)(uintptr_t)vaddr;
-    void * p = mmap(hint, len, (int)prot, (int)flags, -1, 0);
+    void * p = mmap(hint, len, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (p == MAP_FAILED) {
         return leanload_io_err(strerror(errno));
     }
@@ -73,6 +65,29 @@ LEAN_EXPORT lean_object * leanload_region_mmap(uint64_t vaddr,
     r->length = len;
     return lean_io_result_mk_ok(
         lean_alloc_external(leanload_region_class(), r));
+}
+
+/* Anonymous private mapping; kernel chooses the address. Used for
+ * ET_DYN whole-object regions. */
+LEAN_EXPORT lean_object * leanload_region_mmap_anon(size_t len,
+                                                    lean_object * /* w */) {
+    return mmap_rw(0, len, MAP_PRIVATE | MAP_ANONYMOUS);
+}
+
+/* Anonymous private mapping pinned at `vaddr` (`MAP_FIXED`). Used for
+ * ET_EXEC per-mapping placement at link-time-fixed virtual addresses. */
+LEAN_EXPORT lean_object * leanload_region_mmap_anon_fixed(uint64_t vaddr,
+                                                          size_t   len,
+                                                          lean_object * /* w */) {
+    return mmap_rw(vaddr, len, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED);
+}
+
+/* Anonymous private stack mapping (`MAP_STACK`). Hints to the kernel
+ * that the mapping will be used as a thread/process stack; a no-op on
+ * Linux but documented as the right thing per `mmap(2)`. */
+LEAN_EXPORT lean_object * leanload_region_mmap_stack(size_t len,
+                                                     lean_object * /* w */) {
+    return mmap_rw(0, len, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK);
 }
 
 /* mprotect on the whole region. If transitioning to PROT_EXEC, also

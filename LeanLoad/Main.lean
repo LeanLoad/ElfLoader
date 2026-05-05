@@ -4,7 +4,7 @@ import LeanLoad
 
     `leanload <elf>`            — load and run a binary via kernel-style
                                   exec. Static or dynamic; single
-                                  pipeline (Discover → Link → Load).
+                                  pipeline (Discover → Plan → Load).
                                   Does not return.
     `leanload --inspect <elf>`  — print the planned layout, do not run.
 -/

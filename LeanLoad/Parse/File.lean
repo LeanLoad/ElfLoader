@@ -77,6 +77,7 @@ structure ParsedElf where
   finiArr : Array UInt64
   /-- `DT_PREINIT_ARRAY` entries, same convention. -/
   preinitArr : Array UInt64
+  deriving Inhabited
 
 -- ============================================================================
 -- Helpers for reading from a `.dynamic` array
