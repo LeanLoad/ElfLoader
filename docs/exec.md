@@ -114,6 +114,6 @@ musl's `_exit` already does the right thing.
 
 - `runtime/exec.{h,c}` — stack builder + trampoline.
 - `runtime/region.{h,c}`, `runtime/common.h` — shared region machinery.
-- `LeanLoad/Run.lean` — `@[extern]` declarations + Lean orchestration.
+- `LeanLoad/Exec.lean` — `@[extern]` declarations + Lean orchestration.
 - `LeanLoad/Main.lean` — top-level `load` function.
 - `examples/static.c` — minimal nolibc fixture.

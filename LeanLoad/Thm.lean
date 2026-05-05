@@ -24,6 +24,7 @@ import LeanLoad.Spec.Reloc
 import LeanLoad.Plan.Layout
 import LeanLoad.Spec.Reloc.Aarch64
 import LeanLoad.Spec.Reloc.X86_64
+import LeanLoad.Spec.GnuHash
 
 namespace LeanLoad.Thm
 
@@ -134,5 +135,65 @@ theorem formula_size_valid (ty : UInt32) (inp : FormulaInputs) (r : FormulaResul
     | (injection h with hr; subst hr; first | (right; rfl) | (left; rfl))
 
 end X86_64
+
+-- ============================================================================
+-- GNU hash symbol-count derivation.
+--
+-- `Spec.GnuHash.symCount` derives the dynsym count from a parsed GNU
+-- hash table. gnu-gabi defines no count tag, so the algorithm is
+-- inferred from the layout (see `Spec/GnuHash.lean` docstring). These
+-- theorems pin down the small properties we *can* prove without
+-- modeling the linker invariant in full:
+--   * empty buckets ⇒ count = symoffset (no hashed symbols)
+--   * a non-empty result strictly exceeds the largest bucket value,
+--     i.e. covers every dynsym index any bucket could reference
+-- ============================================================================
+
+namespace GnuHash
+open LeanLoad.Spec.GnuHash
+
+/-- `maxBucket` of the empty array is 0. Sanity for the base case. -/
+theorem maxBucket_empty : maxBucket #[] = 0 := rfl
+
+/-- All-empty buckets ⇒ `symCount` returns `symoffset` exactly.
+    Captures: when the hash table references no symbols, the dynsym
+    has only the `symoffset` synthetic entries. -/
+theorem symCount_empty_buckets (so : Nat) (cs : Array UInt32) :
+    symCount so #[] cs = some so := by
+  unfold symCount
+  simp [maxBucket_empty]
+
+/-- `findEndMarker` returns indices ≥ its `start` argument; this is
+    the standard `findIdx?`-shifted-by-`start` property. -/
+theorem findEndMarker_ge (cs : Array UInt32) (start j : Nat) :
+    findEndMarker cs start = some j → j ≥ start := by
+  unfold findEndMarker
+  intro h
+  cases hk : (cs.toList.drop start).findIdx? (fun w => w &&& 1 == 1) with
+  | none => rw [hk] at h; simp at h
+  | some k => rw [hk] at h; simp at h; omega
+
+/-- If `symCount` returns a non-empty-bucket result, that result is
+    strictly greater than every bucket value (i.e. greater than every
+    dynsym index any bucket can reference). This is the soundness
+    direction: we never report a count smaller than what the buckets
+    already imply. -/
+theorem symCount_gt_maxBucket
+    (so : Nat) (bs cs : Array UInt32) (n : Nat)
+    (hpos : maxBucket bs > 0) :
+    symCount so bs cs = some n → n > maxBucket bs := by
+  intro h
+  unfold symCount at h
+  have hne : ¬ (maxBucket bs = 0) := by omega
+  simp [hne] at h
+  cases hf : findEndMarker cs (maxBucket bs - so) with
+  | none => rw [hf] at h; simp at h
+  | some j =>
+    rw [hf] at h
+    simp at h
+    have hjge : j ≥ maxBucket bs - so := findEndMarker_ge _ _ _ hf
+    omega
+
+end GnuHash
 
 end LeanLoad.Thm

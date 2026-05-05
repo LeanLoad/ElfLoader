@@ -13,6 +13,7 @@ import LeanLoad.Spec.Symbol
 import LeanLoad.Spec.Reloc
 import LeanLoad.Spec.Reloc.Aarch64
 import LeanLoad.Spec.Reloc.X86_64
+import LeanLoad.Spec.GnuHash
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Reloc
@@ -20,6 +21,6 @@ import LeanLoad.Plan.Init
 import LeanLoad.Plan.Formula
 import LeanLoad.Discover
 import LeanLoad.Map
-import LeanLoad.Run
+import LeanLoad.Exec
 import LeanLoad.Region
 import LeanLoad.Thm

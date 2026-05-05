@@ -20,6 +20,7 @@ import LeanLoad.Parse.Dynamic
 import LeanLoad.Parse.StringTable
 import LeanLoad.Parse.Symbol
 import LeanLoad.Parse.Reloc
+import LeanLoad.Spec.GnuHash
 
 namespace LeanLoad.Parse.File
 
@@ -110,31 +111,17 @@ private def parseAtDyn (phdrs : Array Spec.Program.Header64) (bytes : ByteArray)
     Parser.run bytes (p off)
 
 -- ============================================================================
--- Symbol count from `DT_GNU_HASH`.
---
--- The table *layout* is documented in gnu-gabi § Hashes:
--- `third_party/gnu-gabi/program-loading-and-dynamic-linking.txt`.
--- The algorithm below — "max(buckets) + walk chain to end-marker
--- gives the last hashed symbol index" — is neither documented nor
--- specified there. gnu-gabi defines no count tag, and glibc's
--- runtime loader doesn't derive one either (it uses the hash table
--- directly for lookups). The derivation below is community lore,
--- inferable from the layout.
---
--- References for the derivation:
---   - https://flapenguin.me/elf-dt-gnu-hash (the most-cited write-up;
---     gnu-gabi itself points readers here)
---   - `bfd_elf_size_dynsym_hash_dynstr` in binutils-gdb's `bfd/elflink.c`
---     (the linker side that establishes the invariant we rely on:
---     hashed symbols occupy a contiguous tail of `.dynsym`)
+-- Symbol count from `DT_GNU_HASH`. Layout is gnu-gabi § Hashes; the
+-- count derivation is `Spec.GnuHash.symCount` (see that module for
+-- the linker invariant we rely on, since gnu-gabi defines no count
+-- tag and the algorithm itself is community lore).
 -- ============================================================================
 
-/-- Header layout (gnu-gabi § Hashes, Part 1):
-    `(nbuckets, symoffset, bloom_words, bloom_shift)`, four `u32`s.
-    Then `bloom_words` 8-byte bloom entries (ELF64), `nbuckets` 4-byte
-    buckets, then a chain of 4-byte pseudo-hashes, one per hashed
-    symbol. The bit-0-set entry marks the end of a bucket's chain;
-    the highest-indexed end marker tells us the last hashed symbol. -/
+/-- Read a GNU hash table at file offset `off` and return the dynsym
+    count via `Spec.GnuHash.symCount`. Reads buckets exactly, then
+    reads chain entries up to the end of the byte buffer (the chain's
+    real length is unbounded by the table itself; the caller's file
+    size is the only natural upper bound). -/
 private def parseGnuHashSymCount (off : Nat) : Parser Nat := do
   Bytes.seek off
   let nbuckets   := (← Bytes.u32le).toNat
@@ -142,25 +129,17 @@ private def parseGnuHashSymCount (off : Nat) : Parser Nat := do
   let bloomWords := (← Bytes.u32le).toNat
   let _bloomShift ← Bytes.u32le
   Bytes.skip (bloomWords * 8)  -- ELF64: each bloom word is 64 bits
-  -- Find the highest bucket value (the largest dynsym index hashed
-  -- into the table; the rest of the chain extends from there).
-  let mut lastFirst : Nat := 0
+  let mut buckets : Array UInt32 := Array.mkEmpty nbuckets
   for _ in [:nbuckets] do
-    let b := (← Bytes.u32le).toNat
-    if b > lastFirst then lastFirst := b
-  -- All buckets empty ⇒ only the `symoffset` synthetic symbols exist.
-  if lastFirst == 0 then return symoffset
-  -- Walk chain[lastFirst - symoffset ..] until the end-of-bucket marker.
-  Bytes.seek (off + 16 + bloomWords * 8 + nbuckets * 4 + (lastFirst - symoffset) * 4)
+    buckets := buckets.push (← Bytes.u32le)
   let s ← get
-  let bound := (s.bytes.size - s.pos) / 4
-  let mut idx := lastFirst
-  for _ in [:bound] do
-    let entry ← Bytes.u32le
-    if entry &&& 1 == 1 then
-      return idx + 1
-    idx := idx + 1
-  throw "parseGnuHashSymCount: chain has no end marker (malformed)"
+  let chainBound := (s.bytes.size - s.pos) / 4
+  let mut chain : Array UInt32 := Array.mkEmpty chainBound
+  for _ in [:chainBound] do
+    chain := chain.push (← Bytes.u32le)
+  match Spec.GnuHash.symCount symoffset buckets chain with
+  | some n => return n
+  | none   => throw "parseGnuHashSymCount: chain has no end marker (malformed)"
 
 -- ============================================================================
 -- Top-level parser

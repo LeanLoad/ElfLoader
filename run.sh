@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Build leanload + the example fixtures, then run leanload on a binary.
-# Default target: build/main.  Override: ./run.sh <elf> [args...]
+# Default invocation: `leanload --debug build/main`.
+# Override:           `./run.sh <leanload args>`
 set -euxo pipefail
 cd "$(dirname "$0")"
 lake build leanload
 make
-exec ./.lake/build/bin/leanload "${@:-build/main}"
+[ $# -eq 0 ] && set -- --debug build/main
+exec ./.lake/build/bin/leanload "$@"

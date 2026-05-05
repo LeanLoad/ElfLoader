@@ -37,7 +37,7 @@ LeanLoad/
   Discover.lean            IO walk + LinkMap type
   Region.lean              @[extern] for memory ops (runtime/region.c)
   Map.lean                 mmap'ing + reloc apply (uses Region)
-  Run.lean                 @[extern] for control transfer + init/exec
+  Exec.lean                @[extern] for control transfer + init/exec
   TestFixture.lean         shared synthObj/synthElf
   Thm.lean                 single audit surface for proven theorems
   Spec/                    gabi/abi transcriptions only
@@ -77,11 +77,11 @@ third_party/               submodules (gabi, musl, …)
   or `runtime/`.
 - **Trusted**: `runtime/*` (audited C, ~150 lines), the
   `@[extern]` declarations in `LeanLoad/Region.lean` and at the top
-  of `LeanLoad/Run.lean`, plus the IO bodies of `Discover.lean`,
-  `Map.lean`, `Run.lean`, and `Main.lean`.
+  of `LeanLoad/Exec.lean`, plus the IO bodies of `Discover.lean`,
+  `Map.lean`, `Exec.lean`, and `Main.lean`.
 
 A grep for `@[extern]` outside `LeanLoad/Region.lean` and
-`LeanLoad/Run.lean` is a smell.
+`LeanLoad/Exec.lean` is a smell.
 
 ## What's "spec" and what's "impl"
 
@@ -90,7 +90,7 @@ A grep for `@[extern]` outside `LeanLoad/Region.lean` and
   AArch64 ELF ABI supplement, etc. The def *is* the spec — there is
   no second copy.
 - **Impl**: parsers (`Parse/`), pure pipeline functions (`Plan/`),
-  IO orchestration (`Discover.lean`, `Map.lean`, `Run.lean`,
+  IO orchestration (`Discover.lean`, `Map.lean`, `Exec.lean`,
   `Main.lean`). These implement gabi's prose-level algorithms; we
   prove properties about them in `Thm.lean`.
 
@@ -133,10 +133,12 @@ dynamic section.
 
 ```
 leanload <elf>             # load and run; does not return
-leanload --inspect <elf>   # run Discover + Plan, dump the plan, exit
+leanload --debug   <elf>   # same as `load`, with stage-by-stage prints
 ```
 
-`--inspect` stops before `Map`/`Run`. No `mmap`, no execution. The
+`--debug` runs the full pipeline (mmap, relocate, run ctors, transfer
+control) but prints a header and summary per stage so a developer can
+see which stage misbehaves if the loaded image crashes. The
 dump shows discovered objects, layouts, and init/fini order.
 
 ## Debuggability
