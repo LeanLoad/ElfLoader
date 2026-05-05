@@ -1,0 +1,12 @@
+[submodule "third_party/linksem"]
+	path = third_party/linksem
+	url = https://github.com/rems-project/linksem.git
+[submodule "third_party/ELFSage"]
+	path = third_party/ELFSage
+	url = https://github.com/draperlaboratory/ELFSage.git
+[submodule "third_party/gabi"]
+	path = third_party/gabi
+	url = https://github.com/xinuos/gabi.git
+[submodule "third_party/x86-64-ABI"]
+	path = third_party/x86-64-ABI
+	url = https://gitlab.com/x86-psABIs/x86-64-ABI.git
