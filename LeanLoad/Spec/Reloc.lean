@@ -2,9 +2,11 @@
 Relocation entries — gabi 06 spec.
 
 Spec: gabi 06 (`third_party/gabi/docsrc/elf/06-reloc.rst`).
-Architecture-specific relocation types and formula tables (e.g.
-`R_AARCH64_*`) live under `Spec/Reloc/`. The pure planner that turns
-parsed `Rela`s into a list of `RelocWrite`s is `LeanLoad.Plan.Reloc`.
+Architecture-specific relocation types and formula tables
+(`R_AARCH64_*` in `Spec/Reloc/Aarch64.lean`, `R_X86_64_*` in
+`Spec/Reloc/X86_64.lean`) live under `Spec/Reloc/`. The pure planner
+that turns parsed `Rela`s into a list of `RelocWrite`s is
+`LeanLoad.Plan.Reloc`.
 
 For ELF64, both `Elf64_Rel` and `Elf64_Rela` pack symbol index and
 relocation type into `r_info`:

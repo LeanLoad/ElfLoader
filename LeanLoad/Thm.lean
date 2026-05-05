@@ -23,13 +23,13 @@ import LeanLoad.Spec.Symbol
 import LeanLoad.Spec.Reloc
 import LeanLoad.Plan.Layout
 import LeanLoad.Spec.Reloc.Aarch64
+import LeanLoad.Spec.Reloc.X86_64
 
 namespace LeanLoad.Thm
 
 open LeanLoad.Spec
 open LeanLoad.Spec.Reloc
 open LeanLoad.Plan.Reloc
-open LeanLoad.Spec.Reloc.Aarch64
 
 -- ============================================================================
 -- O3. VA → file-offset correctness within `PT_LOAD`.
@@ -78,45 +78,61 @@ theorem fromLinkMap_deterministic
   rfl
 
 -- ============================================================================
--- O6 (sample). AArch64 relocation formula: totality and the
+-- O6 (sample). Per-arch relocation-formula totality and the
 --     planner-to-applier safety bridge.
 --
 -- Per-type sample outputs are checked at elaboration via `#guard`s
--- next to the `formula` def — a wrong table fails to build. The
+-- next to each `formula` def — a wrong table fails to build. The
 -- theorems here are the ones that say something a `#guard` cannot:
 --   * formula is defined on every (type, input)        (totality)
 --   * every formula result has size ∈ {4, 8}           (safety bridge)
+--
+-- One copy per supported architecture. `Load.Apply.applyReloc` panics
+-- on widths other than 4 or 8; the size-valid lemmas are the bridge
+-- that says the panic is unreachable for plans built from these
+-- formulas.
 -- ============================================================================
 
-/-- The formula function is total: every (type, input) returns either
-    `none` or a fully-formed result. No panic, no nontermination. -/
+namespace Aarch64
+open LeanLoad.Spec.Reloc.Aarch64
+
+/-- AArch64 formula is total: every input yields `none` or a full result. -/
 theorem formula_is_total (ty : UInt32) (inp : FormulaInputs) :
     formula ty inp = none ∨ ∃ r, formula ty inp = some r := by
   cases h : formula ty inp
   · exact Or.inl rfl
   · exact Or.inr ⟨_, rfl⟩
 
-/-- Every write the AArch64 formula emits has width 4 or 8 bytes.
-    `Load.Apply.applyReloc` panics on any other size, so this is the
-    bridge that says the panic is unreachable for plans produced
-    against this formula. (Once an x86_64 formula lands, it'll need
-    its own copy of this lemma to keep the bridge intact.) -/
+/-- Every write the AArch64 formula emits has width 4 or 8 bytes. -/
 theorem formula_size_valid (ty : UInt32) (inp : FormulaInputs) (r : FormulaResult) :
     formula ty inp = some r → r.size = 4 ∨ r.size = 8 := by
-  intro h
-  unfold formula at h
-  split at h
-  · contradiction                          -- NONE
-  split at h
-  · injection h with hr; subst hr; right; rfl  -- ABS64 → 8
-  split at h
-  · injection h with hr; subst hr; left;  rfl  -- ABS32 → 4
-  split at h
-  · injection h with hr; subst hr; right; rfl  -- GLOB_DAT → 8
-  split at h
-  · injection h with hr; subst hr; right; rfl  -- JUMP_SLOT → 8
-  split at h
-  · injection h with hr; subst hr; right; rfl  -- RELATIVE → 8
-  contradiction                            -- unknown → none
+  intro h; unfold formula at h
+  repeat' split at h
+  all_goals first
+    | contradiction
+    | (injection h with hr; subst hr; first | (right; rfl) | (left; rfl))
+
+end Aarch64
+
+namespace X86_64
+open LeanLoad.Spec.Reloc.X86_64
+
+/-- x86-64 formula is total: every input yields `none` or a full result. -/
+theorem formula_is_total (ty : UInt32) (inp : FormulaInputs) :
+    formula ty inp = none ∨ ∃ r, formula ty inp = some r := by
+  cases h : formula ty inp
+  · exact Or.inl rfl
+  · exact Or.inr ⟨_, rfl⟩
+
+/-- Every write the x86-64 formula emits has width 4 or 8 bytes. -/
+theorem formula_size_valid (ty : UInt32) (inp : FormulaInputs) (r : FormulaResult) :
+    formula ty inp = some r → r.size = 4 ∨ r.size = 8 := by
+  intro h; unfold formula at h
+  repeat' split at h
+  all_goals first
+    | contradiction
+    | (injection h with hr; subst hr; first | (right; rfl) | (left; rfl))
+
+end X86_64
 
 end LeanLoad.Thm

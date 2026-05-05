@@ -48,6 +48,7 @@ LeanLoad/
     Symbol.lean            gabi 05 § Symbol Table
     Reloc.lean             gabi 06 § Relocation
     Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations
+    Reloc/X86_64.lean      x86-64-ABI § Relocation Types
   Parse/                   byte decoders (impl)
     Bytes.lean             parser monad
     Header.lean Program.lean Dynamic.lean
@@ -55,6 +56,7 @@ LeanLoad/
     File.lean              ParsedElf aggregate + parse
   Plan/                    pure pipeline functions (impl)
     Layout.lean Resolve.lean Init.lean Reloc.lean
+    Formula.lean           per-`e_machine` formula dispatch
 runtime/                   C shims (unverified)
   region.{h,c}             mmap / mprotect / write
   exec.{h,c}               ctor invocation + transfer of control
@@ -97,10 +99,12 @@ auditing "what does LeanLoad believe about ELF" reads only `Spec/`.
 
 ## Scope
 
-**Architecture: AArch64.** Concrete struct types (`ElfHeader64`,
-`Header64` (Phdr), `Rela64`); no 32-bit / typeclass abstraction
-layer. The reloc planner is parametric over a per-arch `Formula`
-type, so adding a machine is local to a new file under `Spec/Reloc/`.
+**Architecture: AArch64 and x86-64.** Concrete struct types
+(`ElfHeader64`, `Header64` (Phdr), `Rela64`); no 32-bit / typeclass
+abstraction layer. The reloc planner is parametric over a per-arch
+`Formula` type; per-arch tables live under
+`Spec/Reloc/{Aarch64,X86_64}.lean` and `Plan/Formula.lean` dispatches
+on `e_machine`.
 
 **Parser scope: loader-minimal.** A loader does not need to parse
 the full ELF, only what is reachable from program headers and the

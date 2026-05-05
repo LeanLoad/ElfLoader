@@ -38,13 +38,6 @@ def planFor (lm : Discover.LinkMap) : Plan.Layout.LoaderPlan :=
     (Plan.Init.initOrder lm)
     (Plan.Init.finiOrder lm)
 
-/-- Pick the architecture-specific relocation formula based on `e_machine`.
-    Currently only EM_AARCH64 (183) is implemented; binaries for other
-    machines silently get the AArch64 formula and will fail to relocate.
-    TODO: add EM_X86_64 (62) and reject unknown values. -/
-def formulaFor (_machine : UInt32) : Plan.Reloc.Formula :=
-  Spec.Reloc.Aarch64.formula
-
 /-- Discover + plan + map + relocate + run inits + jump.
     **Does not return** — the loaded program terminates the process. -/
 def load (path : String) : IO Unit := do
@@ -54,7 +47,8 @@ def load (path : String) : IO Unit := do
   let rt   := Plan.Resolve.buildTable lm
   let plan := planFor lm
   let (allRegions, bases) ← mapAll lm plan
-  let formula := formulaFor mainObj.elf.header.e_machine.toUInt32
+  let some formula := Plan.formulaFor mainObj.elf.header.e_machine
+    | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
   let writes := Plan.Reloc.plan formula lm bases rt
   applyAllRelocs allRegions bases writes
   runInits lm bases plan
