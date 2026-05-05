@@ -1,275 +1,166 @@
 # LeanLoad Design
 
 Verified ELF loader in Lean 4. The verified core is pure Lean; the
-syscall layer sits behind FFI.
+syscall layer sits behind two small `@[extern]` modules.
 
 ## Stages
 
-Four pipeline stages, each named for the verb it performs:
+Pipeline (input → output; pure unless marked IO):
 
-| Stage        | Type | Input → Output                                |
-| ------------ | ---- | --------------------------------------------- |
-| **Parse**    | pure | `ByteArray` → `ParsedElf` (single file)       |
-| **Discover** | IO   | main `ParsedElf` → `LinkMap` (transitive) |
-| **Plan**     | pure | `LinkMap` → `LoaderPlan`                  |
-| **Load**     | IO   | `LoaderPlan` → live image + transfer          |
+| Stage        | Type | What it does                                      |
+| ------------ | ---- | ------------------------------------------------- |
+| **Parse**    | pure | `ByteArray` → `ParsedElf` (single file)           |
+| **Discover** | IO   | path → `LinkMap` (transitive `DT_NEEDED` walk)    |
+| **Plan**     | pure | `LinkMap` (× bases) → `LoaderPlan` + reloc writes |
+| **Load**     | IO   | `LoaderPlan` → live image + transfer of control   |
 
 Three rules:
 
-1. Stage names are verbs ("what we do"), not nouns. `Plan` is tempting
-   but `Plan` is the gabi/x86-64-ABI term and matches the surrounding
-   spec vocabulary.
-2. Stages alternate pure / IO. The boundary between Discover and Plan
-   is exactly where files become bytes-in-memory; the boundary between
-   Plan and Load is where pure plans become live mappings.
-3. The `LoaderPlan` is the refinement seam. Output of Plan, input of
-   Load. Verification targets are stated against it.
+1. **Stages alternate pure / IO.** The boundary between `Discover`
+   and `Plan` is exactly where files become bytes-in-memory; the
+   boundary between `Plan` and `Load` is where pure plans become live
+   mappings.
+2. **The `LoaderPlan` is the refinement seam.** Output of `Plan`,
+   input of `Load`. Verification targets are stated against it.
+3. **Reloc planning is split across the seam.** Layout/Init/Resolve
+   are pure-pre-bases; the actual `RelocWrite`s are pure-post-bases
+   (kernel chooses bases at mmap time). Both are in `Plan/`; `Load`
+   threads bases between them.
 
-Two boundary modules sit alongside but are not stages:
-
-- `LeanLoad.FFI.*` — extern declarations for `runtime/`. The trust
-  seam, one module per major capability (`Region`, `Exec`).
-- `LeanLoad.Common` — small shared utilities, mirror of
-  `runtime/common.h`.
-
-A reader-facing index module:
-
-- `LeanLoad.Thm` — typed entry point that imports every theorem
-  proved in the project. `docs/verification.md` is the prose
-  counterpart. A reader auditing correctness reads `verification.md`
-  and `LeanLoad.Thm`; they should not need to open implementation
-  files.
-
-## Stage details
-
-1. **Parse** (pure, single file): bytes → typed ELF records — header
-   (gabi 02), program headers (gabi 07), `.dynamic` array (gabi 08),
-   dynsym/dynstr (gabi 04, 05), relocation tables (gabi 06).
-2. **Discover** (`IO`): walk `DT_NEEDED` transitively (gabi 08, §
-   Shared Object Dependencies). Resolve via `DT_RUNPATH` /
-   `LD_LIBRARY_PATH` / default paths. Read each dependency with
-   `IO.FS.readBinFile`, call `Parse` on its bytes. Returns a
-   `LinkMap` mapping path → parsed ELF.
-3. **Plan** (pure): operate on the full input set. Resolve symbols
-   breadth-first (gabi 08, § Shared Object Dependencies); compute
-   mmap layout from `PT_LOAD` (gabi 07); build relocation writes
-   using x86-64 formulas (`x86-64-ABI/object-files.tex`, § Relocation
-   Types). Output is a `LoaderPlan` — pure data, no `IO`.
-4. **Load** (`IO`, FFI-backed): execute the plan. `mmap` segments
-   per `p_vaddr`/`p_filesz`/`p_memsz` (gabi 07), copy bytes, apply
-   relocations, `mprotect` per `PF_R`/`PF_W`/`PF_X` (gabi 07), run
-   constructors via `DT_PREINIT_ARRAY`/`DT_INIT_ARRAY`/`DT_INIT`
-   (gabi 08, § Initialization and Termination), transfer control to
-   entry, run destructors on exit.
-
-The plan is the refinement boundary. Proofs target `Parse` and `Plan`.
-`Discover` and `Load` are trusted IO code.
-
-## Scope
-
-**Architecture: x86-64 ELF64 only.** Committed. Concrete struct types
-(`ElfHeader64`, `ProgramHeader64`, `Rela64`); no 32-bit / typeclass
-abstraction layer. Other classes or machines are out of scope; revisit
-only if a concrete need appears.
-
-**Parser scope: loader-minimal.** A loader does not need to parse the
-full ELF, only what is reachable from program headers and the dynamic
-section.
-
-- Parsed: ELF header; program header table; `PT_DYNAMIC` and the
-  `.dynamic` array; dynsym + dynstr; `Rela`/`Rel` and `JMPREL`
-  tables; `PT_INTERP`; `PT_TLS`; init/fini arrays.
-- Skipped: section headers, `.text`/`.bss`/`.rodata` section
-  metadata, debug info, hash tables (only needed for lazy
-  resolution, which v1 does not implement).
-
-Module split (each module's source spec in parens):
-
-| Module             | Source spec                                        |
-| ------------------ | -------------------------------------------------- |
-| `Parse/Header`     | gabi 02 `02-eheader.rst`                           |
-| `Parse/Program`    | gabi 07 `07-pheader.rst`                           |
-| `Parse/Dynamic`    | gabi 08 `08-dynamic.rst` § Dynamic Section         |
-| `Parse/Symbol`     | gabi 04 `04-strtab.rst`, 05 `05-symtab.rst`        |
-| `Parse/Reloc`      | gabi 06 `06-reloc.rst`                             |
-| `Parse/File`       | aggregate                                          |
-| `Plan/Resolve`     | gabi 08 § Shared Object Dependencies               |
-| `Plan/Search`      | gabi 08 § Shared Object Dependencies (`DT_RUNPATH`, `LD_LIBRARY_PATH`) |
-| `Plan/Layout`      | gabi 07 § Base Address, Segment Permissions        |
-| `Plan/Reloc`       | x86-64-ABI `object-files.tex` § Relocation Types   |
-| `Plan/Init`        | gabi 08 § Initialization and Termination Functions |
-
-**Reference docs (in `third_party/`):**
-- `gabi/docsrc/elf/{02-eheader,07-pheader,08-dynamic,...}.rst` for
-  the architecture-neutral format.
-- `x86-64-ABI/x86-64-ABI/{object-files,dl}.tex` for `R_X86_64_*`
-  relocation formulas and PLT/GOT mechanics.
-- `ELFSage/ELFSage/Types/` is a working Lean 4 ELF parser; useful
-  as a reference for module organization, but parses more than a
-  loader needs.
-
-## Directory layout
+## Module layout
 
 ```
-LeanLoad.lean              package root
-Main.lean                  CLI entry
-LeanLoad/                  Lean modules
-  Basic.lean
-  Parse/                   ELF decoding (pure)
-  Plan/                    resolution, layout, relocation planning (pure)
-  FFI/                     @[extern] declarations (trusted)
-    Fd.lean
-    Region.lean
-    Exec.lean
-  Load.lean                IO orchestration: Parse + Plan + FFI
+LeanLoad.lean              package root (re-exports)
+LeanLoad/
+  Main.lean                CLI + `load` orchestration
+  Test.lean                test exe entry
+  Discover.lean            IO walk + LinkMap type
+  Region.lean              @[extern] for memory ops (runtime/region.c)
+  Map.lean                 mmap'ing + reloc apply (uses Region)
+  Run.lean                 @[extern] for control transfer + init/exec
+  TestFixture.lean         shared synthObj/synthElf
+  Thm.lean                 single audit surface for proven theorems
+  Spec/                    gabi/abi transcriptions only
+    Header.lean            gabi 02 § ELF Header
+    Program.lean           gabi 07 § Program Header
+    Dynamic.lean           gabi 08 § Dynamic Section
+    StringTable.lean       gabi 04 § String Table
+    Symbol.lean            gabi 05 § Symbol Table
+    Reloc.lean             gabi 06 § Relocation
+    Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations
+  Parse/                   byte decoders (impl)
+    Bytes.lean             parser monad
+    Header.lean Program.lean Dynamic.lean
+    StringTable.lean Symbol.lean Reloc.lean
+    File.lean              ParsedElf aggregate + parse
+  Plan/                    pure pipeline functions (impl)
+    Layout.lean Resolve.lean Init.lean Reloc.lean
 runtime/                   C shims (unverified)
-  fd.h    fd.c             open / read / fstat / close
-  region.h region.c        mmap / munmap / mprotect / accessors
-  exec.h  exec.c           ctor / entry / dtor invocation
+  region.{h,c}             mmap / mprotect / write
+  exec.{h,c}               ctor invocation + transfer of control
+  common.h                 shared lean-FFI helpers
 docs/
-  ffi.md                FFI background (general reference)
-  design.md                this file (high-level architecture)
-  exec.md                  kernel-style exec — stack layout, trampoline
+  design.md                this file
+  exec.md                  kernel-style stack — argc/argv/envp/auxv
   plan.md                  phased implementation plan
   verification.md          proof obligations + theorem statements
-examples/                  C sources + Makefile for showcase binaries
-Tests/                     Lean tests (lake test entry: Tests/Test.lean)
-third_party/               submodules
+examples/                  C sources for showcase binaries
+third_party/               submodules (gabi, musl, …)
 ```
 
 ## Trust boundary
 
-- **Verified**: `LeanLoad/Parse/` and `LeanLoad/Plan/`. Pure Lean,
-  no `IO`, no `LeanLoad.FFI` imports.
-- **Trusted**: `LeanLoad/FFI/*` and `runtime/*`. Audited by inspection.
-- **Glue**: `LeanLoad/Load.lean` — the only module allowed to import
-  both verified and FFI namespaces.
+- **Verified**: `LeanLoad/Spec/`, `LeanLoad/Parse/`, `LeanLoad/Plan/`.
+  Pure Lean; no `IO`; no imports of `Region`, `Run`'s extern block,
+  or `runtime/`.
+- **Trusted**: `runtime/*` (audited C, ~150 lines), the
+  `@[extern]` declarations in `LeanLoad/Region.lean` and at the top
+  of `LeanLoad/Run.lean`, plus the IO bodies of `Discover.lean`,
+  `Map.lean`, `Run.lean`, and `Main.lean`.
 
-A grep for `import LeanLoad.FFI` outside `Load.lean` is a smell.
+A grep for `@[extern]` outside `LeanLoad/Region.lean` and
+`LeanLoad/Run.lean` is a smell.
+
+## What's "spec" and what's "impl"
+
+- **Spec**: gabi/abi transcriptions. Every type, constant, and table
+  in `LeanLoad/Spec/` cites a specific section of gabi 02–08, the
+  AArch64 ELF ABI supplement, etc. The def *is* the spec — there is
+  no second copy.
+- **Impl**: parsers (`Parse/`), pure pipeline functions (`Plan/`),
+  IO orchestration (`Discover.lean`, `Map.lean`, `Run.lean`,
+  `Main.lean`). These implement gabi's prose-level algorithms; we
+  prove properties about them in `Thm.lean`.
+
+The split is enforced by which directory things live in. A reader
+auditing "what does LeanLoad believe about ELF" reads only `Spec/`.
+
+## Scope
+
+**Architecture: AArch64.** Concrete struct types (`ElfHeader64`,
+`Header64` (Phdr), `Rela64`); no 32-bit / typeclass abstraction
+layer. The reloc planner is parametric over a per-arch `Formula`
+type, so adding a machine is local to a new file under `Spec/Reloc/`.
+
+**Parser scope: loader-minimal.** A loader does not need to parse
+the full ELF, only what is reachable from program headers and the
+dynamic section.
+
+- Parsed: ELF header; program header table; `PT_DYNAMIC` and the
+  `.dynamic` array; dynsym + dynstr; `Rela`/`Rel` and `JMPREL`
+  tables; init/fini arrays.
+- Skipped: section headers, `.text`/`.bss`/`.rodata` section
+  metadata, debug info, GNU hash, `DT_GNU_HASH`-only binaries.
 
 ## Naming conventions
 
-- Lean module `LeanLoad.FFI.Region` ↔ C file `runtime/region.c`.
-- Extern symbols prefixed `leanload_<topic>_<op>`:
-  `leanload_region_mmap`, `leanload_fd_open`, etc. Flat C namespace,
+- **`Spec/X.lean` ↔ gabi/abi chapter X.** Each Spec file's docstring
+  cites its source section.
+- **`Parse/X.lean` ↔ `Spec/X.lean`.** Parser bodies in `Parse/`,
+  types in `Spec/`. One-to-one filename pairing.
+- **Lean module `LeanLoad.Region` ↔ C file `runtime/region.c`.**
+- **Extern symbols prefixed `leanload_<topic>_<op>`:**
+  `leanload_region_mmap_anon`, `leanload_exec_run`. Flat C namespace,
   so the prefix avoids collisions and aids grep.
-- Opaque Lean types named for what they are (`Fd`, `Region`), not how
+- **Opaque Lean types named for what they are** (`Region`), not how
   they are implemented — no `Ptr` suffix.
+
+## CLI
+
+```
+leanload <elf>             # load and run; does not return
+leanload --inspect <elf>   # run Discover + Plan, dump the plan, exit
+```
+
+`--inspect` stops before `Map`/`Run`. No `mmap`, no execution. The
+dump shows discovered objects, layouts, and init/fini order.
+
+## Debuggability
+
+Three rules that pay off across the project:
+
+1. **`deriving Repr` on every type in `Spec/`, `Parse/`, `Plan/`.**
+   Then `--inspect` is structured by construction.
+2. **Deterministic output.** No timestamps, no hash-iteration order,
+   no addresses chosen by ASLR in the plan. Sort everything that has
+   no semantic order — golden tests rely on this.
+3. **Structured failure messages.** Errors carry the offending
+   relocation type, file offset, symbol name, and computed value —
+   not just `panic`.
 
 ## Verification
 
-See `docs/verification.md` for the running list of proof obligations
-and theorem statements. In summary: the architecture's verified core
-(`Parse/`, `Plan/`) is targeted for proofs; the trusted IO layer
-(`Discover`, `Load`, `runtime/`) is audited and validated by
-differential testing against `ld.so`.
+See `verification.md` for the running list of proof obligations and
+theorem statements. The audit surface is two files:
+
+- `LeanLoad.Thm` — typed catalogue of every proven theorem.
+- `verification.md` — prose context for each obligation.
 
 ## Memory ownership
 
 - **Inputs** (ELF files): read via `IO.FS.readBinFile` into a
-  `ByteArray`. Small enough that the copy is free, and `Plan` reasons
-  over pure data.
+  `ByteArray`. Small enough that the copy is free, and `Plan`
+  reasons over pure data.
 - **Outputs** (loaded image): `mmap` regions wrapped as opaque
-  `Region` external objects. Finalizer calls `munmap`. Writes happen
-  during `Load`.
-
-See `docs/ffi.md` for the underlying FFI patterns.
-
-## Build
-
-`lakefile.lean` (not `.toml` — needs custom native targets). Builds
-both a static archive (`libleanload_runtime.a`) and a shared library
-(`libleanload_runtime.so`) for the `runtime/` sources. The static
-archive is linked into AOT binaries; the shared library is loaded by
-the Lean interpreter for `#eval` and editor sessions.
-
-C, not C++. The shims are thin libc wrappers; there is no need for
-RAII or templates, and `lean.h` compiles cleanly in C. This avoids
-linking `libstdc++`. Switch to C++ later if a C++ dependency forces
-the issue.
-
-## CLI
-
-Two invocations:
-
-```
-leanload <elf>             # run the binary
-leanload --inspect <elf>   # run Parse + Discover + Plan, dump the plan, exit
-```
-
-`--inspect` stops before `Load`. No `mmap`, no execution. The dump is
-the union of `LinkMap` (parsed deps) and `LoaderPlan` (mmap
-layout, relocation writes, init/fini order).
-
-No subcommands, no `--debug=` topics, no `--stop-at`. The pipeline is
-short enough that a single dump covers every interesting state.
-
-## Debuggability
-
-Three rules that pay off across the whole project:
-
-1. **`deriving Repr` on every type in `Parse/` and `Plan/`.** Then
-   `--inspect` is `IO.println (repr plan)`. Verbose dumps fall out of
-   the structure for free.
-2. **Deterministic output.** No timestamps, no hash-iteration order,
-   no addresses chosen by ASLR in the plan. Sort everything that has
-   no semantic order. Without this, golden tests are useless.
-3. **Structured failure messages.** Errors carry the offending
-   relocation type, file offset, symbol name, and computed value —
-   not just `panic`. Both for human reading and for diff-based
-   regression detection.
-
-In addition: print load addresses in `--inspect` output so a developer
-can `gdb -p <pid>` against a running load and `b *<addr>`. Use
-`dbg_trace` ad hoc during development; `#eval` in the Lean infoview
-for parser-level introspection.
-
-## Examples vs tests
-
-Two directories, two roles:
-
-- `examples/` — C sources plus a Makefile that builds real ELF
-  binaries with `musl-gcc`. These are the showcase: small programs
-  exercising specific loader features (mutual recursion, TLS,
-  init_array, etc.). They are the inputs the loader runs against,
-  and double as fixture data for tests.
-- `Tests/` — Lean test files. Pure `Parse`/`Plan` unit tests, golden
-  comparisons against `build/*` outputs, and a differential
-  driver against the system `ld.so`.
-
-## Testing
-
-Four layers, in increasing fidelity:
-
-1. **Inline unit tests with `#guard`.** Tiny invariants on `Parse`
-   and `Plan` over hand-crafted byte arrays. Cheap to write, run at
-   compile time.
-2. **Golden tests against `build/*` outputs.** Capture
-   `repr (parse bytes)` and `repr (link input)` to checked-in
-   `Tests/golden/*.txt`. Diff on every change. Determinism (rule 2
-   under Debuggability) is what makes this work.
-3. **Cross-check against `readelf -a`.** A script that diffs
-   `Parse` output against `readelf` for the same binary. Catches
-   format bugs the synthetic inputs miss.
-4. **Differential testing against `ld.so`.** The strongest signal.
-   Run LeanLoad on an `examples/` binary, capture mmap layout and
-   relocation writes; compare to `ld.so` on the same binary
-   (e.g. `LD_DEBUG=files,reloc`). A clean diff is the proof the
-   loader behaves like the real one.
-
-Test layout:
-
-```
-Tests/
-  golden/             checked-in expected outputs
-    main.parse.txt
-    main.link.txt
-  Parse.lean          #guard + golden
-  Plan.lean           #guard + golden
-  Differential.lean   ld.so comparison
-  Test.lean           lake test entry point
-```
-
-Wired up via `testDriver := "test"` in `lakefile.lean` pointing at a
-`lean_exe test`. Run with `lake test`. No external framework needed
-in v1.
+  `Region` external objects. Mappings live for the process lifetime;
+  the kernel reclaims at exit.

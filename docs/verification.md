@@ -14,7 +14,7 @@ from trusted IO (`Discover.discover` body, `Load/`, `runtime/`); the
 - `LeanLoad/Plan/` — pure pipeline functions implementing gabi's
   prose-level algorithms (resolve, layout, init order, reloc planner).
 - `LeanLoad/Discover.lean` — IO file walk + `LinkMap`.
-- `LeanLoad/Load/` — IO orchestration over `LoaderPlan`.
+- `LeanLoad/Map.lean` + `LeanLoad/Run.lean` — IO orchestration over `LoaderPlan`.
 - `LeanLoad/Spec.lean` — catalogue/index of the spec surface.
 - `LeanLoad/Thm.lean` — single audit surface for every proven property.
 
