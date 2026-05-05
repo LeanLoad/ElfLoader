@@ -16,6 +16,7 @@ import LeanLoad.Discover
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Reloc
 import LeanLoad.Region
+import LeanLoad.Spec.Program
 
 namespace LeanLoad.Load
 
@@ -86,9 +87,6 @@ def runInits (lm : Discover.LinkMap) (bases : Plan.Reloc.Bases)
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 def stackBytes : USize := 8 * 1024 * 1024
 
-/-- AArch64 program-header entry size (gabi 07: `Elf64_Phdr` is 56 B). -/
-def phdrEntrySize : UInt64 := 56
-
 /-- Allocate kernel-style stack and jump to entry. **Does not return.** -/
 def transferControl (mainObj : Discover.LoadedObject) (plan : Plan.Layout.LoaderPlan)
     (bases : Plan.Reloc.Bases) (path : String) : IO Unit := do
@@ -100,6 +98,7 @@ def transferControl (mainObj : Discover.LoadedObject) (plan : Plan.Layout.Loader
   let entry  := mainBase + mainLayout.entry.getD 0
   let phdrVa := mainBase + mainObj.elf.header.e_phoff
   let phnum  := mainObj.elf.header.e_phnum.toUInt64
-  execAndJump entry phdrVa phdrEntrySize phnum 0 stack path
+  let phent  := Spec.Program.entrySize.toUInt64
+  execAndJump entry phdrVa phent phnum 0 stack path
 
 end LeanLoad.Load
