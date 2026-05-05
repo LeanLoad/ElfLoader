@@ -17,20 +17,23 @@ Convention:
   `LeanLoad/Thm/<Topic>.lean`. The structure here stays unchanged.
 -/
 
-import LeanLoad.Parse
+import LeanLoad.Spec.Header
+import LeanLoad.Spec.Program
+import LeanLoad.Spec.Symbol
+import LeanLoad.Spec.Reloc
 import LeanLoad.Plan.Layout
-import LeanLoad.Plan.Reloc.Aarch64
+import LeanLoad.Spec.Reloc.Aarch64
 
 namespace LeanLoad.Thm
 
-open LeanLoad.Parse
-open LeanLoad.Plan
+open LeanLoad.Spec
+open LeanLoad.Spec.Reloc
 open LeanLoad.Plan.Reloc
-open LeanLoad.Plan.Reloc.Aarch64
+open LeanLoad.Spec.Reloc.Aarch64
 
 -- ============================================================================
 -- O3. VA → file-offset correctness within `PT_LOAD`.
---     (`Parse.File.vaToOffset`)
+--     (`Parse.Parse.File.vaToOffset`)
 -- ============================================================================
 
 /-- If `vaToOffset` returns `some off`, there is a witness `PT_LOAD`
@@ -38,14 +41,14 @@ open LeanLoad.Plan.Reloc.Aarch64
     the corresponding file offset. -/
 theorem vaToOffset_correct
     (phdrs : Array Program.Header64) (va : UInt64) (off : Nat) :
-    File.vaToOffset phdrs va = some off →
+    Parse.File.vaToOffset phdrs va = some off →
     ∃ ph ∈ phdrs,
       ph.p_type = Program.PT_LOAD ∧
       ph.p_vaddr ≤ va ∧
       va < ph.p_vaddr + ph.p_memsz ∧
       off = (va - ph.p_vaddr).toNat + ph.p_offset.toNat := by
   intro h
-  unfold File.vaToOffset at h
+  unfold Parse.File.vaToOffset at h
   obtain ⟨ph, hmem, hf⟩ := Array.exists_of_findSome?_eq_some h
   refine ⟨ph, hmem, ?_⟩
   split at hf
@@ -57,21 +60,21 @@ theorem vaToOffset_correct
 
 -- ============================================================================
 -- O4. Plan determinism + structural integrity.
---     (`Plan.Layout.fromLinkMap`)
+--     (`Plan.Plan.Layout.fromLinkMap`)
 -- ============================================================================
 
 /-- `fromLinkMap` produces one layout per discovered object — no
     drops, no duplicates. Refines the `LoaderPlan` contract. -/
 theorem fromLinkMap_layouts_size
     (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) :
-    (Layout.fromLinkMap lm initOrder finiOrder).layouts.size = lm.objects.size := by
-  simp [Layout.fromLinkMap]
+    (Plan.Layout.fromLinkMap lm initOrder finiOrder).layouts.size = lm.objects.size := by
+  simp [Plan.Layout.fromLinkMap]
 
 /-- `fromLinkMap` is pure: same input, same output. -/
 theorem fromLinkMap_deterministic
     (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) :
-    Layout.fromLinkMap lm initOrder finiOrder
-      = Layout.fromLinkMap lm initOrder finiOrder :=
+    Plan.Layout.fromLinkMap lm initOrder finiOrder
+      = Plan.Layout.fromLinkMap lm initOrder finiOrder :=
   rfl
 
 -- ============================================================================

@@ -23,6 +23,8 @@ import LeanLoad.TestFixture
 
 namespace LeanLoad.Plan.Init
 
+open LeanLoad.Spec
+
 open LeanLoad
 
 /-- Find the index of an object whose `name` matches one of `nameOrSoname`.
@@ -122,6 +124,8 @@ end LeanLoad.Plan.Init
 -- Tests.
 -- ============================================================================
 namespace LeanLoad.Plan.Init.Test
+
+open LeanLoad.Spec
 
 /-- Init order: post-order DFS. Main (idx 0) is the root, so it must
     appear last (after all of its transitive deps). -/

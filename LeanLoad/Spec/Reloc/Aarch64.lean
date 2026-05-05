@@ -16,12 +16,17 @@ TLS, no `IFUNC`):
 
 Note: `GLOB_DAT` and `JUMP_SLOT` are documented as `S + A` for
 completeness; in practice the linker emits them with `A = 0`.
+
+The `Formula` type lives in `LeanLoad.Plan.Reloc` (the planner that
+applies it); this file is the per-arch table + per-type compile-time
+canaries.
 -/
 
 import LeanLoad.Plan.Reloc
-import LeanLoad.TestFixture
 
-namespace LeanLoad.Plan.Reloc.Aarch64
+namespace LeanLoad.Spec.Reloc.Aarch64
+
+open LeanLoad.Plan.Reloc
 
 def R_AARCH64_NONE      : UInt32 := 0
 def R_AARCH64_ABS64     : UInt32 := 257
@@ -44,9 +49,8 @@ def formula : Formula := fun ty inp =>
   else if ty == R_AARCH64_RELATIVE  then some { value := B + A, size := 8 }
   else none
 
--- Compile-time unit tests. Evaluated at elaboration, so a wrong table
--- fails to build. Totality is proved in `LeanLoad.Thm`; here we
--- exercise behavioural properties.
+-- Compile-time unit tests. Evaluated at elaboration; a wrong table
+-- fails to build. Totality is proved in `LeanLoad.Thm`.
 
 -- A skipped reloc is not a zero write — "no operation" is structural.
 #guard (formula R_AARCH64_NONE      { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
@@ -80,8 +84,7 @@ def formula : Formula := fun ty inp =>
 #guard (formula R_AARCH64_ABS64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := 8 }
 
--- Compile-time unit test: the planner over a single-object link map
--- with one R_AARCH64_RELATIVE rela emits exactly one write.
+-- Planner-on-this-formula canary: one R_AARCH64_RELATIVE rela → one write.
 section UnitTest
 open LeanLoad.Test
 
@@ -99,25 +102,21 @@ private def relocLM : LeanLoad.Discover.LinkMap := {
 
 end UnitTest
 
-end LeanLoad.Plan.Reloc.Aarch64
+end LeanLoad.Spec.Reloc.Aarch64
 
 -- ============================================================================
--- Tests. The Reloc planner is parametric over the per-arch formula;
--- this suite exercises it on AArch64 (the only formula we have today),
--- so the test lives here next to the formula it instantiates with.
+-- IO test runner. The Reloc planner is parametric over the per-arch
+-- formula; this suite exercises it on AArch64 (the only formula we
+-- have today) against `build/main`.
 -- ============================================================================
 namespace LeanLoad.Plan.Reloc.Test
 
-/-- Relocation planner over `build/main`'s link map: with all-zero
-    bases and a fresh resolution table, the planner emits one write
-    per supported rela entry (skipping `R_AARCH64_NONE` and
-    unsupported types). -/
 def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
   let mut failures := 0
   let rt := LeanLoad.Plan.Resolve.buildTable lm
   let bases : LeanLoad.Plan.Reloc.Bases := Array.replicate lm.objects.size 0
   let writes := LeanLoad.Plan.Reloc.plan
-    LeanLoad.Plan.Reloc.Aarch64.formula lm bases rt
+    LeanLoad.Spec.Reloc.Aarch64.formula lm bases rt
   if writes.size == 0 then
     IO.eprintln "expected nonzero relocation writes"
     failures := failures + 1

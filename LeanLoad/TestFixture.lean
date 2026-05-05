@@ -15,6 +15,7 @@ import LeanLoad.Discover
 namespace LeanLoad.Test
 
 open LeanLoad
+open LeanLoad.Spec
 open LeanLoad.Parse
 open LeanLoad.Discover
 
@@ -23,7 +24,7 @@ open LeanLoad.Discover
 def synthElf
     (needed  : Array String          := #[])
     (symtab  : Array Symbol.Symbol64 := #[])
-    (strtab  : Symbol.StringTable    := ⟨#[]⟩)
+    (strtab  : Spec.StringTable.StringTable    := ⟨#[]⟩)
     (rela    : Array Reloc.Rela64    := #[])
     (initArr : Array UInt64          := #[])
     : File.ParsedElf :=
@@ -34,7 +35,7 @@ def synthObj
     (name   : String)
     (needed : Array String          := #[])
     (symtab : Array Symbol.Symbol64 := #[])
-    (strtab : Symbol.StringTable    := ⟨#[]⟩)
+    (strtab : Spec.StringTable.StringTable    := ⟨#[]⟩)
     (rela   : Array Reloc.Rela64    := #[])
     : LoadedObject :=
   { name

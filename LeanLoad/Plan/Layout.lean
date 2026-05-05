@@ -8,12 +8,14 @@ no symbol resolution.
 Spec basis: gabi 07 §§ Program Header, Base Address, Segment Permissions.
 -/
 
-import LeanLoad.Parse
+import LeanLoad.Spec.Program
+import LeanLoad.Parse.File
 import LeanLoad.Discover
 
 namespace LeanLoad.Plan.Layout
 
-open LeanLoad.Parse
+open LeanLoad.Spec
+
 
 -- ============================================================================
 -- Region: one mmap chunk, with the bytes to copy from the source ELF.
@@ -126,7 +128,7 @@ structure ObjectLayout where
 
 /-- Layout for a single parsed ELF, given its index in the
     `LinkMap.objects` array. -/
-def objectLayout (objectIdx : Nat) (isMain : Bool) (elf : File.ParsedElf) : ObjectLayout :=
+def objectLayout (objectIdx : Nat) (isMain : Bool) (elf : Parse.File.ParsedElf) : ObjectLayout :=
   let loads    := elf.phdrs.filter (·.p_type == Program.PT_LOAD)
   let mappings := loads.map mappingOfPhdr
   let entry    := if isMain then some elf.header.e_entry else none
@@ -136,7 +138,7 @@ def objectLayout (objectIdx : Nat) (isMain : Bool) (elf : File.ParsedElf) : Obje
 
     Relocations are not part of `LoaderPlan` — they depend on the
     actual chosen bases and are computed at load time via
-    `Plan.Reloc.plan`. The single-static case is just a `LoaderPlan`
+    `Spec.Reloc.plan`. The single-static case is just a `LoaderPlan`
     with one layout, no init/fini. -/
 structure LoaderPlan where
   layouts   : Array ObjectLayout

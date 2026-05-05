@@ -1,26 +1,31 @@
 /-
-FFI: memory regions backed by `mmap`.
+Memory regions backed by `mmap`.
 
 A `Region` is an opaque handle for a foreign-owned `mmap`'d range.
 The C shim picks the `MAP_*` flag set per usage pattern (anonymous,
-anonymous fixed, anonymous stack), so Lean callers don't reason about
-flag bitmasks. `prot` (R/W/X) does cross the boundary because the
-planner tracks per-segment permissions (gabi 07 § Segment Permissions).
+anonymous fixed, anonymous stack), so Lean callers don't reason
+about flag bitmasks. `prot` (R/W/X) does cross the boundary because
+the planner tracks per-segment permissions (gabi 07 § Segment
+Permissions).
 
-The semantics of each operation matches Linux `mmap(2)` / `mprotect(2)`.
+The semantics of each operation matches Linux `mmap(2)` /
+`mprotect(2)`. Mappings live for the process lifetime; the kernel
+reclaims at exit.
 
-Mappings live for the process lifetime; the kernel reclaims at exit.
+This module *is* the trust boundary for memory operations: every
+`@[extern]` below crosses into `runtime/region.c` (audited by
+inspection, not proven).
 -/
 
-namespace LeanLoad.FFI.Region
+namespace LeanLoad.Region
 
 private opaque RegionPointed : NonemptyType
 def Region : Type := RegionPointed.type
 instance : Nonempty Region := RegionPointed.property
 
 -- ============================================================================
--- Protection bits (PROT_*) — these are first-class because the
--- planner reasons about per-segment R/W/X.
+-- Protection bits (PROT_*) — first-class because the planner reasons
+-- about per-segment R/W/X.
 -- ============================================================================
 
 def PROT_NONE  : UInt32 := 0
@@ -32,7 +37,7 @@ def PROT_EXEC  : UInt32 := 4
 
 -- ============================================================================
 -- mmap variants. The C shim picks the matching `MAP_*` flag set;
--- Lean code never sees them.
+-- Lean code never sees raw flags.
 -- ============================================================================
 
 /-- Anonymous private mapping (RW); kernel chooses the address. Used
@@ -60,8 +65,8 @@ opaque mmapStack (len : USize) : IO Region
 @[extern "leanload_region_mprotect"]
 opaque mprotect (r : @& Region) (prot : UInt32) : IO Unit
 
-/-- Change protection of a sub-range. Used when one large region holds
-    multiple `PT_LOAD` segments with different permissions. -/
+/-- Change protection of a sub-range. Used when one large region
+    holds multiple `PT_LOAD` segments with different permissions. -/
 @[extern "leanload_region_mprotect_range"]
 opaque mprotectRange (r : @& Region) (offset length : USize) (prot : UInt32) : IO Unit
 
@@ -73,4 +78,4 @@ opaque write (r : @& Region) (offset : USize) (src : @& ByteArray) : IO Unit
 @[extern "leanload_region_base"]
 opaque base (r : @& Region) : UInt64
 
-end LeanLoad.FFI.Region
+end LeanLoad.Region

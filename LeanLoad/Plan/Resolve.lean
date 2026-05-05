@@ -17,13 +17,14 @@ order: main first, then NEEDED entries in their declared order).
 -/
 
 import LeanLoad.Discover
-import LeanLoad.Parse
+import LeanLoad.Spec.Symbol
 import LeanLoad.TestFixture
 
 namespace LeanLoad.Plan.Resolve
 
+open LeanLoad.Spec
+
 open LeanLoad
-open LeanLoad.Parse
 
 /-- A resolved global symbol: its providing object's index in the
     `LinkMap.objects` array and the symbol's index within that
@@ -48,7 +49,7 @@ def isWeak (sym : Symbol.Symbol64) : Bool :=
 
 /-- Symbol name from an object's strtab. -/
 def symName (obj : Discover.LoadedObject) (sym : Symbol.Symbol64) : Option String :=
-  Symbol.StringTable.lookup obj.elf.strtab sym.st_name.toNat
+  Spec.StringTable.lookup obj.elf.strtab sym.st_name.toNat
 
 /-- Look up `name` as a global definition in `obj`'s symbol table. -/
 def findInObject (obj : Discover.LoadedObject) (name : String) : Option Nat :=
@@ -120,7 +121,7 @@ section UnitTest
 open LeanLoad.Test
 
 /-- Pack `ss` into a NUL-separated `.dynstr`; offset 0 reserved for "". -/
-private def packStrings (ss : Array String) : Symbol.StringTable × Array Nat :=
+private def packStrings (ss : Array String) : Spec.StringTable.StringTable × Array Nat :=
   let init : ByteArray × Array Nat := (⟨#[0]⟩, #[])
   let (acc, offs) := ss.foldl (init := init) fun (a, os) s =>
     let off := a.size
@@ -163,6 +164,8 @@ end LeanLoad.Plan.Resolve
 -- Tests.
 -- ============================================================================
 namespace LeanLoad.Plan.Resolve.Test
+
+open LeanLoad.Spec
 
 /-- Discover `build/main`'s link map, build the resolution table, check
     that cross-library references resolve and the libbar↔libbaz cycle

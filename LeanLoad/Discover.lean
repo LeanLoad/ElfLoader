@@ -6,7 +6,7 @@ list, find each on disk via the search-path rules below, parse it,
 walk its needed list, and so on. Output is a `LinkMap` mapping each
 loaded object to its parsed form.
 
-This is the IO stage of "where do files live"; `Plan.Resolve` (pure)
+This is the IO stage of "where do files live"; `Spec.Resolve` (pure)
 takes over for "how do their bytes interact".
 
 Search-path rules per gabi 08 § Shared Object Dependencies:
@@ -16,7 +16,7 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
   `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.Parse
+import LeanLoad.Parse.File
 
 namespace LeanLoad.Discover
 
