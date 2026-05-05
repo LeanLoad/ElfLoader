@@ -10,3 +10,27 @@
 [submodule "third_party/x86-64-ABI"]
 	path = third_party/x86-64-ABI
 	url = https://gitlab.com/x86-psABIs/x86-64-ABI.git
+[submodule "third_party/cedar-spec"]
+	path = third_party/cedar-spec
+	url = https://github.com/cedar-policy/cedar-spec.git
+[submodule "third_party/SampCert"]
+	path = third_party/SampCert
+	url = https://github.com/leanprover/SampCert.git
+[submodule "third_party/LNSym"]
+	path = third_party/LNSym
+	url = https://github.com/leanprover/LNSym.git
+[submodule "third_party/lean4lean"]
+	path = third_party/lean4lean
+	url = https://github.com/digama0/lean4lean.git
+[submodule "third_party/veil"]
+	path = third_party/veil
+	url = https://github.com/verse-lab/veil.git
+[submodule "third_party/lean4"]
+	path = third_party/lean4
+	url = https://github.com/leanprover/lean4.git
+[submodule "third_party/VeriLoad"]
+	path = third_party/VeriLoad
+	url = https://github.com/ShawnZhong/VeriLoad.git
+[submodule "third_party/musl"]
+	path = third_party/musl
+	url = https://github.com/kraj/musl.git
