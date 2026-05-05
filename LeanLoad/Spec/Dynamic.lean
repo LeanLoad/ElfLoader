@@ -52,6 +52,11 @@ def DT_PREINIT_ARRAY   : UInt64 := 32
 def DT_PREINIT_ARRAYSZ : UInt64 := 33
 def DT_SYMTAB_SHNDX    : UInt64 := 34
 
+-- GNU extension (gnu-gabi `program-loading-and-dynamic-linking.txt`
+-- § Hashes). Faster hash format than `DT_HASH`. Modern GNU/Linux
+-- toolchains often emit this instead of `DT_HASH`.
+def DT_GNU_HASH        : UInt64 := 0x6ffffef5
+
 -- DT_FLAGS bits (gabi 08 Table: DT_FLAGS values)
 def DF_ORIGIN     : UInt64 := 0x1
 def DF_SYMBOLIC   : UInt64 := 0x2

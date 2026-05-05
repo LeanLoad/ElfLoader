@@ -17,23 +17,71 @@ architecture and the trust boundary, see `design.md`.
   builds kernel-style stack, jumps. Static + dynamic both work
   end-to-end.
 - **Theorems.** `vaToOffset_correct`, `fromLinkMap_layouts_size`,
-  `fromLinkMap_deterministic`, `formula_is_total`,
-  `formula_size_valid`. See `LeanLoad.Thm` and `verification.md`.
+  `fromLinkMap_deterministic`, `Aarch64.formula_is_total` /
+  `_size_valid`, `X86_64.formula_is_total` / `_size_valid`.
+  See `LeanLoad.Thm` and `verification.md`.
+- **Architectures.** AArch64 and x86-64. Per-arch reloc tables in
+  `Spec/Reloc/{Aarch64,X86_64}.lean`; dispatch in `Plan/Formula.lean`.
 
 ## Open
 
-- **Differential testing against `ld.so`.** Run `leanload --inspect`
-  vs `LD_DEBUG=files,reloc <bin>` on the same binary; diff. The
-  strongest signal we can get without writing more theorems.
-- **More relocation theorems.** Today we have totality + width
-  validity for AArch64. Per-type correctness (`B+A` for RELATIVE,
-  `S+A` for ABS64/GLOB_DAT/JUMP_SLOT) is currently `#guard` canaries
-  next to the formula def; promote to theorems if the audit needs
-  them.
 - **`Parse.Dynamic.collect` totality.** Same fuel pattern as
   `Plan.Init.dfs` would do it.
-- **Layout disjointness theorem (O2).** Needs an invariant on
-  parsed `PT_LOAD`s (gabi 07 implies but doesn't state non-overlap).
+
+### Theorem candidates (next to add)
+
+Ordered by ROI, easiest first.
+
+**Easy structural lemmas (`rfl`-class):**
+
+- `Resolve.buildTable_deterministic` — `buildTable lm = buildTable lm`.
+- `Plan.Reloc.plan_deterministic` — same args ⇒ same write array.
+- `Plan.Init.finiOrder_eq_initOrder_reverse` — by definition.
+
+**Structural invariants (one hour each):**
+
+- `Plan.Init.initOrder_in_bounds` — every entry `i` of `initOrder lm`
+  satisfies `i < lm.objects.size`. Requires exposing `dfs` and a
+  fuel-induction lemma.
+- `Plan.Init.initOrder_no_duplicates` — same indices never appear
+  twice. Captures the cycle-breaking-via-visited invariant.
+- `Plan.Layout.layouts_objectIdx_eq` — `layouts[i].objectIdx = i`.
+
+**Per-type relocation correctness (one per row):**
+
+Per-type `S + A` / `B + A` checks are currently `#guard` canaries
+next to each `formula` def. Promote each to a theorem if the audit
+demands them — straightforward unfolding proofs.
+
+**Bigger pieces:**
+
+- **`Plan.Reloc.plan_size_subset`** — given a hypothesis that the
+  formula's output sizes satisfy some predicate `P`, every write the
+  planner emits has `P size`. Then instantiate per arch with
+  `P := (· = 4 ∨ · = 8)` to give a single bridge to `Load.Apply`'s
+  width panic. Requires either refactoring `process` to use
+  `Array.filterMap` or working through `Id.forIn` lemmas.
+- **`Resolve.resolveByName_provider_defines`** — if it returns
+  `(i, j)`, then `obj[i].symtab[j]` is a global def with name `name`.
+  This is the gabi 08 contract. Same shape as `vaToOffset_correct`
+  but needs a `findIdx?` analogue of `Array.exists_of_findSome?_eq_some`.
+- **`Resolve.resolveByName_is_bfs`** — and no earlier index defines
+  the same name. Captures gabi 08's "first match in BFS order".
+
+**Out-of-reach without more infrastructure:**
+
+- **Layout disjointness (O2).** `fromLinkMap` produces non-overlapping
+  ranges. Needs an invariant on parsed `PT_LOAD`s (gabi 07 implies but
+  doesn't state non-overlap).
+- **Bytes preserved.** The materialised image at `va` equals the
+  source byte at the corresponding file offset. Requires modelling
+  the loaded image abstractly — the linksem-style soundness theorem,
+  natural endpoint for the verified core.
+- **Init topological order.** Every `DT_NEEDED` edge is respected:
+  dependents run after their dependencies. Requires modelling the
+  NEEDED graph; "undefined" for cycles per gabi 08.
+- **`Discover.dedup`** as a theorem. Currently `partial def`;
+  refactor to fuel-bounded recursion before proving.
 
 ## Out of scope
 
@@ -52,8 +100,8 @@ its own follow-up.
   doesn't emit these, so they don't appear in our fixtures.
 - **`dlopen` / `dlsym`.** A loader-as-library API is a separate
   surface from "load and run".
-- **Architectures other than AArch64.** The reloc planner is
-  parametric over `Formula`, so adding a machine is one new file
+- **Architectures other than AArch64 and x86-64.** The reloc planner
+  is parametric over `Formula`, so adding a machine is one new file
   under `Spec/Reloc/` plus the `formulaFor` dispatch.
 - **TLSDESC, GNU hash (`DT_GNU_HASH`-only), `.gnu.version_*`.**
   Modern GNU extensions. Match musl's defaults; revisit only if a

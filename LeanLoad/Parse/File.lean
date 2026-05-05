@@ -4,9 +4,10 @@ header → program headers → `.dynamic` → string table → dynamic symbol
 table → relocation tables → `DT_NEEDED` strings → init/fini lists.
 
 The dynamic symbol-table count is taken from `DT_HASH`'s `nchain`
-field (gabi 08 § Hash Table). `DT_GNU_HASH`-only binaries are not yet
-supported; musl always emits `DT_HASH`, so our test fixtures are
-covered.
+field (gabi 08 § Hash Table) when present, falling back to walking
+`DT_GNU_HASH`'s chain table when only the GNU extension is emitted
+(gnu-gabi `program-loading-and-dynamic-linking.txt` § Hashes). Modern
+Linux toolchains default to gnu-only.
 
 Spec types live in `LeanLoad.Spec.{Header,Program,Dynamic,Symbol,Reloc}`;
 this file just glues their parsers together into a `ParsedElf`.
@@ -109,6 +110,59 @@ private def parseAtDyn (phdrs : Array Spec.Program.Header64) (bytes : ByteArray)
     Parser.run bytes (p off)
 
 -- ============================================================================
+-- Symbol count from `DT_GNU_HASH`.
+--
+-- The table *layout* is documented in gnu-gabi § Hashes:
+-- `third_party/gnu-gabi/program-loading-and-dynamic-linking.txt`.
+-- The algorithm below — "max(buckets) + walk chain to end-marker
+-- gives the last hashed symbol index" — is neither documented nor
+-- specified there. gnu-gabi defines no count tag, and glibc's
+-- runtime loader doesn't derive one either (it uses the hash table
+-- directly for lookups). The derivation below is community lore,
+-- inferable from the layout.
+--
+-- References for the derivation:
+--   - https://flapenguin.me/elf-dt-gnu-hash (the most-cited write-up;
+--     gnu-gabi itself points readers here)
+--   - `bfd_elf_size_dynsym_hash_dynstr` in binutils-gdb's `bfd/elflink.c`
+--     (the linker side that establishes the invariant we rely on:
+--     hashed symbols occupy a contiguous tail of `.dynsym`)
+-- ============================================================================
+
+/-- Header layout (gnu-gabi § Hashes, Part 1):
+    `(nbuckets, symoffset, bloom_words, bloom_shift)`, four `u32`s.
+    Then `bloom_words` 8-byte bloom entries (ELF64), `nbuckets` 4-byte
+    buckets, then a chain of 4-byte pseudo-hashes, one per hashed
+    symbol. The bit-0-set entry marks the end of a bucket's chain;
+    the highest-indexed end marker tells us the last hashed symbol. -/
+private def parseGnuHashSymCount (off : Nat) : Parser Nat := do
+  Bytes.seek off
+  let nbuckets   := (← Bytes.u32le).toNat
+  let symoffset  := (← Bytes.u32le).toNat
+  let bloomWords := (← Bytes.u32le).toNat
+  let _bloomShift ← Bytes.u32le
+  Bytes.skip (bloomWords * 8)  -- ELF64: each bloom word is 64 bits
+  -- Find the highest bucket value (the largest dynsym index hashed
+  -- into the table; the rest of the chain extends from there).
+  let mut lastFirst : Nat := 0
+  for _ in [:nbuckets] do
+    let b := (← Bytes.u32le).toNat
+    if b > lastFirst then lastFirst := b
+  -- All buckets empty ⇒ only the `symoffset` synthetic symbols exist.
+  if lastFirst == 0 then return symoffset
+  -- Walk chain[lastFirst - symoffset ..] until the end-of-bucket marker.
+  Bytes.seek (off + 16 + bloomWords * 8 + nbuckets * 4 + (lastFirst - symoffset) * 4)
+  let s ← get
+  let bound := (s.bytes.size - s.pos) / 4
+  let mut idx := lastFirst
+  for _ in [:bound] do
+    let entry ← Bytes.u32le
+    if entry &&& 1 == 1 then
+      return idx + 1
+    idx := idx + 1
+  throw "parseGnuHashSymCount: chain has no end marker (malformed)"
+
+-- ============================================================================
 -- Top-level parser
 -- ============================================================================
 
@@ -130,10 +184,16 @@ def parse (bytes : ByteArray) : Except String ParsedElf := do
         (fun off => Parse.StringTable.parse off sz.toNat)
 
   let symCount : Nat ←
-    parseAtDyn phdrs bytes "DT_HASH" (dynVal? dyn Spec.Dynamic.DT_HASH) 0
-      (fun off => do
-        let nchain ← Bytes.atOffset (off + 4) Bytes.u32le
-        return nchain.toNat)
+    match dynVal? dyn Spec.Dynamic.DT_HASH, dynVal? dyn Spec.Dynamic.DT_GNU_HASH with
+    | some _, _ =>
+      parseAtDyn phdrs bytes "DT_HASH" (dynVal? dyn Spec.Dynamic.DT_HASH) 0
+        (fun off => do
+          let nchain ← Bytes.atOffset (off + 4) Bytes.u32le
+          return nchain.toNat)
+    | none, some _ =>
+      parseAtDyn phdrs bytes "DT_GNU_HASH"
+        (dynVal? dyn Spec.Dynamic.DT_GNU_HASH) 0 parseGnuHashSymCount
+    | none, none => pure 0
 
   let symtab ←
     if symCount == 0 then pure #[]
