@@ -3,7 +3,44 @@
 Verified ELF loader in Lean 4. The verified core is pure Lean; the
 syscall layer sits behind FFI.
 
-## Phases
+## Stages
+
+Four pipeline stages, each named for the verb it performs:
+
+| Stage        | Type | Input → Output                                |
+| ------------ | ---- | --------------------------------------------- |
+| **Parse**    | pure | `ByteArray` → `ParsedElf` (single file)       |
+| **Discover** | IO   | main `ParsedElf` → `Closure` (transitive) |
+| **Link**     | pure | `Closure` → `LoaderPlan`                  |
+| **Load**     | IO   | `LoaderPlan` → live image + transfer          |
+
+Three rules:
+
+1. Stage names are verbs ("what we do"), not nouns. `Plan` is tempting
+   but `Link` is the gabi/x86-64-ABI term and matches the surrounding
+   spec vocabulary.
+2. Stages alternate pure / IO. The boundary between Discover and Link
+   is exactly where files become bytes-in-memory; the boundary between
+   Link and Load is where pure plans become live mappings.
+3. The `LoaderPlan` is the refinement seam. Output of Link, input of
+   Load. Verification targets are stated against it.
+
+Two boundary modules sit alongside but are not stages:
+
+- `LeanLoad.FFI.*` — extern declarations for `runtime/`. The trust
+  seam, one module per major capability (`Region`, `Exec`).
+- `LeanLoad.Common` — small shared utilities, mirror of
+  `runtime/common.h`.
+
+A reader-facing index module:
+
+- `LeanLoad.Thm` — typed entry point that imports every theorem
+  proved in the project. `docs/verification.md` is the prose
+  counterpart. A reader auditing correctness reads `verification.md`
+  and `LeanLoad.Thm`; they should not need to open implementation
+  files.
+
+## Stage details
 
 1. **Parse** (pure, single file): bytes → typed ELF records — header
    (gabi 02), program headers (gabi 07), `.dynamic` array (gabi 08),
@@ -12,7 +49,7 @@ syscall layer sits behind FFI.
    Shared Object Dependencies). Resolve via `DT_RUNPATH` /
    `LD_LIBRARY_PATH` / default paths. Read each dependency with
    `IO.FS.readBinFile`, call `Parse` on its bytes. Returns a
-   `LoaderInput` mapping path → parsed ELF.
+   `Closure` mapping path → parsed ELF.
 3. **Link** (pure): operate on the full input set. Resolve symbols
    breadth-first (gabi 08, § Shared Object Dependencies); compute
    mmap layout from `PT_LOAD` (gabi 07); build relocation writes
@@ -91,8 +128,10 @@ runtime/                   C shims (unverified)
   exec.h  exec.c           ctor / entry / dtor invocation
 docs/
   bg-ffi.md                FFI background (general reference)
-  design.md                this file
+  design.md                this file (high-level architecture)
+  exec.md                  kernel-style exec — stack layout, trampoline
   plan.md                  phased implementation plan
+  verification.md          proof obligations + theorem statements
 examples/                  C sources + Makefile for showcase binaries
 Tests/                     Lean tests (lake test entry: Tests/Test.lean)
 third_party/               submodules
@@ -116,6 +155,14 @@ A grep for `import LeanLoad.FFI` outside `Load.lean` is a smell.
   so the prefix avoids collisions and aids grep.
 - Opaque Lean types named for what they are (`Fd`, `Region`), not how
   they are implemented — no `Ptr` suffix.
+
+## Verification
+
+See `docs/verification.md` for the running list of proof obligations
+and theorem statements. In summary: the architecture's verified core
+(`Parse/`, `Link/`) is targeted for proofs; the trusted IO layer
+(`Discover`, `Load`, `runtime/`) is audited and validated by
+differential testing against `ld.so`.
 
 ## Memory ownership
 
@@ -151,7 +198,7 @@ leanload --inspect <elf>   # run Parse + Discover + Link, dump the plan, exit
 ```
 
 `--inspect` stops before `Load`. No `mmap`, no execution. The dump is
-the union of `LoaderInput` (parsed deps) and `LoaderPlan` (mmap
+the union of `Closure` (parsed deps) and `LoaderPlan` (mmap
 layout, relocation writes, init/fini order).
 
 No subcommands, no `--debug=` topics, no `--stop-at`. The pipeline is

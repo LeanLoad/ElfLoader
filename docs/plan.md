@@ -2,7 +2,16 @@
 
 Five phases. Each ends with a runnable artifact and a check that
 gates moving on. Architecture and trust boundary are in `design.md`;
-this file is sequencing.
+exec/stack design in `exec.md`; proof obligations in `verification.md`.
+This file is sequencing.
+
+**Status:** Phases 0–4 done. Phase 5 partially done: multi-object
+`materializeAll`, relocation application, and a dynamic `load` path
+are wired. Static loader runs end-to-end. Dynamic load reaches the
+loaded binary's `_start` but crashes inside it because (a) shared
+library `init_array` invocation is not yet implemented, (b) auxv is
+`AT_NULL`-only (no `AT_RANDOM`/`AT_PHDR`/...), (c) TLS relocations are
+not in the formula table.
 
 ## Phase 0 — Scaffold (done)
 
@@ -14,15 +23,27 @@ this file is sequencing.
 **Exit:** `lake test` passes; `make -C examples` produces
 `examples/build/main` that the system loader can run.
 
-## Phase 1 — Parse (pure)
+## Phase 1 — Parse (pure) ✓ done
 
 Read an ELF file's header structures into typed records. No `IO`,
 no FFI. Outputs are `Except String α`.
 
+**Style.** The parser should read like the spec, not like byte
+manipulation:
+
+- Types mirror gabi C structs. Field names and order match;
+  doc-comment cites the gabi/x86-64-ABI section.
+- Parsers are field-by-field, in a `Parser α := StateT Offset (Except String) α`
+  monad. Each parser is a `do`-block, one line per field. Endianness
+  and bounds live in the primitives.
+- Constants for one ELF concept live in that concept's file (no
+  separate `Constants/` tree). One file ≈ one gabi chapter.
+
 Sub-steps, each its own commit + golden test:
 
-1. **Byte readers.** `LeanLoad.Parse.Bytes`: `u8`, `u16le`, `u32le`,
-   `u64le`, `slice`, bounds-checked. Foundation for everything else.
+1. **Parser monad + primitives.** `LeanLoad.Parse.Bytes`:
+   `Parser`, `u8`, `u16le`, `u32le`, `u64le`, `slice`, `expectMagic`,
+   bounds-checked. Foundation for everything else.
 2. **ELF header.** `Parse.Header.parse : ByteArray → Except String ElfHeader64`.
    Reject non-ELF, non-64-bit, non-little-endian, non-x86_64.
 3. **Program headers.** `Parse.Program` — the array indexed by
@@ -46,7 +67,12 @@ program-header table (smoke-test, not a permanent test fixture).
 **Exit:** `Parse.File.parse` round-trips every binary in
 `examples/build/`. Goldens checked in.
 
-## Phase 2 — Static loader (minimum viable)
+## Phase 2 — Static loader (minimum viable) ✓ done
+
+> Implementation note: instead of the original "call entry as
+> `int (*)(void)`" plan, we built kernel-style exec from the start —
+> see `exec.md`. Single mode, matches what `ld.so` does, and the
+> fixture uses nolibc's real `_start`/`_start_c`/`main` chain.
 
 Drop dynamic linking entirely. Build a fixture with `musl-gcc -static`
 that takes no shared library. Implement just enough of `Link` and
@@ -78,7 +104,7 @@ Build with `musl-gcc -static -no-pie static.c -o static`.
 fixture is supposed to print, exits cleanly. `--inspect` dumps a
 plan with one or two `PT_LOAD` regions and zero relocations.
 
-## Phase 3 — Discover + symbol resolution
+## Phase 3 — Discover + symbol resolution ✓ done
 
 Now reintroduce dynamic linking. Implement IO-side discovery and
 pure-side resolution. Still no relocations applied.
@@ -87,7 +113,7 @@ pure-side resolution. Still no relocations applied.
    `DT_NEEDED` transitively. `Link.Search` (pure) for the path
    resolution: `DT_RUNPATH` → `LD_LIBRARY_PATH` → defaults
    (gabi 08 § Shared Object Dependencies). Returns a
-   `LoaderInput` mapping path → `ParsedElf`.
+   `Closure` mapping path → `ParsedElf`.
 2. **`LeanLoad.Link.Resolve`** (pure). Breadth-first symbol
    resolution per gabi 08. Output: for each (object, symIdx)
    reference, the providing (object, symIdx). Unresolved symbols

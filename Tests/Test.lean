@@ -1,10 +1,16 @@
 import Tests.Parse
+import Tests.Discover
+import Tests.Resolve
+import Tests.Link
 
 /-- Top-level test runner. Each module exposes `run : IO Nat` returning
     its failure count. Aggregate, print, exit non-zero on any failure. -/
 def main : IO UInt32 := do
   let suites : List (String × IO Nat) := [
-    ("Parse", Tests.Parse.run)
+    ("Parse",    Tests.Parse.run),
+    ("Discover", Tests.Discover.run),
+    ("Resolve",  Tests.Resolve.run),
+    ("Link",     Tests.Link.run)
   ]
   let mut failures : Nat := 0
   for (name, suite) in suites do
