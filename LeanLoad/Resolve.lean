@@ -20,7 +20,7 @@ import LeanLoad.Discover
 import LeanLoad.Spec.Symbol
 import LeanLoad.TestFixture
 
-namespace LeanLoad.Plan.Resolve
+namespace LeanLoad.Resolve
 
 open LeanLoad.Spec
 
@@ -158,25 +158,26 @@ private def resolveLM : Discover.LinkMap :=
 
 end UnitTest
 
-end LeanLoad.Plan.Resolve
+end LeanLoad.Resolve
 
 -- ============================================================================
 -- Tests.
 -- ============================================================================
-namespace LeanLoad.Plan.Resolve.Test
+namespace LeanLoad.Resolve.Test
 
+open LeanLoad
 open LeanLoad.Spec
 
 /-- Discover `build/main`'s link map, build the resolution table, check
     that cross-library references resolve and the libbar↔libbaz cycle
     is handled both ways. -/
-def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
+def run (lm : Discover.LinkMap) : IO Nat := do
   let mut failures := 0
   if lm.objects.size < 4 then
     IO.eprintln s!"expected ≥ 4 objects, got {lm.objects.size}"
     return failures + 1
 
-  let table := LeanLoad.Plan.Resolve.buildTable lm
+  let table := buildTable lm
 
   if table.missing.size != 0 then
     IO.eprintln s!"expected 0 missing, got {table.missing.size}:"
@@ -190,7 +191,7 @@ def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
     ("libbaz_step",  "libbaz.so")
   ]
   for (sym, expectedProvider) in expectations do
-    match LeanLoad.Plan.Resolve.resolveByName lm sym with
+    match resolveByName lm sym with
     | none =>
       IO.eprintln s!"{sym} did not resolve"
       failures := failures + 1
@@ -204,4 +205,4 @@ def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
 
   return failures
 
-end LeanLoad.Plan.Resolve.Test
+end LeanLoad.Resolve.Test

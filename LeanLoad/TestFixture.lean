@@ -2,7 +2,7 @@
 Shared synthetic-`ParsedElf` builders for compile-time `#guard` checks
 in the planning stages. Each closure (and any single-use helper, e.g.
 string-table packing) lives next to the `#guard`s that exercise it,
-in `Plan/{Init,Resolve,Reloc/Aarch64}.lean`. Only the truly shared
+in `{Layout,Resolve,Spec/Reloc/Aarch64}.lean`. Only the truly shared
 constructors are exported here.
 
 The IO integration tests under `LeanLoad.X.Test` still exercise the

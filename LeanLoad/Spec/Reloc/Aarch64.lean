@@ -17,16 +17,16 @@ TLS, no `IFUNC`):
 Note: `GLOB_DAT` and `JUMP_SLOT` are documented as `S + A` for
 completeness; in practice the linker emits them with `A = 0`.
 
-The `Formula` type lives in `LeanLoad.Plan.Reloc` (the planner that
+The `Formula` type lives in `LeanLoad.Reloc` (the planner that
 applies it); this file is the per-arch table + per-type compile-time
 canaries.
 -/
 
-import LeanLoad.Plan.Reloc
+import LeanLoad.Reloc
 
 namespace LeanLoad.Spec.Reloc.Aarch64
 
-open LeanLoad.Plan.Reloc
+open LeanLoad.Reloc
 
 def R_AARCH64_NONE      : UInt32 := 0
 def R_AARCH64_ABS64     : UInt32 := 257
@@ -97,8 +97,8 @@ private def relocLM : LeanLoad.Discover.LinkMap := {
     }])]
 }
 
-#guard (LeanLoad.Plan.Reloc.plan formula relocLM #[0x10000]
-          (LeanLoad.Plan.Resolve.buildTable relocLM)).size = 1
+#guard (plan formula relocLM #[0x10000]
+          (Resolve.buildTable relocLM)).size = 1
 
 end UnitTest
 

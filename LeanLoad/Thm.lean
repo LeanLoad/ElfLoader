@@ -21,7 +21,7 @@ import LeanLoad.Spec.Header
 import LeanLoad.Spec.Program
 import LeanLoad.Spec.Symbol
 import LeanLoad.Spec.Reloc
-import LeanLoad.Plan.Layout
+import LeanLoad.Layout
 import LeanLoad.Spec.Reloc.Aarch64
 import LeanLoad.Spec.Reloc.X86_64
 import LeanLoad.Spec.GnuHash
@@ -30,7 +30,7 @@ namespace LeanLoad.Thm
 
 open LeanLoad.Spec
 open LeanLoad.Spec.Reloc
-open LeanLoad.Plan.Reloc
+open LeanLoad.Reloc
 
 -- ============================================================================
 -- O3. VA → file-offset correctness within `PT_LOAD`.
@@ -61,21 +61,21 @@ theorem vaToOffset_correct
 
 -- ============================================================================
 -- O4. Plan determinism + structural integrity.
---     (`Plan.Plan.Layout.fromLinkMap`)
+--     (`Layout.fromLinkMap`)
 -- ============================================================================
 
 /-- `fromLinkMap` produces one layout per discovered object — no
-    drops, no duplicates. Refines the `LoaderPlan` contract. -/
+    drops, no duplicates. Refines the `Layout.Layout` contract. -/
 theorem fromLinkMap_layouts_size
     (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) :
-    (Plan.Layout.fromLinkMap lm initOrder finiOrder).layouts.size = lm.objects.size := by
-  simp [Plan.Layout.fromLinkMap]
+    (Layout.fromLinkMap lm initOrder finiOrder).layouts.size = lm.objects.size := by
+  simp [Layout.fromLinkMap]
 
 /-- `fromLinkMap` is pure: same input, same output. -/
 theorem fromLinkMap_deterministic
     (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) :
-    Plan.Layout.fromLinkMap lm initOrder finiOrder
-      = Plan.Layout.fromLinkMap lm initOrder finiOrder :=
+    Layout.fromLinkMap lm initOrder finiOrder
+      = Layout.fromLinkMap lm initOrder finiOrder :=
   rfl
 
 -- ============================================================================
@@ -88,7 +88,7 @@ theorem fromLinkMap_deterministic
 --   * formula is defined on every (type, input)        (totality)
 --   * every formula result has size ∈ {4, 8}           (safety bridge)
 --
--- One copy per supported architecture. `Load.Apply.applyReloc` panics
+-- One copy per supported architecture. `Apply.applyReloc` panics
 -- on widths other than 4 or 8; the size-valid lemmas are the bridge
 -- that says the panic is unreachable for plans built from these
 -- formulas.

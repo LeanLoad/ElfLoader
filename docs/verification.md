@@ -2,19 +2,21 @@
 
 What LeanLoad proves, what it trusts, and where each lives.
 
-The architecture isolates verifiable code (`Spec/`, `Parse/`, `Plan/`)
-from trusted IO (`Discover.discover` body, `Load/`, `runtime/`); the
-`LoaderPlan` is the refinement boundary.
+The architecture isolates verifiable code (`Spec/`, `Parse/`, plus the pure top-level modules)
+from trusted IO (`Discover.discover` body, `Map.lean`, `Exec.lean`,
+`runtime/`); the `Layout.Layout` output is the refinement boundary.
 
 ## Where things live
 
 - `LeanLoad/Spec/` — gabi/abi transcriptions only. Every type, constant,
   and table cites a specific spec section. The def *is* the spec.
 - `LeanLoad/Parse/` — byte decoders.
-- `LeanLoad/Plan/` — pure pipeline functions implementing gabi's
-  prose-level algorithms (resolve, layout, init order, reloc planner).
+- `LeanLoad/{Resolve,Layout,Reloc}.lean` and
+  `LeanLoad/Spec/Reloc/Formula.lean` — pure pipeline functions
+  implementing gabi's prose-level algorithms (resolve, layout, init
+  order, reloc planner, per-machine dispatch).
 - `LeanLoad/Discover.lean` — IO file walk + `LinkMap`.
-- `LeanLoad/Map.lean` + `LeanLoad/Run.lean` — IO orchestration over `LoaderPlan`.
+- `LeanLoad/Map.lean` + `LeanLoad/Apply.lean` + `LeanLoad/Exec.lean` — IO orchestration over the Layout output.
 - `LeanLoad/Spec.lean` — catalogue/index of the spec surface.
 - `LeanLoad/Thm.lean` — single audit surface for every proven property.
 
@@ -28,29 +30,29 @@ cited gabi/abi sections.
 | `Parser α`              | `Parse.Bytes`      | Stateful read; advances the cursor or returns `Except`. |
 | `ParsedElf`             | `Parse.File`       | Result of decoding one ELF byte sequence.               |
 | `LinkMap`               | `Discover`         | Transitively-discovered dependency graph (BFS).         |
-| `Plan.Resolve.SymRef`   | `Plan.Resolve`     | A resolved symbol: `(objectIdx, symIdx)`.               |
-| `LoaderPlan`            | `Plan.Layout`      | Layouts + init/fini orders. **Refinement boundary.**    |
-| `Plan.Reloc.Formula`    | `Plan.Reloc`       | `(type, S, A, B, P) → Option write`. Pluggable per-arch.|
-| `Plan.Reloc.RelocWrite` | `Plan.Reloc`       | One planned memory write.                               |
-| `FFI.Region.Region`     | `FFI.Region`       | Opaque mmap'd handle.                                   |
+| `Resolve.SymRef`   | `Resolve`          | A resolved symbol: `(objectIdx, symIdx)`.               |
+| `Layout.Layout`         | `Layout`           | Layouts + init/fini orders. **Refinement boundary.**    |
+| `Reloc.Formula`         | `Reloc`            | `(type, S, A, B, P) → Option write`. Pluggable per-arch.|
+| `Reloc.RelocWrite`      | `Reloc`            | One planned memory write.                               |
+| `Region.Region`         | `Region`           | Opaque mmap'd handle.                                   |
 
 ## Proved theorems
 
 See `LeanLoad.Thm` for the canonical list. As of writing:
 
 - `Parse.File.vaToOffset_correct` — VA → file-offset soundness (O3).
-- `Plan.Layout.fromLinkMap_layouts_size` — one layout per object (O4).
-- `Plan.Layout.fromLinkMap_deterministic` — same input, same output (O4).
+- `Layout.fromLinkMap_layouts_size` — one layout per object (O4).
+- `Layout.fromLinkMap_deterministic` — same input, same output (O4).
 - `Thm.Aarch64.formula_is_total` / `Thm.X86_64.formula_is_total` — each
   per-arch formula table is total.
 - `Thm.Aarch64.formula_size_valid` / `Thm.X86_64.formula_size_valid` —
-  every result has size ∈ {4,8}; bridges the planner to `Load.Apply`
-  (which panics on other widths).
+  every result has size ∈ {4,8}; bridges the planner to
+  `Map.applyAllRelocs` (which panics on other widths).
 
 ## Project organization policy
 
 1. **Module docstring as a spec contract.** Each `LeanLoad.Spec.*` /
-   `LeanLoad.Parse.*` / `LeanLoad.Plan.*` module opens with the gabi /
+   `LeanLoad.Parse.*` / `LeanLoad.{Resolve,Layout,Reloc}` module opens with the gabi /
    abi section it implements.
 2. **All theorems live in `LeanLoad/Thm.lean`** — single audit surface.
    Proofs are short (1–5 lines); colocation with defs would buy refactor
@@ -58,8 +60,10 @@ See `LeanLoad.Thm` for the canonical list. As of writing:
 3. **One file per spec concept.** `Spec/Header.lean` ↔ gabi 02,
    `Spec/Program.lean` ↔ gabi 07, etc.
 4. **`Spec/` contains only what traces to official docs.** Project-defined
-   types (`LinkMap`, `LoaderPlan`, `RelocWrite`) and pure pipeline
-   functions live in `Plan/` or `Discover.lean`. Parsers live in `Parse/`.
+   types (`LinkMap`, `Layout.Layout`, `RelocWrite`) and pure pipeline
+   functions live at the top of `LeanLoad/` (`Resolve.lean`,
+   `Layout.lean`, `Reloc.lean`) or `Discover.lean`. Parsers live in
+   `Parse/`.
 
 Inspired by Kell, Mulligan, Sewell, *The Missing Link: Explaining ELF
 Static Linking, Semantically* (OOPSLA 2016) — same definitions serve
@@ -71,7 +75,7 @@ one relocation type as the foothold.
 ### O1. Totality
 
 Every `def` in `Spec/`, `Parse/`, and `Plan/` is total — Lean's
-elaborator certifies it at type-check time. `Plan.Init.dfs` uses
+elaborator certifies it at type-check time. `Layout.dfs` uses
 fuel-based recursion (caller passes `lm.objects.size`, recursion
 decrements). Remaining `partial def`s: `Discover.discover` (IO; the
 filesystem and BFS dedup are the well-foundedness argument) and
@@ -103,10 +107,11 @@ formula in the per-arch ABI supplement.
 
 **Status: AArch64 and x86-64 covered.** For each, `formula_is_total`
 proves the table is defined on every input, and `formula_size_valid`
-proves every result has size ∈ {4,8} — the bridge to `Load.Apply`
-which panics on other widths. Per-type spot checks live as `#guard`
-canaries next to each `formula` def (`Spec/Reloc/Aarch64.lean`,
-`Spec/Reloc/X86_64.lean`), one per row of the per-arch ABI table.
+proves every result has size ∈ {4,8} — the bridge to
+`Map.applyAllRelocs` which panics on other widths. Per-type spot
+checks live as `#guard` canaries next to each `formula` def
+(`Spec/Reloc/Aarch64.lean`, `Spec/Reloc/X86_64.lean`), one per row
+of the per-arch ABI table.
 
 ## Not currently in scope
 
@@ -117,28 +122,28 @@ canaries next to each `formula` def (`Spec/Reloc/Aarch64.lean`,
   source ELF byte at the corresponding file offset. Requires modelling
   the loaded image abstractly; aligns with the optional `mmap` model
   discussed below.
-- **Equivalence to a specific `ld.so`.** Validated by differential
-  testing (`plan.md` Phase 5), not by proof.
+- **Equivalence to a specific `ld.so`.** Validated (when wired up) by
+  differential testing, not by proof.
 - **The kernel side of `mmap`/`mprotect`.** Trusted.
 - **C shims under `runtime/`.** Audited by inspection (~150 lines).
-- **`Discover.discover` IO body and `Load/`.** Sequence the verified
-  core's outputs into IO actions; no novel logic.
+- **`Discover.discover` IO body, `Map.lean`, `Exec.lean`.** Sequence
+  the verified core's outputs into IO actions; no novel logic.
 
 ## Trust assumptions on the host process
 
 LeanLoad performs in-process loading: the loaded binary's segments
-are `mmap`'d into leanload's own address space, and `Exec.run`
-transfers control without first replacing the process image.
-Verification of `Load` is conditioned on:
+are `mmap`'d into leanload's own address space, and `transferControl`
+hands off without first replacing the process image. The IO load
+path (`Map.lean` + `Exec.lean`) is conditioned on:
 
 1. **Address-space disjointness.** The virtual-address ranges named
-   by the `LoaderPlan` do not intersect any mapping currently in use
+   by the Layout output do not intersect any mapping currently in use
    by leanload itself.
 2. **No concurrent address-space mutation.** No other thread calls
    `mmap` / `munmap` / `mprotect` / `mremap` during materialise→exec.
-3. **No locks held across `Exec.run`.** No host thread holds a libc
-   internal mutex (malloc arena, dynamic-loader lock, …) that the
-   loaded binary will then try to acquire.
+3. **No locks held across `transferControl`.** No host thread holds
+   a libc internal mutex (malloc arena, dynamic-loader lock, …) that
+   the loaded binary will then try to acquire.
 4. **Loaded binary uses `__NR_exit_group`, not `__NR_exit`.** The
    thread-scoped `exit` syscall would only kill the calling thread;
    other host threads survive and the process never terminates. The
@@ -147,7 +152,7 @@ Verification of `Load` is conditioned on:
    so the loaded binary's faults do not wake Lean's `segv_handler`
    (which deadlocks against libuv's pthread lock).
 
-Phase 5 (differential testing) is the right time to revisit, either by
+Differential testing is the right time to revisit these, either by
 forking a single-threaded child before loading or by proving
 fixture-specific instances of the assumptions.
 

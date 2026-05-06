@@ -25,11 +25,11 @@ to verify that the value zero-extends to the original 64-bit value;
 that overflow check is not modelled here.
 -/
 
-import LeanLoad.Plan.Reloc
+import LeanLoad.Reloc
 
 namespace LeanLoad.Spec.Reloc.X86_64
 
-open LeanLoad.Plan.Reloc
+open LeanLoad.Reloc
 
 def R_X86_64_NONE      : UInt32 := 0
 def R_X86_64_64        : UInt32 := 1
@@ -95,8 +95,8 @@ private def relocLM : LeanLoad.Discover.LinkMap := {
     }])]
 }
 
-#guard (LeanLoad.Plan.Reloc.plan formula relocLM #[0x10000]
-          (LeanLoad.Plan.Resolve.buildTable relocLM)).size = 1
+#guard (plan formula relocLM #[0x10000]
+          (Resolve.buildTable relocLM)).size = 1
 
 end UnitTest
 

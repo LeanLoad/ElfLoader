@@ -5,27 +5,33 @@ syscall layer sits behind two small `@[extern]` modules.
 
 ## Stages
 
-Pipeline (input → output; pure unless marked IO):
+Pipeline (one row per `--debug` section):
 
-| Stage        | Type | What it does                                      |
-| ------------ | ---- | ------------------------------------------------- |
-| **Parse**    | pure | `ByteArray` → `ParsedElf` (single file)           |
-| **Discover** | IO   | path → `LinkMap` (transitive `DT_NEEDED` walk)    |
-| **Plan**     | pure | `LinkMap` (× bases) → `LoaderPlan` + reloc writes |
-| **Load**     | IO   | `LoaderPlan` → live image + transfer of control   |
+| Stage        | Type | Input → Output                                                         |
+| ------------ | ---- | ---------------------------------------------------------------------- |
+| **Discover** | IO   | path → `LinkMap` (transitive `DT_NEEDED` walk; calls `Parse` per file) |
+| **Resolve**  | pure | `LinkMap` → resolution table (undef ref → providing object/symbol)     |
+| **Plan**     | pure | `LinkMap` → mmap layout + init/fini order                              |
+| **Map**      | IO   | layout → mmap'd regions × kernel-chosen bases                          |
+| **Reloc**    | pure | formula × bases × resolution → `Array RelocWrite`                      |
+| **Apply**    | IO   | walk the writes; poke bytes into mmap'd memory                         |
+| **Init**     | IO   | bases × init order → constructors called                               |
+| **Exec**     | IO   | build kernel-style stack, jump to entry; no return                     |
 
-Three rules:
+`Parse` (`LeanLoad/Parse/`) is a pure decoder called per file inside
+`Discover` — `ByteArray` → `ParsedElf`. It's the only step that reads
+raw ELF bytes; every later stage operates on typed records.
 
-1. **Stages alternate pure / IO.** The boundary between `Discover`
-   and `Plan` is exactly where files become bytes-in-memory; the
-   boundary between `Plan` and `Load` is where pure plans become live
-   mappings.
-2. **The `LoaderPlan` is the refinement seam.** Output of `Plan`,
-   input of `Load`. Verification targets are stated against it.
-3. **Reloc planning is split across the seam.** Layout/Init/Resolve
-   are pure-pre-bases; the actual `RelocWrite`s are pure-post-bases
-   (kernel chooses bases at mmap time). Both are in `Plan/`; `Load`
-   threads bases between them.
+Two design rules:
+
+1. **The Layout output is the refinement seam.** `Plan.Layout.Layout`
+   (layouts + init/fini order), together with `Reloc.RelocWrite`s
+   from the post-bases planner, is what `Map`/`Apply`/`Init`/`Exec`
+   consume. Verification targets are stated against it.
+2. **Reloc planning straddles `Map`.** Layout and init order are
+   computed pre-bases; relocation writes are computed post-bases
+   (kernel chooses bases at mmap time). Both are pure and both live
+   in `Plan/`; the `load` orchestration threads bases between them.
 
 ## Module layout
 
@@ -35,8 +41,12 @@ LeanLoad/
   Main.lean                CLI + `load` orchestration
   Test.lean                test exe entry
   Discover.lean            IO walk + LinkMap type
+  Resolve.lean             undef ref → providing object/symbol (pure)
+  Reloc.lean               formula → write list (pure post-bases)
+  Formula.lean             per-`e_machine` formula dispatch
+  Map.lean                 mmap + memcpy + mprotect (IO)
+  Apply.lean               poke reloc bytes into mmap'd memory (IO)
   Region.lean              @[extern] for memory ops (runtime/region.c)
-  Map.lean                 mmap'ing + reloc apply (uses Region)
   Exec.lean                @[extern] for control transfer + init/exec
   TestFixture.lean         shared synthObj/synthElf
   Thm.lean                 single audit surface for proven theorems
@@ -49,14 +59,14 @@ LeanLoad/
     Reloc.lean             gabi 06 § Relocation
     Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations
     Reloc/X86_64.lean      x86-64-ABI § Relocation Types
+    GnuHash.lean           gnu-gabi § Hashes
   Parse/                   byte decoders (impl)
     Bytes.lean             parser monad
     Header.lean Program.lean Dynamic.lean
     StringTable.lean Symbol.lean Reloc.lean
     File.lean              ParsedElf aggregate + parse
-  Plan/                    pure pipeline functions (impl)
-    Layout.lean Resolve.lean Init.lean Reloc.lean
-    Formula.lean           per-`e_machine` formula dispatch
+  Plan/
+    Layout.lean            mappings + init/fini order (Layout stage)
 runtime/                   C shims (unverified)
   region.{h,c}             mmap / mprotect / write
   exec.{h,c}               ctor invocation + transfer of control
@@ -73,7 +83,7 @@ third_party/               submodules (gabi, musl, …)
 ## Trust boundary
 
 - **Verified**: `LeanLoad/Spec/`, `LeanLoad/Parse/`, `LeanLoad/Plan/`.
-  Pure Lean; no `IO`; no imports of `Region`, `Run`'s extern block,
+  Pure Lean; no `IO`; no imports of `Region`, `Exec`'s extern block,
   or `runtime/`.
 - **Trusted**: `runtime/*` (audited C, ~150 lines), the
   `@[extern]` declarations in `LeanLoad/Region.lean` and at the top
@@ -111,10 +121,12 @@ the full ELF, only what is reachable from program headers and the
 dynamic section.
 
 - Parsed: ELF header; program header table; `PT_DYNAMIC` and the
-  `.dynamic` array; dynsym + dynstr; `Rela`/`Rel` and `JMPREL`
-  tables; init/fini arrays.
+  `.dynamic` array; dynsym + dynstr (size derived from `DT_HASH`'s
+  `nchain` or — for gnu-only binaries — from walking the
+  `DT_GNU_HASH` chain table); `Rela`/`Rel` and `JMPREL` tables;
+  init/fini arrays.
 - Skipped: section headers, `.text`/`.bss`/`.rodata` section
-  metadata, debug info, GNU hash, `DT_GNU_HASH`-only binaries.
+  metadata, debug info.
 
 ## Naming conventions
 
@@ -146,7 +158,7 @@ dump shows discovered objects, layouts, and init/fini order.
 Three rules that pay off across the project:
 
 1. **`deriving Repr` on every type in `Spec/`, `Parse/`, `Plan/`.**
-   Then `--inspect` is structured by construction.
+   Then `--debug` is structured by construction.
 2. **Deterministic output.** No timestamps, no hash-iteration order,
    no addresses chosen by ASLR in the plan. Sort everything that has
    no semantic order — golden tests rely on this.

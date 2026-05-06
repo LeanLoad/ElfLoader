@@ -2,7 +2,7 @@
 Relocation planning — pure.
 
 Consumes parsed `Rela` entries (from `Spec.Reloc`) plus a per-arch
-`Formula` and a resolution table (from `Plan.Resolve`); emits the
+`Formula` and a resolution table (from `Resolve`); emits the
 list of `RelocWrite`s the runtime loader will perform.
 
 The formula notation `S, A, B, P` follows gabi 06 and the per-arch
@@ -12,9 +12,9 @@ supplements. Per-arch formula tables live under `Spec/Reloc/`.
 import LeanLoad.Discover
 import LeanLoad.Spec.Reloc
 import LeanLoad.Spec.Symbol
-import LeanLoad.Plan.Resolve
+import LeanLoad.Resolve
 
-namespace LeanLoad.Plan.Reloc
+namespace LeanLoad.Reloc
 
 open LeanLoad
 
@@ -65,14 +65,14 @@ abbrev Bases := Array UInt64
 
 /-- Look up the absolute value of a resolved symbol. -/
 def absoluteSymbolValue (lm : Discover.LinkMap) (bases : Bases)
-    (ref : Plan.Resolve.SymRef) : Option UInt64 := do
+    (ref : Resolve.SymRef) : Option UInt64 := do
   let provider ← lm.objects[ref.objectIdx]?
   let sym ← provider.elf.symtab[ref.symIdx]?
   let base ← bases[ref.objectIdx]?
   return base + sym.st_value
 
 /-- Find the resolution for `(objectIdx, symIdx)` in a built table. -/
-def lookupResolved (rt : Plan.Resolve.ResolutionTable) (lm : Discover.LinkMap)
+def lookupResolved (rt : Resolve.ResolutionTable) (lm : Discover.LinkMap)
     (bases : Bases) (objectIdx symIdx : Nat) : Option UInt64 := do
   let (_, ref?) ← rt.resolved.find? fun (u, _) =>
     u.objectIdx == objectIdx && u.symIdx == symIdx
@@ -87,7 +87,7 @@ def lookupResolved (rt : Plan.Resolve.ResolutionTable) (lm : Discover.LinkMap)
        Use `obj.base + sym.st_value`.
     3. The symbol is undefined in `obj`. Look up the resolution table. -/
 def resolveSymValue (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Plan.Resolve.ResolutionTable) (obj : Discover.LoadedObject)
+    (rt : Resolve.ResolutionTable) (obj : Discover.LoadedObject)
     (base : UInt64) (objectIdx : Nat) (symIdx : Nat) : UInt64 :=
   match obj.elf.symtab[symIdx]? with
   | none     => 0
@@ -99,7 +99,7 @@ def resolveSymValue (lm : Discover.LinkMap) (bases : Bases)
 
 /-- Plan all relocations for one object's `.rela.dyn` + `.rela.plt`. -/
 def planObject (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Plan.Resolve.ResolutionTable) (objectIdx : Nat) : Array RelocWrite := Id.run do
+    (rt : Resolve.ResolutionTable) (objectIdx : Nat) : Array RelocWrite := Id.run do
   let some obj := lm.objects[objectIdx]? | return #[]
   let some base := bases[objectIdx]? | return #[]
   let process (entries : Array Spec.Reloc.Rela64) (acc : Array RelocWrite) : Array RelocWrite := Id.run do
@@ -123,28 +123,30 @@ def planObject (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
 
 /-- Plan relocations for every object. -/
 def plan (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Plan.Resolve.ResolutionTable) : Array RelocWrite := Id.run do
+    (rt : Resolve.ResolutionTable) : Array RelocWrite := Id.run do
   let mut all : Array RelocWrite := #[]
   for i in [:lm.objects.size] do
     all := all ++ planObject formula lm bases rt i
   return all
 
-end LeanLoad.Plan.Reloc
+end LeanLoad.Reloc
 
 -- ============================================================================
 -- IO test runner. Parametric over the per-arch formula; the test
 -- driver picks the formula based on `e_machine` and calls this once.
 -- ============================================================================
-namespace LeanLoad.Plan.Reloc.Test
+namespace LeanLoad.Reloc.Test
 
-def run (formula : LeanLoad.Plan.Reloc.Formula) (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
+open LeanLoad
+
+def run (formula : Reloc.Formula) (lm : Discover.LinkMap) : IO Nat := do
   let mut failures := 0
-  let rt := LeanLoad.Plan.Resolve.buildTable lm
-  let bases : LeanLoad.Plan.Reloc.Bases := Array.replicate lm.objects.size 0
-  let writes := LeanLoad.Plan.Reloc.plan formula lm bases rt
+  let rt := Resolve.buildTable lm
+  let bases : Reloc.Bases := Array.replicate lm.objects.size 0
+  let writes := Reloc.plan formula lm bases rt
   if writes.size == 0 then
     IO.eprintln "expected nonzero relocation writes"
     failures := failures + 1
   return failures
 
-end LeanLoad.Plan.Reloc.Test
+end LeanLoad.Reloc.Test

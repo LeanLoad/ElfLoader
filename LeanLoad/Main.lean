@@ -3,9 +3,11 @@ LeanLoad CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is the
 glue that ties the verified core (`Spec`, `Parse`, `Plan`) to the FFI
-layer (`runtime/`). Verified code (`Spec/`, `Parse/`, `Plan/`) must
-not import `LeanLoad.FFI`; everything that crosses into the kernel
-goes through this file or the helpers under `Load/`.
+layer (`runtime/`). Verified code (`Spec/`, `Parse/`, plus the pure
+modules `Resolve.lean`, `Layout.lean`, `Reloc.lean`,
+`Spec/Reloc/Formula.lean`) must not import `LeanLoad.Region`'s
+externs; everything that crosses into the kernel goes through this
+file (`Main.lean`), `Map.lean`, `Apply.lean`, or `Exec.lean`.
 
 Pipeline:
   1. Discover (IO):  path → link map
@@ -55,12 +57,12 @@ def load (path : String) : IO Unit := do
   let lm ← Discover.discover path
   let some mainObj := lm.objects[0]?
     | throw (IO.userError "load: empty link map")
-  let rt   := Plan.Resolve.buildTable lm
-  let plan := Plan.Layout.fromLinkMap lm (Plan.Init.initOrder lm) (Plan.Init.finiOrder lm)
+  let rt   := Resolve.buildTable lm
+  let plan := Layout.fromLinkMap lm (Layout.initOrder lm) (Layout.finiOrder lm)
   let (allRegions, bases) ← mapAll lm plan
-  let some formula := Plan.formulaFor mainObj.elf.header.e_machine
+  let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
-  let writes := Plan.Reloc.plan formula lm bases rt
+  let writes := Reloc.plan formula lm bases rt
   applyAllRelocs allRegions bases writes
   runInits lm bases plan
   transferControl mainObj plan bases path
@@ -78,8 +80,8 @@ def debug (path : String) : IO Unit := do
     | throw (IO.userError "debug: empty link map")
 
   IO.println "\n== Resolve =="
-  let rt := Plan.Resolve.buildTable lm
-  let providerName (r : Plan.Resolve.SymRef) : String := match lm.objects[r.objectIdx]? with
+  let rt := Resolve.buildTable lm
+  let providerName (r : Resolve.SymRef) : String := match lm.objects[r.objectIdx]? with
     | some obj => obj.name
     | none     => "?"
   let nameW := rt.resolved.foldl (init := 0) (fun w (u, _) => max w u.name.length)
@@ -97,7 +99,7 @@ def debug (path : String) : IO Unit := do
       | none =>
         let weakTag :=
           match lm.objects[u.objectIdx]?.bind (fun obj => obj.elf.symtab[u.symIdx]?) with
-          | some sym => if Plan.Resolve.isWeak sym then "  (weak)" else ""
+          | some sym => if Resolve.isWeak sym then "  (weak)" else ""
           | none     => ""
         s!"{padR "<unresolved>" providerW}{weakTag}"
       | some r =>
@@ -109,7 +111,7 @@ def debug (path : String) : IO Unit := do
   IO.println s!"strong missing: {rt.missing.size}, weak missing: {rt.weakMissing.size}"
 
   IO.println "\n== Plan =="
-  let plan := Plan.Layout.fromLinkMap lm (Plan.Init.initOrder lm) (Plan.Init.finiOrder lm)
+  let plan := Layout.fromLinkMap lm (Layout.initOrder lm) (Layout.finiOrder lm)
   for lyt in plan.layouts do
     let some obj := lm.objects[lyt.objectIdx]? | continue
     IO.println s!"[{lyt.objectIdx}] {obj.name} ({lyt.mappings.size} mappings)"
@@ -128,22 +130,22 @@ def debug (path : String) : IO Unit := do
     IO.println s!"[{i}] {obj.name} → 0x{Nat.hex b.toNat}"
 
   IO.println "\n== Reloc =="
-  let some formula := Plan.formulaFor mainObj.elf.header.e_machine
+  let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
   -- Width of the "[i] objname" prefix. Fixed; column will be ragged
   -- if a fixture has unusually long names.
   let labelW := 16
   -- Re-walk each object's relas to enrich each write with its type
   -- and symbol name. The actual `applyAllRelocs` below uses the same
-  -- formula via `Plan.Reloc.plan`, so the trace and the writes match.
+  -- formula via `Reloc.plan`, so the trace and the writes match.
   for i in [:lm.objects.size] do
     let some obj := lm.objects[i]? | continue
     let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW
     let printOne (r : Spec.Reloc.Rela64) : IO Unit := do
       let symValue : UInt64 := if r.sym == 0 then 0
-        else Plan.Reloc.resolveSymValue lm bases rt obj base i r.sym.toNat
-      let inputs : Plan.Reloc.FormulaInputs :=
+        else Reloc.resolveSymValue lm bases rt obj base i r.sym.toNat
+      let inputs : Reloc.FormulaInputs :=
         { symValue, addend := r.r_addend, base, place := base + r.r_offset }
       match formula r.type inputs with
       | none     => pure ()
@@ -156,7 +158,10 @@ def debug (path : String) : IO Unit := do
         IO.println s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size}B)  sym='{symName}'"
     for r in obj.elf.rela do printOne r
     for r in obj.elf.jmprel do printOne r
-  let writes := Plan.Reloc.plan formula lm bases rt
+  let writes := Reloc.plan formula lm bases rt
+  IO.println s!"planned {writes.size} writes"
+
+  IO.println "\n== Apply =="
   applyAllRelocs allRegions bases writes
   IO.println s!"applied {writes.size} writes"
 

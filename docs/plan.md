@@ -5,28 +5,42 @@ architecture and the trust boundary, see `design.md`.
 
 ## Done
 
-- **Parse.** Full loader-minimal parser (gabi 02–08). All `def`s
-  total except `Parse.Dynamic.collect` (could be fueled).
-- **Discover.** IO walk of `DT_NEEDED` with gabi 08 search-path
+Pipeline (matches `--debug` output):
+
+- **Parse** — full loader-minimal decoder (gabi 02–08; `DT_HASH` and
+  `DT_GNU_HASH` for symtab sizing). All `def`s total except
+  `Parse.Dynamic.collect` (could be fueled).
+- **Discover** — IO walk of `DT_NEEDED` with gabi 08 search-path
   rules. Builds a `LinkMap` in BFS order; libbar↔libbaz cycle
-  handled via SONAME-keyed dedup.
-- **Plan.** Pure pipeline: `Resolve` (BFS), `Layout` (one mapping per
-  PT_LOAD), `Init` (DFS post-order, total via fuel), `Reloc` (planner
-  parametric over per-arch `Formula`).
-- **Load.** Maps memory, applies relocations, runs constructors,
-  builds kernel-style stack, jumps. Static + dynamic both work
-  end-to-end.
+  handled via SONAME-keyed dedup. Calls `Parse` per file.
+- **Resolve** — pure BFS over `LinkMap` (gabi 08 § Shared Object
+  Dependencies); outputs `(resolved, missing, weakMissing)`.
+- **Layout** — `Layout.fromLinkMap` builds the per-object
+  mappings (one `Mapping` per `PT_LOAD`) and the init/fini DFS
+  post-order (total via fuel) in a single `Layout.Layout`
+  bundle.
+- **Map** — `mmap` per object (`MAP_FIXED` for `ET_EXEC`, anonymous +
+  kernel-chosen base for `ET_DYN`), memcpy segment bytes, `mprotect`.
+- **Reloc / Apply** — `Reloc.plan` evaluates per-arch `Formula`
+  (AArch64 + x86-64); `Map.applyAllRelocs` pokes the resulting bytes.
+- **Init** — invoke each object's `DT_INIT_ARRAY` entries in
+  `initOrder`.
+- **Exec** — kernel-style stack (argc/argv/envp/auxv) + AArch64 /
+  x86-64 trampolines; loaded program owns the process.
+
+Static + dynamic both work end-to-end on AArch64 and x86-64.
+
 - **Theorems.** `vaToOffset_correct`, `fromLinkMap_layouts_size`,
   `fromLinkMap_deterministic`, `Aarch64.formula_is_total` /
-  `_size_valid`, `X86_64.formula_is_total` / `_size_valid`.
-  See `LeanLoad.Thm` and `verification.md`.
-- **Architectures.** AArch64 and x86-64. Per-arch reloc tables in
-  `Spec/Reloc/{Aarch64,X86_64}.lean`; dispatch in `Plan/Formula.lean`.
+  `_size_valid`, `X86_64.formula_is_total` / `_size_valid`,
+  `GnuHash.symCount_empty_buckets`, `GnuHash.findEndMarker_ge`,
+  `GnuHash.symCount_gt_maxBucket`. See `LeanLoad.Thm` and
+  `verification.md`.
 
 ## Open
 
 - **`Parse.Dynamic.collect` totality.** Same fuel pattern as
-  `Plan.Init.dfs` would do it.
+  `Layout.dfs` would do it.
 
 ### Theorem candidates (next to add)
 
@@ -35,17 +49,17 @@ Ordered by ROI, easiest first.
 **Easy structural lemmas (`rfl`-class):**
 
 - `Resolve.buildTable_deterministic` — `buildTable lm = buildTable lm`.
-- `Plan.Reloc.plan_deterministic` — same args ⇒ same write array.
-- `Plan.Init.finiOrder_eq_initOrder_reverse` — by definition.
+- `Reloc.plan_deterministic` — same args ⇒ same write array.
+- `Layout.finiOrder_eq_initOrder_reverse` — by definition.
 
 **Structural invariants (one hour each):**
 
-- `Plan.Init.initOrder_in_bounds` — every entry `i` of `initOrder lm`
+- `Layout.initOrder_in_bounds` — every entry `i` of `initOrder lm`
   satisfies `i < lm.objects.size`. Requires exposing `dfs` and a
   fuel-induction lemma.
-- `Plan.Init.initOrder_no_duplicates` — same indices never appear
+- `Layout.initOrder_no_duplicates` — same indices never appear
   twice. Captures the cycle-breaking-via-visited invariant.
-- `Plan.Layout.layouts_objectIdx_eq` — `layouts[i].objectIdx = i`.
+- `Layout.layouts_objectIdx_eq` — `layouts[i].objectIdx = i`.
 
 **Per-type relocation correctness (one per row):**
 
@@ -55,10 +69,10 @@ demands them — straightforward unfolding proofs.
 
 **Bigger pieces:**
 
-- **`Plan.Reloc.plan_size_subset`** — given a hypothesis that the
+- **`Reloc.plan_size_subset`** — given a hypothesis that the
   formula's output sizes satisfy some predicate `P`, every write the
   planner emits has `P size`. Then instantiate per arch with
-  `P := (· = 4 ∨ · = 8)` to give a single bridge to `Load.Apply`'s
+  `P := (· = 4 ∨ · = 8)` to give a single bridge to `Apply`'s
   width panic. Requires either refactoring `process` to use
   `Array.filterMap` or working through `Id.forIn` lemmas.
 - **`Resolve.resolveByName_provider_defines`** — if it returns

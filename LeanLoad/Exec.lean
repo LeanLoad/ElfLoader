@@ -13,8 +13,8 @@ two C calls into `runtime/exec.c`. The orchestration below drives them.
 -/
 
 import LeanLoad.Discover
-import LeanLoad.Plan.Layout
-import LeanLoad.Plan.Reloc
+import LeanLoad.Layout
+import LeanLoad.Reloc
 import LeanLoad.Region
 import LeanLoad.Spec.Program
 
@@ -65,7 +65,7 @@ opaque callCtor (addr : UInt64) : IO Unit
 -- ============================================================================
 
 /-- Call every entry of one object's `DT_INIT_ARRAY`. -/
-def runObjectInits (lm : Discover.LinkMap) (bases : Plan.Reloc.Bases)
+def runObjectInits (lm : Discover.LinkMap) (bases : Reloc.Bases)
     (objectIdx : Nat) : IO Unit := do
   let some obj := lm.objects[objectIdx]? | return ()
   let some base := bases[objectIdx]? | return ()
@@ -75,8 +75,8 @@ def runObjectInits (lm : Discover.LinkMap) (bases : Plan.Reloc.Bases)
     if fnAddr != 0 then callCtor fnAddr
 
 /-- Call constructors for every object in `initOrder`, including main. -/
-def runInits (lm : Discover.LinkMap) (bases : Plan.Reloc.Bases)
-    (plan : Plan.Layout.LoaderPlan) : IO Unit := do
+def runInits (lm : Discover.LinkMap) (bases : Reloc.Bases)
+    (plan : Layout.Layout) : IO Unit := do
   for objectIdx in plan.initOrder do
     runObjectInits lm bases objectIdx
 
@@ -88,8 +88,8 @@ def runInits (lm : Discover.LinkMap) (bases : Plan.Reloc.Bases)
 def stackBytes : USize := 8 * 1024 * 1024
 
 /-- Allocate kernel-style stack and jump to entry. **Does not return.** -/
-def transferControl (mainObj : Discover.LoadedObject) (plan : Plan.Layout.LoaderPlan)
-    (bases : Plan.Reloc.Bases) (path : String) : IO Unit := do
+def transferControl (mainObj : Discover.LoadedObject) (plan : Layout.Layout)
+    (bases : Reloc.Bases) (path : String) : IO Unit := do
   let some mainLayout := plan.layouts[0]?
     | throw (IO.userError "load: empty plan")
   let some mainBase := bases[0]?

@@ -1,0 +1,213 @@
+== Discover ==
+build/main  (build/main)
+libfoo.so  (/home/szhong/LeanLoad/build/libfoo.so)
+libbar.so  (/home/szhong/LeanLoad/build/libbar.so)
+libc.so  (/home/szhong/LeanLoad/build/lib/libc.so)
+libbaz.so  (/home/szhong/LeanLoad/build/libbaz.so)
+
+== Resolve ==
+build/main:
+  printf                       ←  libc.so      [sym 555 @0x6014d]
+  pthread_create               ←  libc.so      [sym 647 @0x341a0]
+  strerror                     ←  libc.so      [sym 447 @0x3e415]
+  puts                         ←  libc.so      [sym 129 @0x60470]
+  libbar_step                  ←  libbar.so    [sym 8 @0x1119]
+  fflush                       ←  libc.so      [sym 87 @0x5d778]
+  __stack_chk_fail             ←  libc.so      [sym 197 @0x3dfdc]
+  _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
+  _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
+  libfoo_print                 ←  libfoo.so    [sym 5 @0x10f9]
+  exit                         ←  libc.so      [sym 759 @0x1408c]
+  __libc_start_main            ←  libc.so      [sym 1610 @0x3ded0]
+  pthread_join                 ←  libc.so      [sym 780 @0x652b0]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+libfoo.so:
+  puts                         ←  libc.so      [sym 129 @0x60470]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
+  _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
+libbar.so:
+  printf                       ←  libc.so      [sym 555 @0x6014d]
+  libbaz_step                  ←  libbaz.so    [sym 8 @0x1119]
+  puts                         ←  libc.so      [sym 129 @0x60470]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
+  _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
+libbaz.so:
+  printf                       ←  libc.so      [sym 555 @0x6014d]
+  puts                         ←  libc.so      [sym 129 @0x60470]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  libbar_step                  ←  libbar.so    [sym 8 @0x1119]
+  _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
+  _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
+strong missing: 0, weak missing: 8
+
+== Plan ==
+[0] build/main (4 mappings)
+  entry: 0x10e0
+  vaddr=0x0 len=0x1000 prot=1
+  vaddr=0x1000 len=0x1000 prot=5
+  vaddr=0x2000 len=0x1000 prot=1
+  vaddr=0x3000 len=0x2000 prot=3
+[1] libfoo.so (4 mappings)
+  vaddr=0x0 len=0x1000 prot=1
+  vaddr=0x1000 len=0x1000 prot=5
+  vaddr=0x2000 len=0x1000 prot=1
+  vaddr=0x3000 len=0x2000 prot=3
+[2] libbar.so (4 mappings)
+  vaddr=0x0 len=0x1000 prot=1
+  vaddr=0x1000 len=0x1000 prot=5
+  vaddr=0x2000 len=0x1000 prot=1
+  vaddr=0x3000 len=0x2000 prot=3
+[3] libc.so (4 mappings)
+  vaddr=0x0 len=0x14000 prot=1
+  vaddr=0x14000 len=0x56000 prot=5
+  vaddr=0x6a000 len=0x36000 prot=1
+  vaddr=0xa0000 len=0x4000 prot=3
+[4] libbaz.so (4 mappings)
+  vaddr=0x0 len=0x1000 prot=1
+  vaddr=0x1000 len=0x1000 prot=5
+  vaddr=0x2000 len=0x1000 prot=1
+  vaddr=0x3000 len=0x2000 prot=3
+init order: #[3, 1, 4, 2, 0]
+fini order: #[0, 2, 4, 1, 3]
+
+== Map ==
+[0] build/main → 0x7ffffec52000
+[1] libfoo.so → 0x7ffffec4d000
+[2] libbar.so → 0x7ffffec48000
+[3] libc.so → 0x7ffffeba4000
+[4] libbaz.so → 0x7ffffeb9f000
+
+== Reloc ==
+[0] build/main    type=8   @0x7ffffec55d68 ← 0x7ffffec531d0 (8B)  sym=''
+[0] build/main    type=8   @0x7ffffec55d70 ← 0x7ffffec531d9 (8B)  sym=''
+[0] build/main    type=8   @0x7ffffec55d78 ← 0x7ffffec53190 (8B)  sym=''
+[0] build/main    type=8   @0x7ffffec56000 ← 0x7ffffec56000 (8B)  sym=''
+[0] build/main    type=6   @0x7ffffec55fe8 ← 0x7ffffebe2652 (8B)  sym='__cxa_finalize'
+[0] build/main    type=6   @0x7ffffec55ff0 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
+[0] build/main    type=6   @0x7ffffec55ff8 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
+[0] build/main    type=7   @0x7ffffec55f90 ← 0x7ffffec0414d (8B)  sym='printf'
+[0] build/main    type=7   @0x7ffffec55f98 ← 0x7ffffebd81a0 (8B)  sym='pthread_create'
+[0] build/main    type=7   @0x7ffffec55fa0 ← 0x7ffffebe2415 (8B)  sym='strerror'
+[0] build/main    type=7   @0x7ffffec55fa8 ← 0x7ffffec04470 (8B)  sym='puts'
+[0] build/main    type=7   @0x7ffffec55fb0 ← 0x7ffffec49119 (8B)  sym='libbar_step'
+[0] build/main    type=7   @0x7ffffec55fb8 ← 0x7ffffec01778 (8B)  sym='fflush'
+[0] build/main    type=7   @0x7ffffec55fc0 ← 0x7ffffebe1fdc (8B)  sym='__stack_chk_fail'
+[0] build/main    type=7   @0x7ffffec55fc8 ← 0x7ffffec4e0f9 (8B)  sym='libfoo_print'
+[0] build/main    type=7   @0x7ffffec55fd0 ← 0x7ffffebb808c (8B)  sym='exit'
+[0] build/main    type=7   @0x7ffffec55fd8 ← 0x7ffffebe1ed0 (8B)  sym='__libc_start_main'
+[0] build/main    type=7   @0x7ffffec55fe0 ← 0x7ffffec092b0 (8B)  sym='pthread_join'
+[1] libfoo.so     type=8   @0x7ffffec50e08 ← 0x7ffffec4e0f0 (8B)  sym=''
+[1] libfoo.so     type=8   @0x7ffffec50e10 ← 0x7ffffec4e113 (8B)  sym=''
+[1] libfoo.so     type=8   @0x7ffffec50e18 ← 0x7ffffec4e0b0 (8B)  sym=''
+[1] libfoo.so     type=8   @0x7ffffec51008 ← 0x7ffffec51008 (8B)  sym=''
+[1] libfoo.so     type=6   @0x7ffffec50fd0 ← 0x7ffffebe2652 (8B)  sym='__cxa_finalize'
+[1] libfoo.so     type=6   @0x7ffffec50fd8 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
+[1] libfoo.so     type=6   @0x7ffffec50fe0 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
+[1] libfoo.so     type=7   @0x7ffffec51000 ← 0x7ffffec04470 (8B)  sym='puts'
+[2] libbar.so     type=8   @0x7ffffec4bdf8 ← 0x7ffffec49110 (8B)  sym=''
+[2] libbar.so     type=8   @0x7ffffec4be00 ← 0x7ffffec49159 (8B)  sym=''
+[2] libbar.so     type=8   @0x7ffffec4be08 ← 0x7ffffec490d0 (8B)  sym=''
+[2] libbar.so     type=8   @0x7ffffec4c018 ← 0x7ffffec4c018 (8B)  sym=''
+[2] libbar.so     type=6   @0x7ffffec4bfd0 ← 0x7ffffebe2652 (8B)  sym='__cxa_finalize'
+[2] libbar.so     type=6   @0x7ffffec4bfd8 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
+[2] libbar.so     type=6   @0x7ffffec4bfe0 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
+[2] libbar.so     type=7   @0x7ffffec4c000 ← 0x7ffffec0414d (8B)  sym='printf'
+[2] libbar.so     type=7   @0x7ffffec4c008 ← 0x7ffffeba0119 (8B)  sym='libbaz_step'
+[2] libbar.so     type=7   @0x7ffffec4c010 ← 0x7ffffec04470 (8B)  sym='puts'
+[3] libc.so       type=8   @0x7ffffec44b20 ← 0x7ffffec44b60 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44b60 ← 0x7ffffec401d0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44ba0 ← 0x7ffffec42cda (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44ba8 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44bb0 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44bb8 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44bc0 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44bc8 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44bd0 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44bd8 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44be0 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44be8 ← 0x7ffffec42f8c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c00 ← 0x7ffffec44d48 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c08 ← 0x7ffffec44d50 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c10 ← 0x7ffffec44d58 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c18 ← 0x7ffffec44d60 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c20 ← 0x7ffffec44d88 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c28 ← 0x7ffffec44de8 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c30 ← 0x7ffffec44db0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c38 ← 0x7ffffec44d80 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c40 ← 0x7ffffec44df8 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c48 ← 0x7ffffec44d68 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c68 ← 0x7ffffec42f85 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c78 ← 0x7ffffec42dac (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c88 ← 0x7ffffec42f87 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44c98 ← 0x7ffffec42f89 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44ca8 ← 0x7ffffec42f8b (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44cb8 ← 0x7ffffec42f8d (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44cc8 ← 0x7ffffec42f8f (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44cd8 ← 0x7ffffec42f9c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44ce8 ← 0x7ffffec42faa (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44cf8 ← 0x7ffffec42fb6 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d08 ← 0x7ffffec42fc3 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d18 ← 0x7ffffec42fcf (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d30 ← 0x7ffffec11620 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d38 ← 0x7ffffec11a20 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d40 ← 0x7ffffec12020 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d48 ← 0x7ffffec479d8 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d50 ← 0x7ffffec479e0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d58 ← 0x7ffffec479f0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d60 ← 0x7ffffec479f4 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d68 ← 0x7ffffec479fc (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d70 ← 0x7ffffec42d15 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d78 ← 0x7ffffec42d24 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d80 ← 0x7ffffec47a20 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d88 ← 0x7ffffec47a44 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d90 ← 0x7ffffec42e1c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44d98 ← 0x7ffffec0108a (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44da0 ← 0x7ffffec01fc2 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44da8 ← 0x7ffffec023a4 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44db0 ← 0x7ffffec47a54 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44db8 ← 0x7ffffec03a6c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44dc0 ← 0x7ffffec03cee (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44dc8 ← 0x7ffffec42e1c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44dd0 ← 0x7ffffec450c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44dd8 ← 0x7ffffec451c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44de0 ← 0x7ffffec452c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44de8 ← 0x7ffffec47a6c (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44df0 ← 0x7ffffec47980 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44df8 ← 0x7ffffec47a74 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec44f60 ← 0x7ffffec44e00 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec450d8 ← 0x7ffffec00fce (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45108 ← 0x7ffffec0116b (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45110 ← 0x7ffffec0115f (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45118 ← 0x7ffffec47958 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec451d8 ← 0x7ffffec00fce (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45200 ← 0x7ffffec0108a (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45210 ← 0x7ffffec0115f (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45218 ← 0x7ffffec464a8 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec452d8 ← 0x7ffffec00fce (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45308 ← 0x7ffffec01272 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45310 ← 0x7ffffec0115f (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec45318 ← 0x7ffffec468c8 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453b8 ← 0x7ffffec45044 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453c0 ← 0x7ffffebfefc5 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453c8 ← 0x7ffffec450c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453d0 ← 0x7ffffec451c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453d8 ← 0x7ffffec452c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453f0 ← 0x7ffffec475c0 ([libfoo] ctor
+[libbaz] ctor
+[libbar] ctor
+[main] ctor
+[main] entry
+[libfoo] function
+[libbar] step=3
+[libbaz] step=2
+[libbar] step=1
+[libbaz] step=0
+[main] pthread test start
+[main] tls=42, &tls=0x7ffffec455dc
+[thread] tls=0, &tls=0x7ffffe39eb34
+[thread] tls=99, &tls=0x7ffffe39eb34
+[main] tls=42, &tls=0x7ffffec455dc
+[main] pthread test completed
+[main] exit
