@@ -34,52 +34,6 @@ Two design rules:
    `Reloc.lean`); the `load` orchestration threads bases between
    them.
 
-## Module layout
-
-```
-LeanLoad.lean              package root (re-exports)
-LeanLoad/
-  Main.lean                CLI + `load` orchestration
-  Test.lean                test exe entry
-  Discover.lean            IO walk + LinkMap type
-  Resolve.lean             undef ref → providing object/symbol (pure)
-  Layout.lean              mappings + init/fini order (pure)
-  Reloc.lean               formula → write list (pure post-bases)
-  Map.lean                 mmap + memcpy + mprotect (IO)
-  Apply.lean               poke reloc bytes into mmap'd memory (IO)
-  Region.lean              @[extern] for memory ops (runtime/region.c)
-  Exec.lean                @[extern] for control transfer + init/exec
-  TestFixture.lean         shared synthObj/synthElf
-  Thm.lean                 single audit surface for proven theorems
-  Spec/                    gabi/abi transcriptions only
-    Header.lean            gabi 02 § ELF Header
-    Program.lean           gabi 07 § Program Header
-    Dynamic.lean           gabi 08 § Dynamic Section
-    StringTable.lean       gabi 04 § String Table
-    Symbol.lean            gabi 05 § Symbol Table
-    Reloc.lean             gabi 06 § Relocation
-    Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations
-    Reloc/X86_64.lean      x86-64-ABI § Relocation Types
-    Reloc/Formula.lean     per-`e_machine` dispatch (gabi 02 § e_machine)
-    GnuHash.lean           gnu-gabi § Hashes
-  Parse/                   byte decoders (impl)
-    Bytes.lean             parser monad
-    Header.lean Program.lean Dynamic.lean
-    StringTable.lean Symbol.lean Reloc.lean
-    File.lean              ParsedElf aggregate + parse
-runtime/                   C shims (unverified)
-  region.{h,c}             mmap / mprotect / write
-  exec.{h,c}               ctor invocation + transfer of control
-  common.h                 shared lean-FFI helpers
-docs/
-  design.md                this file
-  exec.md                  kernel-style stack — argc/argv/envp/auxv
-  plan.md                  phased implementation plan
-  verification.md          proof obligations + theorem statements
-examples/                  C sources for showcase binaries
-third_party/               submodules (gabi, musl, …)
-```
-
 ## Trust boundary
 
 - **Verified**: `LeanLoad/Spec/`, `LeanLoad/Parse/`, plus the pure
@@ -185,3 +139,33 @@ theorem statements. The audit surface is two files:
 - **Outputs** (loaded image): `mmap` regions wrapped as opaque
   `Region` external objects. Mappings live for the process lifetime;
   the kernel reclaims at exit.
+
+## Kernel-style exec
+
+The `Exec` stage builds the same stack `execve(2)` would
+(argc/argv/envp/auxv at SP, strings above) and jumps to `e_entry`.
+SP is 16-byte aligned (AArch64 ABI + SysV x86-64 § Initial Stack and
+Register State). Implementation in `runtime/exec.c`; the trampoline
+is per-arch — AArch64 `mov sp, _; br _` and x86-64 `movq _, %rsp;
+xor rbp; xor rdx; jmpq *_`. No return: leanload's process *is* the
+loaded program after the jump.
+
+Three non-obvious gotchas:
+
+1. **Auxv must forward host-process values.** `AT_RANDOM`,
+   `AT_HWCAP`, `AT_HWCAP2`, `AT_CLKTCK`, `AT_SECURE`,
+   `AT_SYSINFO_EHDR`, `AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` are
+   pulled via `getauxval` and copied through. musl's
+   `__libc_start_main` crashes without them in feature-detection,
+   identity, or vDSO setup.
+2. **Signal handlers are reset to `SIG_DFL`** before the jump
+   (`SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/`SIGABRT`/`SIGPIPE`).
+   Otherwise faults in the loaded binary wake Lean's `segv_handler`,
+   which calls `pthread_getattr_np` and deadlocks against libuv's
+   pthread lock (Lean's threads are still alive).
+3. **The loaded program must call `__NR_exit_group`, not
+   `__NR_exit`.** Lean's runtime threads coexist with the loaded
+   program; a thread-scoped `_exit` leaves them alive and the
+   process hangs. musl's `_exit` does the right thing; nolibc's
+   doesn't (the `examples/static.c` fixture works around this
+   manually via `my_syscall1(__NR_exit_group, rc)`).

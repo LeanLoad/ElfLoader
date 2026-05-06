@@ -28,12 +28,10 @@ https://github.com/ShawnZhong/LeanLoad/blob/8efc31143c07302e9fc5743b7e144602fd5e
 
 ## Documentation
 
-- [`docs/design.md`](docs/design.md) — pipeline, module layout, trust
-  boundary, naming conventions, CLI.
+- [`docs/design.md`](docs/design.md) — pipeline, trust boundary,
+  naming conventions, CLI, kernel-style exec details.
 - [`docs/verification.md`](docs/verification.md) — proof obligations,
   proven theorems, trust assumptions on the host process.
-- [`docs/exec.md`](docs/exec.md) — kernel-style stack (argc/argv/envp/auxv),
-  signal-handler reset, AArch64 + x86-64 trampolines.
 - [`docs/plan.md`](docs/plan.md) — phased implementation plan and
   current status.
 
@@ -47,3 +45,45 @@ transcriptions, one file per chapter) and `LeanLoad/Thm.lean`
 - Dynamic binary (musl-linked, multi-shared-object closure): runs
   end-to-end against `examples/build/main`.
 - Differential tests against `ld.so` are not yet wired up.
+
+## Module layout
+
+```
+LeanLoad.lean              package root (re-exports)
+LeanLoad/
+  Main.lean                CLI + `load` orchestration
+  Test.lean                test exe entry
+  Discover.lean            IO walk + LinkMap type
+  Resolve.lean             undef ref → providing object/symbol (pure)
+  Layout.lean              mappings + init/fini order (pure)
+  Reloc.lean               formula → write list (pure post-bases)
+  Map.lean                 mmap + memcpy + mprotect (IO)
+  Apply.lean               poke reloc bytes into mmap'd memory (IO)
+  Region.lean              @[extern] for memory ops (runtime/region.c)
+  Exec.lean                @[extern] for control transfer + init/exec
+  TestFixture.lean         shared synthObj/synthElf
+  Thm.lean                 single audit surface for proven theorems
+  Spec/                    gabi/abi transcriptions only
+    Header.lean            gabi 02 § ELF Header
+    Program.lean           gabi 07 § Program Header
+    Dynamic.lean           gabi 08 § Dynamic Section
+    StringTable.lean       gabi 04 § String Table
+    Symbol.lean            gabi 05 § Symbol Table
+    Reloc.lean             gabi 06 § Relocation
+    Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations
+    Reloc/X86_64.lean      x86-64-ABI § Relocation Types
+    Reloc/Formula.lean     per-`e_machine` dispatch (gabi 02 § e_machine)
+    GnuHash.lean           gnu-gabi § Hashes
+  Parse/                   byte decoders (impl)
+    Bytes.lean             parser monad
+    Header.lean Program.lean Dynamic.lean
+    StringTable.lean Symbol.lean Reloc.lean
+    File.lean              ParsedElf aggregate + parse
+runtime/                   C shims (unverified)
+  region.{h,c}             mmap / mprotect / write
+  exec.{h,c}               ctor invocation + transfer of control
+  common.h                 shared lean-FFI helpers
+docs/                      design.md · plan.md · verification.md
+examples/                  C sources for showcase binaries
+third_party/               submodules (musl, nolibc, gabi, …)
+```
