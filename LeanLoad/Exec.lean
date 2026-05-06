@@ -10,10 +10,10 @@ ET_EXEC entries are already absolute. AT_PHDR / AT_PHENT / AT_PHNUM
 (populated by `Runtime.execAndJump` in `runtime/exec.c`).
 -/
 
-import LeanLoad.Discover
+import LeanLoad.DiscoverPlan
+import LeanLoad.Image
 import LeanLoad.Layout
-import LeanLoad.Map
-import LeanLoad.Reloc
+import LeanLoad.RelocPlan
 import LeanLoad.Runtime
 import LeanLoad.Spec.Program
 
@@ -31,13 +31,13 @@ open LeanLoad.Discover
     will walk `g.order.reverse`. ET_DYN init-array entries are
     relative addresses and need the chosen base added; ET_EXEC
     entries are already absolute. -/
-def runInits (g : DepGraph) (image : Map.ProcessImage) (order : Array Nat) : IO Unit := do
+def runInits {n : Nat} (g : DepGraph) (image : Map.ProcessImage n) (order : Array Nat) : IO Unit := do
   for objectIdx in order do
-    let some obj := g.objects[objectIdx]?     | continue
-    let some lyt := image.layouts[objectIdx]? | continue
+    let some obj    := g.objects[objectIdx]?     | continue
+    let some imgObj := image.objects[objectIdx]? | continue
     let isExec := obj.elf.header.e_type = 2
     for entry in obj.elf.initArr do
-      let fnAddr := if isExec then entry else lyt.base + entry
+      let fnAddr := if isExec then entry else imgObj.layout.base + entry
       if fnAddr != 0 then Runtime.callCtor fnAddr
 
 -- ============================================================================
@@ -48,13 +48,13 @@ def runInits (g : DepGraph) (image : Map.ProcessImage) (order : Array Nat) : IO 
 def stackBytes : USize := 8 * 1024 * 1024
 
 /-- Allocate kernel-style stack and jump to entry. **Does not return.** -/
-def transferControl (mainObj : Discover.LoadedObject) (image : Map.ProcessImage)
+def transferControl {n : Nat} (mainObj : Discover.LoadedObject) (image : Map.ProcessImage n)
     (path : String) : IO Unit := do
-  let some mainLayout := image.layouts[0]?
-    | throw (IO.userError "load: empty layouts")
+  let some mainImg := image.objects[0]?
+    | throw (IO.userError "load: empty objects")
   let stack ← Runtime.mmapStack stackBytes
-  let entry  := mainLayout.base + mainLayout.entry.getD 0
-  let phdrVa := mainLayout.base + mainObj.elf.header.e_phoff
+  let entry  := mainImg.layout.base + mainImg.layout.entry.getD 0
+  let phdrVa := mainImg.layout.base + mainObj.elf.header.e_phoff
   let phnum  := mainObj.elf.header.e_phnum.toUInt64
   let phent  := Spec.Program.entrySize.toUInt64
   Runtime.execAndJump entry phdrVa phent phnum 0 stack path

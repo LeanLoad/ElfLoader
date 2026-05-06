@@ -1,51 +1,52 @@
 /-
 Layout — per-object segment arrangement, pure.
 
-Walks each parsed ELF's `PT_LOAD`s and presents them as `Segment`s,
-with mmap-ready fields (`vaddr`, `length`, `prot`, …) exposed as
-lazy accessors on the wrapped `Header64`. The dot-notation
-`g.layouts` (defined here under `Discover.DepGraph`) yields the
-`Array ObjectLayout` consumed downstream by Map / Reloc / Apply /
-Exec.
+Layout consumes `Array Parse.Segment.Segment` (typed `PT_LOAD`s)
+that the parser already produced, and assigns each object an mmap
+base + builds the cross-object plan that Map / Reloc / Apply / Exec
+consume. Validation that the parser-produced segments are well-
+formed (sorted, non-overlapping) happens at the boundary in
+`g.layouts`, which returns `Except String (Array ObjectLayout)`.
 
 Dependency ordering lives in `LeanLoad.Order` (gabi 08); this file
-covers gabi 07 (Program Header / Program Loading / Segment
-Permissions).
+covers gabi 07 positional concerns (base assignment, span over
+loadable segments).
 -/
 
+import LeanLoad.Parse.Segment
+import LeanLoad.DiscoverPlan
 import LeanLoad.Spec.Program
-import LeanLoad.Parse.File
-import LeanLoad.Discover
 
 namespace LeanLoad.Layout
 
-open LeanLoad.Spec
 open LeanLoad
+open LeanLoad.Spec
 open LeanLoad.Discover
+open LeanLoad.Parse.Segment
 
 -- ============================================================================
--- PF_* → PROT_* translation
+-- PF_* → PROT_* translation (loader-level: gabi `PF_*` → POSIX `PROT_*`)
 -- ============================================================================
 
 /-- Translate program-header permissions (gabi 07 § Segment Permissions)
     to the corresponding `PROT_*` bits for `mprotect`. The bit
     positions are swapped between PF_* and PROT_*: `PF_X=1, PF_W=2,
     PF_R=4` vs `PROT_READ=1, PROT_WRITE=2, PROT_EXEC=4`, so each
-    flag must be translated explicitly. -/
+    flag must be translated explicitly. `PROT_*` is POSIX, not gabi —
+    this is loader-level. -/
 def protOfFlags (pflags : UInt32) : UInt32 :=
   let r := if (pflags &&& Program.PF_R) != 0 then (1 : UInt32) else 0
   let w := if (pflags &&& Program.PF_W) != 0 then (2 : UInt32) else 0
   let x := if (pflags &&& Program.PF_X) != 0 then (4 : UInt32) else 0
   r ||| w ||| x
 
-#guard protOfFlags (Program.PF_R ||| Program.PF_X) = 5  -- PROT_READ|EXEC
-#guard protOfFlags (Program.PF_R ||| Program.PF_W) = 3  -- PROT_READ|WRITE
-#guard protOfFlags Program.PF_R = 1                     -- PROT_READ only
-
-#guard protOfFlags (Program.PF_R + Program.PF_X) = 5  -- PROT_READ|PROT_EXEC
+#guard protOfFlags (Program.PF_R ||| Program.PF_X) = 5
+#guard protOfFlags (Program.PF_R ||| Program.PF_W) = 3
+#guard protOfFlags Program.PF_R = 1
+#guard protOfFlags (Program.PF_R + Program.PF_X) = 5
 
 -- ============================================================================
--- Page alignment helpers
+-- Page alignment helpers (loader-level: required by mmap(2))
 -- ============================================================================
 
 /-- Round `x` down to a multiple of `align`. `align` must be a power of two
@@ -59,34 +60,24 @@ def alignUp (x align : UInt64) : UInt64 :=
 
 #guard alignDown 0x1234 0x1000 == 0x1000
 #guard alignUp 0x1234 0x1000 == 0x2000
--- Already aligned: identity.
 #guard alignDown 0x1000 0x1000 == 0x1000
 #guard alignUp   0x1000 0x1000 == 0x1000
--- align = 0 ⇒ identity (no rounding).
 #guard alignDown 0x1234 0 == 0x1234
 #guard alignUp   0x1234 0 == 0x1234
 
+end LeanLoad.Layout
+
 -- ============================================================================
--- Loadable segment — a `PT_LOAD` program header plus the mmap-ready
--- accessors derived from it. The accessors (`vaddr`, `length`, `prot`,
--- `fileOff`, `fileLen`, `pageInset`) are computed lazily; the planner
--- doesn't cache them.
+-- Loader-level views of a `Segment` — page-aligned mmap addresses,
+-- POSIX `PROT_*` translation. Defined under the `Parse.Segment.Segment`
+-- namespace so dot notation works (`s.vaddr`, `s.length`, …) wherever
+-- this file is imported. The parse-level type stays minimal; these
+-- are extension methods.
 -- ============================================================================
 
-/-- A loadable segment: a `Header64` whose `p_type = PT_LOAD`. The
-    `isLoad` field defaults via `decide` for direct construction with
-    a concrete phdr; the smart constructor `fromPhdr?` filters
-    arbitrary phdrs by type. -/
-structure Segment where
-  phdr   : Program.Header64
-  isLoad : phdr.p_type = Program.PT_LOAD := by decide
-  deriving Repr
+namespace LeanLoad.Parse.Segment.Segment
 
-namespace Segment
-
-/-- Lift a `Header64` into a `Segment` if it is `PT_LOAD`. -/
-def fromPhdr? (ph : Program.Header64) : Option Segment :=
-  if h : ph.p_type = Program.PT_LOAD then some ⟨ph, h⟩ else none
+open LeanLoad.Layout
 
 /-- Effective alignment (treats `p_align = 0` as 1). -/
 private def effectiveAlign (s : Segment) : UInt64 :=
@@ -99,14 +90,8 @@ def vaddr (s : Segment) : UInt64 := alignDown s.phdr.p_vaddr s.effectiveAlign
 def length (s : Segment) : UInt64 :=
   alignUp (s.phdr.p_vaddr + s.phdr.p_memsz) s.effectiveAlign - s.vaddr
 
-/-- PROT_* bits for `mprotect`, translated from PF_*. -/
+/-- POSIX `PROT_*` bits for `mprotect`, translated from gabi `PF_*`. -/
 def prot (s : Segment) : UInt32 := protOfFlags s.phdr.p_flags
-
-/-- File offset to start copying bytes from. -/
-def fileOff (s : Segment) : UInt64 := s.phdr.p_offset
-
-/-- Number of bytes to copy (≤ `length`; remainder is BSS). -/
-def fileLen (s : Segment) : UInt64 := s.phdr.p_filesz
 
 /-- Offset within the mapped region where copied bytes begin (handles
     the case `p_vaddr` is not page-aligned). -/
@@ -131,7 +116,14 @@ def endAddr (s : Segment) : UInt64 := s.vaddr + s.length
 def disjoint (s₁ s₂ : Segment) : Prop :=
   s₁.endAddr ≤ s₂.vaddr ∨ s₂.endAddr ≤ s₁.vaddr
 
-end Segment
+end LeanLoad.Parse.Segment.Segment
+
+namespace LeanLoad.Layout
+
+open LeanLoad
+open LeanLoad.Spec
+open LeanLoad.Discover
+open LeanLoad.Parse.Segment
 
 -- Page-aligned vaddr at 0x1000, fits in one 0x1000 page → no inset.
 #guard
@@ -165,6 +157,10 @@ end Segment
     p_offset := 0x2000 }, by decide⟩
   s.fileLen = 0x200 ∧ s.length = 0x1000
 
+-- ============================================================================
+-- ObjectLayout — per-object plan with chosen base.
+-- ============================================================================
+
 /-- Layout for a single loaded object.
 
     `base` is the absolute mmap address at which the object's
@@ -172,9 +168,12 @@ end Segment
     `base = 0` and Map uses `s.vaddr` directly. For `ET_DYN`, Layout
     picks `base = dynAnchor + cumulative_offset` so each object lives
     in its own non-overlapping slot starting at `dynAnchor`; Map then
-    uses `MAP_FIXED` everywhere — no kernel-chosen bases. -/
+    uses `MAP_FIXED` everywhere — no kernel-chosen bases.
+
+    There's no `objectIdx` field — a layout is identified by its
+    position in the parent array (`g.layouts.val[i]` corresponds to
+    `g.objects[i]`), so storing the index would be redundant state. -/
 structure ObjectLayout where
-  objectIdx : Nat
   /-- Absolute mmap base address chosen by Layout. -/
   base      : UInt64
   segments  : Array Segment
@@ -191,11 +190,6 @@ structure ObjectLayout where
     x86-64 / aarch64 (heap, libc, etc., usually in the low GB). -/
 def dynAnchor : UInt64 := 0x80000000
 
-/-- Extract the loadable segments from a parsed ELF. Filters
-    `phdrs` to `PT_LOAD` entries and wraps each in `Segment`. -/
-def segmentsOf (elf : Parse.File.ParsedElf) : Array Segment :=
-  elf.phdrs.filterMap Segment.fromPhdr?
-
 /-- The contiguous span an array of segments needs (relative to the
     object's base). Used by `assignBases` (with `segmentsOf elf`) to
     size each `ET_DYN` object's arena slot, and by `Map` (with
@@ -211,10 +205,10 @@ def ObjectLayout.span (lyt : ObjectLayout) : UInt64 :=
 /-- Layout for a single parsed ELF. `base` is decided by the
     enclosing `DepGraph.layouts` (anchor + cumulative for `ET_DYN`,
     0 for `ET_EXEC`). -/
-def objectLayout (objectIdx : Nat) (isMain : Bool) (base : UInt64)
+def objectLayout (isMain : Bool) (base : UInt64)
     (elf : Parse.File.ParsedElf) : ObjectLayout :=
   let entry := if isMain then some elf.header.e_entry else none
-  { objectIdx, base, segments := segmentsOf elf, entry, isMain }
+  { base, segments := segmentsOf elf, entry, isMain }
 
 /-- Segments are pairwise disjoint (`[vaddr, endAddr)` ranges don't overlap). -/
 def ObjectLayout.segmentsPairwiseDisjoint (lyt : ObjectLayout) : Prop :=
@@ -223,18 +217,24 @@ def ObjectLayout.segmentsPairwiseDisjoint (lyt : ObjectLayout) : Prop :=
 
 /-- Segments are sorted by `vaddr` with each one's end ≤ the next one's start.
     The clean precondition under which pairwise disjointness follows; the
-    real-ELF discharge belongs to a future "PT_LOADs are well-formed" lemma. -/
+    real-ELF discharge comes from `Parse.Segment.wellFormed`. -/
 def ObjectLayout.segmentsSorted (lyt : ObjectLayout) : Prop :=
   ∀ i j (_ : i < lyt.segments.size) (_ : j < lyt.segments.size),
     i < j → lyt.segments[i].endAddr ≤ lyt.segments[j].vaddr
 
 -- ============================================================================
 -- Layout-stage output is `Array ObjectLayout` (one entry per object,
--- in `DepGraph.objects` order). Init/fini order (gabi 08) is
--- computed separately in `LeanLoad.Order` and threaded directly to
--- `Exec.runInits` — purely gabi-07 here (segment placement).
--- Relocations are not part of `Layout` either; they depend on actual
--- chosen bases and are computed post-Map by `LeanLoad.Reloc.plan`.
+-- in `DepGraph.objects` order). `g.layouts` returns
+-- `Except String (Array ObjectLayout)` — the well-formedness check
+-- runs here at the boundary; a malformed ELF surfaces as an error
+-- before Map (which would otherwise produce undefined behaviour
+-- against `MAP_FIXED`).
+--
+-- Init/fini order (gabi 08) is computed separately in `LeanLoad.Order`
+-- and threaded directly to `Exec.runInits` — purely gabi-07 here
+-- (segment placement). Relocations are not part of `Layout` either;
+-- they depend on actual chosen bases and are computed post-Map by
+-- `LeanLoad.Reloc.plan`.
 -- ============================================================================
 
 /-- Assign an mmap base to each object in BFS order. `ET_EXEC`
@@ -257,34 +257,26 @@ end LeanLoad.Layout
 namespace LeanLoad.Discover.DepGraph
 
 open LeanLoad.Layout
+open LeanLoad.Parse.Segment
 
 /-- Build the per-object layouts for a discovered dep graph. The
-    first object (index 0) is main. -/
-def layouts (g : DepGraph) : Array ObjectLayout :=
-  let bases := assignBases g
-  g.objects.mapIdx fun i obj =>
-    objectLayout i (i = 0) (bases[i]?.getD 0) obj.elf
+    first object (index 0) is main. Each ELF is checked for
+    well-formed segments (sorted by `vaddr` with non-overlapping
+    ranges); a malformed ELF surfaces as `error`.
 
--- Empty-graph edge case (the strong size-equality is in `LeanLoad.Thm.Layout`).
-#guard ({ objects := #[], deps := #[] } : DepGraph).layouts.isEmpty
+    Returns a sized subtype `{ a : Array ObjectLayout // a.size =
+    g.objects.size }`: the size invariant is in the type, so
+    downstream consumers (`Map.mapAll`, `Reloc.plan`) get the size
+    for free without runtime checks. -/
+def layouts (g : DepGraph) : Except String { a : Array ObjectLayout // a.size = g.objects.size } :=
+  match g.objects.findIdx? (fun obj => !wellFormed obj.elf) with
+  | some i =>
+    let name := (g.objects[i]?.map (·.name)).getD "?"
+    .error s!"layouts: object[{i}] ({name}) has malformed PT_LOAD segments"
+  | none =>
+    let bases := assignBases g
+    let arr := g.objects.mapIdx fun i obj =>
+      objectLayout (i = 0) (bases[i]?.getD 0) obj.elf
+    .ok ⟨arr, by simp [arr]⟩
 
 end LeanLoad.Discover.DepGraph
-
-namespace LeanLoad.Layout
-
-open LeanLoad.Discover
-
--- ============================================================================
--- IO test runner. Sanity-checks the per-object segment count over
--- the discovered dep graph.
--- ============================================================================
-
-def test (g : DepGraph) : IO Nat := do
-  let mut failures := 0
-  let layouts := g.layouts
-  if layouts.size != g.objects.size then
-    IO.eprintln s!"layouts.size {layouts.size} ≠ object count {g.objects.size}"
-    failures := failures + 1
-  return failures
-
-end LeanLoad.Layout

@@ -1,14 +1,20 @@
 /-
 Layout-stage theorems.
 
-- `g.layouts` produces one layout per object (refinement-seam shape).
+- `g.layouts` produces one layout per object on the success branch.
 - `objectSpan` upper-bounds every segment (containment); sorted
   segments ⇒ pairwise disjoint.
 
-The "sorted from PT_LOAD invariant" half — the discharge that lets
-`segmentsPairwiseDisjoint_of_segmentsSorted` apply to a real ELF —
-is future work; gabi 07 implies but doesn't formally state PT_LOAD
-non-overlap.
+`WellFormedElf` is the trust seam between the parsed ELF and the
+disjointness theorem. It bundles one assumption — PT_LOAD entries
+sorted by `p_vaddr` with non-overlapping ranges. gabi 07 § Program
+Loading mandates the sort; non-overlap is a de facto convention
+(every linker produces it; the loader's `Map.lean` relies on it for
+`MAP_FIXED` mmap correctness) but isn't formally stated by gabi.
+We take it as an axiomatic well-formedness assumption. The runtime
+check `Parse.Segment.wellFormed` decides it; if every object
+satisfies it, `g.layouts` returns `.ok` and the disjointness
+theorems apply.
 -/
 
 import LeanLoad.Layout
@@ -17,11 +23,12 @@ namespace LeanLoad.Thm
 
 open LeanLoad.Layout
 open LeanLoad.Discover
+open LeanLoad.Parse.Segment
 
-/-- `g.layouts` produces one layout per discovered object — no
-    drops, no duplicates. -/
-theorem layouts_size (g : DepGraph) : g.layouts.size = g.objects.size := by
-  simp [DepGraph.layouts]
+-- The "one layout per object" property is now in the *return type* of
+-- `g.layouts`: it returns `Except String { a : Array ObjectLayout //
+-- a.size = g.objects.size }`. The size proof is the second component
+-- of the subtype — no separate theorem needed.
 
 /-- Each segment's `endAddr` is bounded by its object's `objectSpan`.
     The `foldl max 0` upper-bound, lifted to every input element. -/
@@ -61,5 +68,46 @@ theorem segmentsPairwiseDisjoint_of_segmentsSorted
   · exact Or.inl (h i j hi hj hlt)
   · have hgt : j < i := Nat.lt_of_le_of_ne hge (Ne.symm hne)
     exact Or.inr (h j i hj hi hgt)
+
+-- ============================================================================
+-- WellFormedElf: trust seam for segment disjointness.
+-- ============================================================================
+
+/-- Well-formedness predicate on a parsed ELF. Bundles the PT_LOAD
+    invariant that the loader relies on:
+
+    - **Sorted (gabi 07 mandated)**: PT_LOAD entries appear in
+      ascending order of `p_vaddr`.
+    - **Non-overlapping (de facto, not gabi-mandated)**: their
+      `[vaddr, endAddr)` ranges are pairwise disjoint. Every linker
+      produces this; `Map.lean`'s `MAP_FIXED` mmap requires it for
+      correctness; gabi 07 doesn't formally state it. We treat it as
+      a trust assumption — `WellFormedElf elf` is the witness that a
+      caller can supply.
+
+    Combined into one condition (`endAddr[i] ≤ vaddr[j]` for `i < j`),
+    matching `ObjectLayout.segmentsSorted`. -/
+structure WellFormedElf (elf : Parse.File.ParsedElf) : Prop where
+  segmentsSorted :
+    ∀ i j (_ : i < (segmentsOf elf).size) (_ : j < (segmentsOf elf).size),
+      i < j → (segmentsOf elf)[i].endAddr ≤ (segmentsOf elf)[j].vaddr
+
+/-- Discharge `ObjectLayout.segmentsSorted` from `WellFormedElf` for
+    any layout produced via `objectLayout` from the same ELF. -/
+theorem ObjectLayout.segmentsSorted_of_wellFormed
+    (isMain : Bool) (base : UInt64)
+    (elf : Parse.File.ParsedElf) (h : WellFormedElf elf) :
+    (objectLayout isMain base elf).segmentsSorted := by
+  intro i j hi hj hlt
+  exact h.segmentsSorted i j hi hj hlt
+
+/-- End-to-end: a `WellFormedElf` discharges segment pairwise
+    disjointness on any layout built from it. -/
+theorem ObjectLayout.segmentsPairwiseDisjoint_of_wellFormed
+    (isMain : Bool) (base : UInt64)
+    (elf : Parse.File.ParsedElf) (h : WellFormedElf elf) :
+    (objectLayout isMain base elf).segmentsPairwiseDisjoint :=
+  segmentsPairwiseDisjoint_of_segmentsSorted _
+    (segmentsSorted_of_wellFormed isMain base elf h)
 
 end LeanLoad.Thm

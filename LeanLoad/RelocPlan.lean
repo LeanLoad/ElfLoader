@@ -9,7 +9,7 @@ The formula notation `S, A, B, P` follows gabi 06 and the per-arch
 supplements. Per-arch formula tables live under `Spec/Reloc/`.
 -/
 
-import LeanLoad.Discover
+import LeanLoad.DiscoverPlan
 import LeanLoad.Layout
 import LeanLoad.Spec.Reloc
 import LeanLoad.Spec.Symbol
@@ -25,11 +25,14 @@ open LeanLoad.Layout
 -- A single planned write
 -- ============================================================================
 
-/-- One memory write computed from a relocation entry. -/
-structure Patch where
+/-- One memory write computed from a relocation entry, parameterised by
+    the dep graph's object count `n`. The `objectIdx : Fin n` carries
+    the bounds proof at the type level — `Apply.applyPatch` indexes
+    into `image.objects` totally, no `?`/`throw` needed. -/
+structure Patch (n : Nat) where
   /-- Index into `DepGraph.objects` of the object whose memory is
       being written to (the relocation's "P" object). -/
-  objectIdx : Nat
+  objectIdx : Fin n
   /-- Target virtual address (post base relocation). -/
   targetVa  : UInt64
   /-- Value to write. -/
@@ -100,39 +103,41 @@ def resolveSymValue (g : DepGraph) (bases : Array UInt64)
 
 /-- A write fits its object's mmap'd region: the byte range
     `[targetVa, targetVa + size)` lies in `[base, base + span)`. -/
-def Patch.inRange (w : Patch) (base span : UInt64) : Bool :=
+def Patch.inRange (w : Patch n) (base span : UInt64) : Bool :=
   decide (base ≤ w.targetVa ∧ (w.targetVa - base).toNat + w.size ≤ span.toNat)
 
 /-- Apply `formula` to a single rela: compute inputs, run the formula,
     bounds-check the result. Returns `none` for no-op relocations
     (`R_*_NONE` and unsupported types) or a `Patch` ready to apply.
     Per-rela building block for `planObject`; also the simplest entry
-    point for testing per-arch formulas (default `symValue := 0`). -/
-def planRela (formula : Formula) (base span : UInt64) (objectIdx : Nat := 0)
-    (symValue : UInt64 := 0) (r : Spec.Reloc.Rela64) : Except String (Option Patch) := do
+    point for testing per-arch formulas. -/
+def planRela {n : Nat} (formula : Formula) (base span : UInt64)
+    (objectIdx : Fin n) (symValue : UInt64 := 0) (r : Spec.Reloc.Rela64) :
+    Except String (Option (Patch n)) := do
   let inputs : FormulaInputs :=
     { symValue, addend := r.r_addend, base, place := base + r.r_offset }
   match formula r.type inputs with
   | none     => return none
   | some res =>
-    let w : Patch :=
+    let w : Patch n :=
       { objectIdx, targetVa := base + r.r_offset, value := res.value, size := res.size }
     unless w.inRange base span do
-      throw s!"reloc out of range: object={objectIdx} target={w.targetVa} size={w.size}"
+      throw s!"reloc out of range: object={objectIdx.val} target={w.targetVa} size={w.size}"
     return some w
 
 /-- Plan all relocations for one object's `.rela.dyn` + `.rela.plt`,
     rejecting any patch whose target falls outside `[base, base + span)`. -/
 def planObject (formula : Formula) (g : DepGraph)
     (layouts : Array ObjectLayout) (bases : Array UInt64)
-    (rt : Resolve.Table) (objectIdx : Nat) : Except String (Array Patch) := do
-  let some obj := g.objects[objectIdx]? | return #[]
-  let some lyt := layouts[objectIdx]? | return #[]
-  let mut acc : Array Patch := #[]
+    (rt : Resolve.Table) (objectIdx : Fin g.objects.size) :
+    Except String (Array (Patch g.objects.size)) := do
+  let obj := g.objects[objectIdx]
+  let some lyt := layouts[objectIdx.val]? | return #[]
+  let mut acc : Array (Patch g.objects.size) := #[]
   for r in obj.elf.rela ++ obj.elf.jmprel do
     let symValue : UInt64 :=
       if r.sym == 0 then 0
-      else resolveSymValue g bases rt objectIdx r.sym.toNat
+      else resolveSymValue g bases rt objectIdx.val r.sym.toNat
     if let some w ← planRela formula lyt.base lyt.span objectIdx symValue r then
       acc := acc.push w
   return acc
@@ -142,30 +147,12 @@ def planObject (formula : Formula) (g : DepGraph)
     every reloc passes the bounds check. -/
 def plan (formula : Formula) (g : DepGraph)
     (layouts : Array ObjectLayout) (rt : Resolve.Table) :
-    Except String (Array Patch) := do
+    Except String (Array (Patch g.objects.size)) := do
   let bases : Array UInt64 := layouts.map (·.base)
-  let mut acc : Array Patch := #[]
-  for i in [:g.objects.size] do
-    let chunk ← planObject formula g layouts bases rt i
+  let mut acc : Array (Patch g.objects.size) := #[]
+  for h : i in [:g.objects.size] do
+    let chunk ← planObject formula g layouts bases rt ⟨i, h.upper⟩
     acc := acc ++ chunk
   return acc
-
--- ============================================================================
--- IO test runner. Parametric over the per-arch formula; the test
--- driver picks the formula based on `e_machine` and calls this once.
--- ============================================================================
-
-def test (formula : Formula) (g : DepGraph) : IO Nat := do
-  let mut failures := 0
-  let rt := Resolve.buildTable g
-  match plan formula g g.layouts rt with
-  | .error e =>
-    IO.eprintln s!"plan failed: {e}"
-    failures := failures + 1
-  | .ok writes =>
-    if writes.size == 0 then
-      IO.eprintln "expected nonzero relocation writes"
-      failures := failures + 1
-  return failures
 
 end LeanLoad.Reloc

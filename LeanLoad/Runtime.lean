@@ -91,12 +91,21 @@ opaque mmapStack (len : USize) : IO Region
 @[extern "leanload_region_mprotect_range"]
 opaque mprotectRange (r : @& Region) (offset length : USize) (prot : UInt32) : IO Unit
 
-/-- `memcpy` `src` into `region` starting at `offset`. Used by Apply
-    (relocation patches: `offset = p.targetVa - region.base`) and
-    by Map (zeroing partial-page BSS after a file-backed overlay).
-    Throws on out-of-bounds. -/
-@[extern "leanload_region_write"]
-opaque write (region : @& Region) (offset : USize) (src : @& ByteArray) : IO Unit
+/-- Write 8 little-endian bytes of `value` to `region` at `offset`.
+    Used by `RelocApply` for size-8 relocation patches. -/
+@[extern "leanload_region_patch64"]
+opaque patch64 (region : @& Region) (offset : USize) (value : UInt64) : IO Unit
+
+/-- Write the low 4 little-endian bytes of `value` to `region` at
+    `offset`. Used by `RelocApply` for size-4 relocation patches. -/
+@[extern "leanload_region_patch32"]
+opaque patch32 (region : @& Region) (offset : USize) (value : UInt64) : IO Unit
+
+/-- Zero `len` bytes in `region` starting at `offset`. Used by
+    `MapApply` to clear partial-last-page BSS after a file-backed
+    overlay. -/
+@[extern "leanload_region_zeroout"]
+opaque zeroout (region : @& Region) (offset len : USize) : IO Unit
 
 -- ============================================================================
 -- Control transfer (`runtime/exec.c`)

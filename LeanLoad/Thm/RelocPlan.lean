@@ -15,7 +15,7 @@ next to each `formula` def.
 -/
 
 import LeanLoad.Spec.Reloc.Formula
-import LeanLoad.Reloc
+import LeanLoad.RelocPlan
 
 namespace LeanLoad.Thm
 

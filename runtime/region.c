@@ -111,19 +111,47 @@ LEAN_EXPORT lean_object * leanload_region_mprotect_range(b_lean_obj_arg robj,
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* `memcpy` `src` into `region` starting at `offset`. Used by Apply
- * (relocation patches: offset = `p.targetVa - region.base`) and by
- * Map (zeroing partial-page BSS bytes after a file-backed overlay). */
-LEAN_EXPORT lean_object * leanload_region_write(b_lean_obj_arg robj,
-                                                size_t offset,
-                                                b_lean_obj_arg src,
-                                                lean_object * /* w */) {
+/* Write 8 little-endian bytes of `value` to `region` at `offset`. */
+LEAN_EXPORT lean_object * leanload_region_patch64(b_lean_obj_arg robj,
+                                                  size_t offset,
+                                                  uint64_t value,
+                                                  lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
     if (!r->addr) return leanload_io_err("region: not mapped");
-    size_t n = lean_sarray_size(src);
-    if (offset > r->length || n > r->length - offset) {
-        return leanload_io_err("region: write out of bounds");
+    if (offset > r->length || 8 > r->length - offset) {
+        return leanload_io_err("region: patch64 out of bounds");
     }
-    memcpy((uint8_t *)r->addr + offset, lean_sarray_cptr(src), n);
+    /* unaligned little-endian write; assumes host is little-endian
+     * (which both x86-64 and AArch64 in our supported configs are). */
+    memcpy((uint8_t *)r->addr + offset, &value, 8);
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+/* Write the low 4 little-endian bytes of `value` to `region` at `offset`. */
+LEAN_EXPORT lean_object * leanload_region_patch32(b_lean_obj_arg robj,
+                                                  size_t offset,
+                                                  uint64_t value,
+                                                  lean_object * /* w */) {
+    leanload_region * r = (leanload_region *)lean_get_external_data(robj);
+    if (!r->addr) return leanload_io_err("region: not mapped");
+    if (offset > r->length || 4 > r->length - offset) {
+        return leanload_io_err("region: patch32 out of bounds");
+    }
+    uint32_t lo = (uint32_t)value;
+    memcpy((uint8_t *)r->addr + offset, &lo, 4);
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+/* Zero `len` bytes in `region` starting at `offset`. */
+LEAN_EXPORT lean_object * leanload_region_zeroout(b_lean_obj_arg robj,
+                                                  size_t offset,
+                                                  size_t len,
+                                                  lean_object * /* w */) {
+    leanload_region * r = (leanload_region *)lean_get_external_data(robj);
+    if (!r->addr) return leanload_io_err("region: not mapped");
+    if (offset > r->length || len > r->length - offset) {
+        return leanload_io_err("region: zeroout out of bounds");
+    }
+    memset((uint8_t *)r->addr + offset, 0, len);
     return lean_io_result_mk_ok(lean_box(0));
 }

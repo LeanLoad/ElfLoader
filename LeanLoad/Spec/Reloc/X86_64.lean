@@ -25,7 +25,7 @@ to verify that the value zero-extends to the original 64-bit value;
 that overflow check is not modelled here.
 -/
 
-import LeanLoad.Reloc
+import LeanLoad.RelocPlan
 import LeanLoad.Layout
 
 namespace LeanLoad.Spec.Reloc.X86_64
@@ -56,7 +56,7 @@ def formula : Formula := fun ty inp =>
   else none
 
 -- Compile-time unit tests. Evaluated at elaboration; a wrong table
--- fails to build. Totality is proved in `LeanLoad.Thm.Reloc`.
+-- fails to build. Totality is proved in `LeanLoad.Thm.RelocPlan`.
 
 #guard (formula R_X86_64_NONE  { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
 #guard (formula 999 { symValue := 0, addend := 0, base := 0, place := 0 }) == none
@@ -89,7 +89,7 @@ def formula : Formula := fun ty inp =>
 private def x86Rela : LeanLoad.Spec.Reloc.Rela64 :=
   { r_offset := 0x1000, r_info := 8, r_addend := 0xa90 }
 
-#guard match planRela formula 0x10000 0x100000 (r := x86Rela) with
+#guard match planRela (n := 1) formula 0x10000 0x100000 ⟨0, by decide⟩ (r := x86Rela) with
        | .ok (some p) => p.size = 8
        | _            => false
 

@@ -16,7 +16,7 @@ defining (object, symbol) pair via breadth-first search over the
 order: main first, then NEEDED entries in their declared order).
 -/
 
-import LeanLoad.Discover
+import LeanLoad.DiscoverPlan
 import LeanLoad.Spec.Symbol
 import LeanLoad.Fixtures
 
@@ -158,46 +158,5 @@ private def resolveG : DepGraph :=
 #guard (buildTable    resolveG).missing.size               = 0
 
 end UnitTest
-
--- ============================================================================
--- Tests.
--- ============================================================================
-
-/-- Discover `build/main`'s dep graph, build the resolution table, check
-    that cross-library references resolve and the libbar↔libbaz cycle
-    is handled both ways. -/
-def test (g : DepGraph) : IO Nat := do
-  let mut failures := 0
-  if g.objects.size < 4 then
-    IO.eprintln s!"expected ≥ 4 objects, got {g.objects.size}"
-    return failures + 1
-
-  let table := buildTable g
-
-  if table.missing.size != 0 then
-    IO.eprintln s!"expected 0 missing, got {table.missing.size}:"
-    for u in table.missing[:5] do
-      IO.eprintln s!"  unresolved: '{u.name}' from object[{u.objectIdx}]"
-    failures := failures + 1
-
-  let expectations : List (String × String) := [
-    ("libfoo_print", "libfoo.so"),
-    ("libbar_step",  "libbar.so"),
-    ("libbaz_step",  "libbaz.so")
-  ]
-  for (sym, expectedProvider) in expectations do
-    match resolveByName g sym with
-    | none =>
-      IO.eprintln s!"{sym} did not resolve"
-      failures := failures + 1
-    | some r =>
-      match g.objects[r.objectIdx]? with
-      | none => failures := failures + 1
-      | some obj =>
-        if obj.name != expectedProvider then
-          IO.eprintln s!"{sym} resolved to {obj.name}, expected {expectedProvider}"
-          failures := failures + 1
-
-  return failures
 
 end LeanLoad.Resolve

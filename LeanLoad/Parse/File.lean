@@ -233,44 +233,4 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
     rela, jmprel, initArr
   }
 
--- ============================================================================
--- IO test runner. Parses the given bytes (typically `build/main`) and
--- asserts the header + DT_NEEDED look reasonable for our musl-built
--- example. Aggregated by `LeanLoad.Test`.
--- ============================================================================
-
-/-- End-to-end smoke test: parse via FileHandle and assert basics. -/
-def test (h : Runtime.FileHandle) : IO Nat := do
-  let mut failures := 0
-  try
-    let elf ← parse h
-    if elf.header.e_type != Spec.Header.ET_DYN then
-      IO.eprintln s!"e_type: expected ET_DYN={Spec.Header.ET_DYN}, got {elf.header.e_type}"
-      failures := failures + 1
-    if elf.header.e_ehsize != 64 then
-      IO.eprintln s!"e_ehsize: expected 64, got {elf.header.e_ehsize}"
-      failures := failures + 1
-    if elf.header.e_phentsize != 56 then
-      IO.eprintln s!"e_phentsize: expected 56, got {elf.header.e_phentsize}"
-      failures := failures + 1
-    if elf.phdrs.size != elf.header.e_phnum.toNat then
-      IO.eprintln s!"phnum mismatch: header says {elf.header.e_phnum}, parsed {elf.phdrs.size}"
-      failures := failures + 1
-    if elf.needed.size < 3 then
-      IO.eprintln s!"expected ≥ 3 NEEDED entries, got {elf.needed.size}: {elf.needed}"
-      failures := failures + 1
-    if !elf.needed.any (· == "libfoo.so") then
-      IO.eprintln s!"libfoo.so not in NEEDED: {elf.needed}"
-      failures := failures + 1
-    if !elf.needed.any (· == "libbar.so") then
-      IO.eprintln s!"libbar.so not in NEEDED: {elf.needed}"
-      failures := failures + 1
-    if elf.runpath.isNone then
-      IO.eprintln "expected DT_RUNPATH set"
-      failures := failures + 1
-  catch e =>
-    IO.eprintln s!"File.parse failed: {e}"
-    failures := failures + 1
-  return failures
-
 end LeanLoad.Parse.File

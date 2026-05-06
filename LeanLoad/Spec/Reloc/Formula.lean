@@ -15,7 +15,7 @@ so this dispatch must sit *below* them in the import graph.
 import LeanLoad.Spec.Header
 import LeanLoad.Spec.Reloc.Aarch64
 import LeanLoad.Spec.Reloc.X86_64
-import LeanLoad.Reloc
+import LeanLoad.RelocPlan
 
 namespace LeanLoad.Spec.Reloc
 

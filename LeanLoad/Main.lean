@@ -61,12 +61,11 @@ def load (path : String) : IO Unit := do
   let rt   := Resolve.buildTable g
   if let some u := rt.missing[0]? then
     throw (IO.userError s!"load: {rt.missing.size} unresolved strong symbol(s); first: {u.name}")
-  let image ← Map.mapAll g g.layouts
+  let layouts ← IO.ofExcept g.layouts
+  let image ← Map.mapAll g layouts
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
-  let patches ← match Reloc.plan formula g g.layouts rt with
-    | .ok ps   => pure ps
-    | .error e => throw (IO.userError s!"load: {e}")
+  let patches ← IO.ofExcept (Reloc.plan formula g layouts rt)
   Apply.applyPatches image patches
   Exec.runInits g image g.order
   Exec.transferControl mainObj image path
@@ -117,9 +116,12 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"strong missing: {rt.missing.size}, weak missing: {rt.weakMissing.size}"
 
   IO.eprintln "\n== Layout =="
-  for lyt in g.layouts do
-    let some obj := g.objects[lyt.objectIdx]? | continue
-    IO.eprintln s!"[{lyt.objectIdx}] {obj.name} ({lyt.segments.size} segments)"
+  let layouts ← IO.ofExcept g.layouts
+  -- layouts.val.size = g.objects.size by construction; iterate by index.
+  for h : i in [:g.objects.size] do
+    let lyt := layouts.val[i]'(layouts.property.symm ▸ h.upper)
+    let obj := g.objects[i]
+    IO.eprintln s!"[{i}] {obj.name} ({lyt.segments.size} segments)"
     if let some e := lyt.entry then
       IO.eprintln s!"  entry: 0x{Nat.hex e.toNat}"
     for s in lyt.segments do
@@ -128,24 +130,24 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"fini order: {g.order.reverse}"
 
   IO.eprintln "\n== Map =="
-  let image ← Map.mapAll g g.layouts
-  for i in [:image.layouts.size] do
-    let some obj := g.objects[i]?     | continue
-    let some lyt := image.layouts[i]? | continue
-    IO.eprintln s!"[{i}] {obj.name} → 0x{Nat.hex lyt.base.toNat}"
+  let image ← Map.mapAll g layouts
+  for i in [:image.objects.size] do
+    let some obj    := g.objects[i]?     | continue
+    let some imgObj := image.objects[i]? | continue
+    IO.eprintln s!"[{i}] {obj.name} → 0x{Nat.hex imgObj.layout.base.toNat}"
 
   IO.eprintln "\n== Reloc =="
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
   let labelW := 16
-  let bases := image.layouts.map (·.base)
+  let bases := image.objects.map (·.layout.base)
   -- Re-walk each object's relas to enrich each patch with its type
   -- and symbol name. The actual `applyPatches` below uses the same
   -- formula via `Reloc.plan`, so the trace and the patches match.
   for i in [:g.objects.size] do
-    let some obj := g.objects[i]? | continue
-    let some lyt := image.layouts[i]? | continue
-    let base := lyt.base
+    let some obj    := g.objects[i]? | continue
+    let some imgObj := image.objects[i]? | continue
+    let base := imgObj.layout.base
     let label := padR s!"[{i}] {obj.name}" labelW
     let printOne (r : Spec.Reloc.Rela64) : IO Unit := do
       let symValue : UInt64 := if r.sym == 0 then 0
@@ -163,9 +165,7 @@ def debug (path : String) : IO Unit := do
         IO.eprintln s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size}B)  sym='{symName}'"
     for r in obj.elf.rela do printOne r
     for r in obj.elf.jmprel do printOne r
-  let patches ← match Reloc.plan formula g g.layouts rt with
-    | .ok ps   => pure ps
-    | .error e => throw (IO.userError s!"Reloc.plan: {e}")
+  let patches ← IO.ofExcept (Reloc.plan formula g layouts rt)
   IO.eprintln s!"planned {patches.size} patches"
 
   IO.eprintln "\n== Apply =="

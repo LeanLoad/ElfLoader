@@ -14,7 +14,7 @@ visited set; total via fuel. Output is an `Array Nat` of
 reverse (`g.order.reverse`).
 -/
 
-import LeanLoad.Discover
+import LeanLoad.DiscoverPlan
 import LeanLoad.Fixtures
 
 namespace LeanLoad.Order
@@ -116,21 +116,5 @@ private def cycleG : DepGraph := synthDepGraph #[
 #guard cycleG.order.size    = 3
 
 end UnitTest
-
--- ============================================================================
--- IO test runner. Order is post-order DFS from main (idx 0); main is
--- the root, so it must appear last (after all of its transitive deps).
--- ============================================================================
-
-def test (g : DepGraph) : IO Nat := do
-  let mut failures := 0
-  let order := g.order
-  if order.size != g.objects.size then
-    IO.eprintln s!"order size {order.size} ≠ object count {g.objects.size}"
-    failures := failures + 1
-  if order.back? != some 0 then
-    IO.eprintln s!"main (idx 0) should be last in order; got {order}"
-    failures := failures + 1
-  return failures
 
 end LeanLoad.Order

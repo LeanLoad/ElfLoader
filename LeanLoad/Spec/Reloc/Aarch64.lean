@@ -22,7 +22,7 @@ applies it); this file is the per-arch table + per-type compile-time
 canaries.
 -/
 
-import LeanLoad.Reloc
+import LeanLoad.RelocPlan
 import LeanLoad.Layout
 
 namespace LeanLoad.Spec.Reloc.Aarch64
@@ -53,7 +53,7 @@ def formula : Formula := fun ty inp =>
   else none
 
 -- Compile-time unit tests. Evaluated at elaboration; a wrong table
--- fails to build. Totality is proved in `LeanLoad.Thm.Reloc`.
+-- fails to build. Totality is proved in `LeanLoad.Thm.RelocPlan`.
 
 -- A skipped reloc is not a zero write — "no operation" is structural.
 #guard (formula R_AARCH64_NONE      { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
@@ -91,7 +91,7 @@ def formula : Formula := fun ty inp =>
 private def aarch64Rela : LeanLoad.Spec.Reloc.Rela64 :=
   { r_offset := 0x1000, r_info := 1027, r_addend := 0xa90 }
 
-#guard match planRela formula 0x10000 0x100000 (r := aarch64Rela) with
+#guard match planRela (n := 1) formula 0x10000 0x100000 ⟨0, by decide⟩ (r := aarch64Rela) with
        | .ok (some p) => p.size = 8
        | _            => false
 

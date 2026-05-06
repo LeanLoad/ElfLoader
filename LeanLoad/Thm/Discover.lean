@@ -16,7 +16,7 @@ Two flavours of property here:
     checks.
 -/
 
-import LeanLoad.Discover
+import LeanLoad.DiscoverPlan
 
 namespace LeanLoad.Thm
 

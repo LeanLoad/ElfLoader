@@ -10,7 +10,7 @@ The IO integration tests in `LeanLoad/Test.lean` exercise the real
 copes with musl-gcc's actual output".
 -/
 
-import LeanLoad.Discover
+import LeanLoad.DiscoverPlan
 
 namespace LeanLoad.Fixtures
 
