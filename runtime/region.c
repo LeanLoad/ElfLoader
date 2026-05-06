@@ -1,8 +1,12 @@
-/* Region externs: mmap, munmap, mprotect, byte-level pokes.
+/* Region externs: mmap variants + per-range operations.
  *
  * All addresses cross the Lean/C boundary as `uint64_t` (we deliberately
  * do not expose `void *` — Lean side reasons in terms of virtual
  * addresses produced by the planner).
+ *
+ * File-backed mmap from an already-open `FileHandle` lives in
+ * `file.c` so the two concepts (memory ranges vs. open files) are
+ * each in their own translation unit.
  */
 
 #include "runtime.h"
@@ -45,10 +49,8 @@ lean_external_class * leanload_region_class(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* mmap variants. Each variant picks the appropriate `MAP_*` flag set
- * for its usage pattern; Lean side never sees raw flags. All three
- * map RW initially — caller `mprotect`s to the final permission once
- * bytes are written in (or, for the stack, leaves it RW). */
+/* mmap variants (anonymous; file-backed lives in file.c).             */
+/* ------------------------------------------------------------------ */
 
 static lean_object * mmap_rw(uint64_t vaddr, size_t len, int flags) {
     void * hint = (vaddr == 0) ? NULL : (void *)(uintptr_t)vaddr;
@@ -67,15 +69,8 @@ static lean_object * mmap_rw(uint64_t vaddr, size_t len, int flags) {
         lean_alloc_external(leanload_region_class(), r));
 }
 
-/* Anonymous private mapping; kernel chooses the address. Used for
- * ET_DYN whole-object regions. */
-LEAN_EXPORT lean_object * leanload_region_mmap_anon(size_t len,
-                                                    lean_object * /* w */) {
-    return mmap_rw(0, len, MAP_PRIVATE | MAP_ANONYMOUS);
-}
-
-/* Anonymous private mapping pinned at `vaddr` (`MAP_FIXED`). Used for
- * ET_EXEC per-mapping placement at link-time-fixed virtual addresses. */
+/* Anonymous private mapping pinned at `vaddr` (`MAP_FIXED`). Used by
+ * Map as the per-object reservation at the Layout-assigned base. */
 LEAN_EXPORT lean_object * leanload_region_mmap_anon_fixed(uint64_t vaddr,
                                                           size_t   len,
                                                           lean_object * /* w */) {
@@ -90,30 +85,12 @@ LEAN_EXPORT lean_object * leanload_region_mmap_stack(size_t len,
     return mmap_rw(0, len, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK);
 }
 
-/* mprotect on the whole region. If transitioning to PROT_EXEC, also
- * flush instruction cache for the range — required on architectures
- * (notably aarch64) where I-cache and D-cache are not coherent and
- * code freshly written via D-cache is otherwise invisible to the
- * instruction fetcher.
- */
-LEAN_EXPORT lean_object * leanload_region_mprotect(b_lean_obj_arg robj,
-                                                   uint32_t prot,
-                                                   lean_object * /* w */) {
-    leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (!r->addr) return leanload_io_err("region: not mapped");
-    if (mprotect(r->addr, r->length, (int)prot) != 0) {
-        return leanload_io_err(strerror(errno));
-    }
-    if (prot & PROT_EXEC) {
-        char * start = (char *)r->addr;
-        char * end   = start + r->length;
-        __builtin___clear_cache(start, end);
-    }
-    return lean_io_result_mk_ok(lean_box(0));
-}
+/* ------------------------------------------------------------------ */
+/* mprotect + write at raw addresses                                   */
+/* ------------------------------------------------------------------ */
 
-/* mprotect on a sub-range of the region. Used when one big region
- * holds multiple PT_LOAD segments with different permissions. */
+/* mprotect on a sub-range of a region. Used when one big region holds
+ * multiple `PT_LOAD` segments with different permissions. */
 LEAN_EXPORT lean_object * leanload_region_mprotect_range(b_lean_obj_arg robj,
                                                          size_t offset,
                                                          size_t length,
@@ -134,7 +111,9 @@ LEAN_EXPORT lean_object * leanload_region_mprotect_range(b_lean_obj_arg robj,
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* Copy bytes from a Lean ByteArray into the region at `offset`. */
+/* `memcpy` `src` into `region` starting at `offset`. Used by Apply
+ * (relocation patches: offset = `p.targetVa - region.base`) and by
+ * Map (zeroing partial-page BSS bytes after a file-backed overlay). */
 LEAN_EXPORT lean_object * leanload_region_write(b_lean_obj_arg robj,
                                                 size_t offset,
                                                 b_lean_obj_arg src,
@@ -148,11 +127,3 @@ LEAN_EXPORT lean_object * leanload_region_write(b_lean_obj_arg robj,
     memcpy((uint8_t *)r->addr + offset, lean_sarray_cptr(src), n);
     return lean_io_result_mk_ok(lean_box(0));
 }
-
-/* Return the base address of the region (as uint64_t). */
-LEAN_EXPORT uint64_t leanload_region_base(b_lean_obj_arg robj) {
-    leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    return (uint64_t)(uintptr_t)r->addr;
-}
-
-

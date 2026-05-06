@@ -25,6 +25,37 @@ proven.
 namespace LeanLoad.Runtime
 
 -- ============================================================================
+-- FileHandle: opaque read-only fd wrapper (`runtime/region.c`).
+-- Used for (1) `pread`-based metadata parsing and (2) file-backed
+-- `mmap` from already-open fds. Finalizer closes the fd at GC time.
+-- ============================================================================
+
+private opaque FileHandlePointed : NonemptyType
+def FileHandle : Type := FileHandlePointed.type
+instance : Nonempty FileHandle := FileHandlePointed.property
+
+/-- Open a file read-only. The fd lives until the handle is GC'd. -/
+@[extern "leanload_filehandle_open_read"]
+opaque «open» (path : @& String) : IO FileHandle
+
+/-- Byte size of the underlying file (`fstat`). -/
+@[extern "leanload_filehandle_size"]
+opaque size (h : @& FileHandle) : IO UInt64
+
+/-- `pread(2)` exactly `len` bytes at `offset` into a fresh `ByteArray`.
+    Loops over short reads; throws on error or true EOF mid-buffer. -/
+@[extern "leanload_filehandle_pread"]
+opaque pread (h : @& FileHandle) (offset : UInt64) (len : USize) : IO ByteArray
+
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` at `vaddr` from this handle.
+    Returns a `Region` for the freshly mapped range — one mmap = one
+    Region across all variants (anon, stack, file-backed). `prot` is
+    final permissions; `offset` and `vaddr` must be page-aligned. -/
+@[extern "leanload_filehandle_mmap_at"]
+opaque mmapAt (h : @& FileHandle) (vaddr : UInt64) (len : USize) (prot : UInt32)
+    (offset : UInt64) : IO Region
+
+-- ============================================================================
 -- Region: opaque mmap'd handle (`runtime/region.c`)
 -- ============================================================================
 
@@ -32,28 +63,19 @@ private opaque RegionPointed : NonemptyType
 def Region : Type := RegionPointed.type
 instance : Nonempty Region := RegionPointed.property
 
--- Protection bits (PROT_*) — first-class because the planner
--- reasons about per-segment R/W/X.
-
-def PROT_NONE  : UInt32 := 0
-def PROT_READ  : UInt32 := 1
+/-- `PROT_WRITE` bit, used by Map to widen a file-backed segment's
+    initial protection so partial-last-page BSS can be zeroed before
+    `mprotectRange` drops the bit for read-only segments. The
+    planner-side `Layout.protOfFlags` produces the *final* per-segment
+    `PROT_*` value (PF_R/W/X mapped to PROT_READ/WRITE/EXEC). -/
 def PROT_WRITE : UInt32 := 2
-def PROT_EXEC  : UInt32 := 4
-
-#guard PROT_READ + PROT_WRITE + PROT_EXEC = 7
 
 -- mmap variants. The C shim picks the matching `MAP_*` flag set;
 -- Lean code never sees raw flags.
 
-/-- Anonymous private mapping (RW); kernel chooses the address. Used
-    for ET_DYN whole-object regions. The caller `mprotect`s to the
-    final per-segment permissions after copying bytes in. -/
-@[extern "leanload_region_mmap_anon"]
-opaque mmapAnon (len : USize) : IO Region
-
 /-- Anonymous private mapping (RW) pinned at `vaddr` (`MAP_FIXED`).
-    Used for ET_EXEC per-mapping placement at link-time-fixed
-    addresses. Caller `mprotect`s after writing. -/
+    Used by Map as the per-object reservation at the address Layout
+    chose; zero-fills BSS-only pages and inter-segment gaps. -/
 @[extern "leanload_region_mmap_anon_fixed"]
 opaque mmapAnonFixed (vaddr : UInt64) (len : USize) : IO Region
 
@@ -64,22 +86,17 @@ opaque mmapStack (len : USize) : IO Region
 
 -- Operations on regions.
 
-/-- Change protection of the entire region. -/
-@[extern "leanload_region_mprotect"]
-opaque mprotect (r : @& Region) (prot : UInt32) : IO Unit
-
 /-- Change protection of a sub-range. Used when one large region
     holds multiple `PT_LOAD` segments with different permissions. -/
 @[extern "leanload_region_mprotect_range"]
 opaque mprotectRange (r : @& Region) (offset length : USize) (prot : UInt32) : IO Unit
 
-/-- Copy bytes from `src` into the region starting at `offset`. -/
+/-- `memcpy` `src` into `region` starting at `offset`. Used by Apply
+    (relocation patches: `offset = p.targetVa - region.base`) and
+    by Map (zeroing partial-page BSS after a file-backed overlay).
+    Throws on out-of-bounds. -/
 @[extern "leanload_region_write"]
-opaque write (r : @& Region) (offset : USize) (src : @& ByteArray) : IO Unit
-
-/-- Base virtual address of the region (where the kernel actually placed it). -/
-@[extern "leanload_region_base"]
-opaque base (r : @& Region) : UInt64
+opaque write (region : @& Region) (offset : USize) (src : @& ByteArray) : IO Unit
 
 -- ============================================================================
 -- Control transfer (`runtime/exec.c`)

@@ -26,9 +26,12 @@ that overflow check is not modelled here.
 -/
 
 import LeanLoad.Reloc
+import LeanLoad.Layout
 
 namespace LeanLoad.Spec.Reloc.X86_64
 
+open LeanLoad
+open LeanLoad.Discover
 open LeanLoad.Reloc
 
 def R_X86_64_NONE      : UInt32 := 0
@@ -53,7 +56,7 @@ def formula : Formula := fun ty inp =>
   else none
 
 -- Compile-time unit tests. Evaluated at elaboration; a wrong table
--- fails to build. Totality is proved in `LeanLoad.Thm`.
+-- fails to build. Totality is proved in `LeanLoad.Thm.Reloc`.
 
 #guard (formula R_X86_64_NONE  { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
 #guard (formula 999 { symValue := 0, addend := 0, base := 0, place := 0 }) == none
@@ -82,22 +85,12 @@ def formula : Formula := fun ty inp =>
 #guard (formula R_X86_64_64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := 8 }
 
--- Planner-on-this-formula canary: one R_X86_64_RELATIVE rela → one write.
-section UnitTest
-open LeanLoad.TestUnit
+-- Planner-on-this-formula canary: one R_X86_64_RELATIVE rela → one patch.
+private def x86Rela : LeanLoad.Spec.Reloc.Rela64 :=
+  { r_offset := 0x1000, r_info := 8, r_addend := 0xa90 }
 
-private def relocLM : LeanLoad.Discover.LinkMap := {
-  objects := #[synthObj "main"
-    (rela := #[{
-      r_offset := 0x1000
-      r_info   := 8      -- R_X86_64_RELATIVE = type only, symIdx = 0
-      r_addend := 0xa90
-    }])]
-}
-
-#guard (plan formula relocLM #[0x10000]
-          (Resolve.buildTable relocLM)).size = 1
-
-end UnitTest
+#guard match planRela formula 0x10000 0x100000 (r := x86Rela) with
+       | .ok (some p) => p.size = 8
+       | _            => false
 
 end LeanLoad.Spec.Reloc.X86_64

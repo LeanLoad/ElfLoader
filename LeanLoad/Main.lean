@@ -22,7 +22,7 @@ Pipeline:
 
 import LeanLoad
 
-namespace LeanLoad.Load
+namespace LeanLoad.Main
 
 open LeanLoad
 
@@ -51,21 +51,24 @@ private def Nat.hex12 (n : Nat) : String :=
 #guard padR "abc" 6 '.' = "abc..."
 #guard padL "abc" 6 '.' = "...abc"
 
-/-- Discover + plan + map + relocate + run inits + jump.
+/-- Discover + layout + map + relocate + run inits + jump.
     **Does not return** — the loaded program terminates the process. -/
 def load (path : String) : IO Unit := do
-  let lm ← Discover.discover path
-  let some mainObj := lm.objects[0]?
+  let g ← Discover.discover path
+  let some mainObj := g.objects[0]?
     | throw (IO.userError "load: empty link map")
-  let rt   := Resolve.buildTable lm
-  let plan := Layout.fromLinkMap lm (Layout.initOrder lm) (Layout.finiOrder lm)
-  let (allRegions, bases) ← mapAll lm plan
+  let rt   := Resolve.buildTable g
+  if let some u := rt.missing[0]? then
+    throw (IO.userError s!"load: {rt.missing.size} unresolved strong symbol(s); first: {u.name}")
+  let image ← Map.mapAll g g.layouts
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
-  let writes := Reloc.plan formula lm bases rt
-  applyAllRelocs allRegions bases writes
-  runInits lm bases plan
-  transferControl mainObj plan bases path
+  let patches ← match Reloc.plan formula g g.layouts rt with
+    | .ok ps   => pure ps
+    | .error e => throw (IO.userError s!"load: {e}")
+  Apply.applyPatches image patches
+  Exec.runInits g image g.order
+  Exec.transferControl mainObj image path
 
 /-- `--debug`: same as `load` but with a header and summary per stage,
     so a developer can see which stages succeeded if the loaded image
@@ -75,15 +78,15 @@ def load (path : String) : IO Unit := do
     Like `load`, this transfers control and does not return. -/
 def debug (path : String) : IO Unit := do
   IO.eprintln "== Discover =="
-  let lm ← Discover.discover path
-  for obj in lm.objects do
+  let g ← Discover.discover path
+  for obj in g.objects do
     IO.eprintln s!"{obj.name}  ({obj.path})"
-  let some mainObj := lm.objects[0]?
+  let some mainObj := g.objects[0]?
     | throw (IO.userError "debug: empty link map")
 
   IO.eprintln "\n== Resolve =="
-  let rt := Resolve.buildTable lm
-  let providerName (r : Resolve.SymRef) : String := match lm.objects[r.objectIdx]? with
+  let rt := Resolve.buildTable g
+  let providerName (r : Resolve.SymRef) : String := match g.objects[r.objectIdx]? with
     | some obj => obj.name
     | none     => "?"
   let nameW := rt.resolved.foldl (init := 0) (fun w (u, _) => max w u.name.length)
@@ -94,59 +97,58 @@ def debug (path : String) : IO Unit := do
   let mut currentObj : Option Nat := none
   for (u, ref?) in rt.resolved do
     if currentObj != some u.objectIdx then
-      if let some obj := lm.objects[u.objectIdx]? then
+      if let some obj := g.objects[u.objectIdx]? then
         IO.eprintln s!"{obj.name}:"
       currentObj := some u.objectIdx
     let suffix : String := match ref? with
       | none =>
         let weakTag :=
-          match lm.objects[u.objectIdx]?.bind (fun obj => obj.elf.symtab[u.symIdx]?) with
+          match g.objects[u.objectIdx]?.bind (fun obj => obj.elf.symtab[u.symIdx]?) with
           | some sym => if Resolve.isWeak sym then "  (weak)" else ""
           | none     => ""
         s!"{padR "<unresolved>" providerW}{weakTag}"
       | some r =>
         let p := padR (providerName r) providerW
-        match lm.objects[r.objectIdx]?.bind (fun obj => obj.elf.symtab[r.symIdx]?) with
+        match g.objects[r.objectIdx]?.bind (fun obj => obj.elf.symtab[r.symIdx]?) with
         | some sym => s!"{p} [sym {r.symIdx} @0x{Nat.hex sym.st_value.toNat}]"
         | none     => s!"{p} [sym {r.symIdx}]"
     IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
   IO.eprintln s!"strong missing: {rt.missing.size}, weak missing: {rt.weakMissing.size}"
 
   IO.eprintln "\n== Layout =="
-  let plan := Layout.fromLinkMap lm (Layout.initOrder lm) (Layout.finiOrder lm)
-  for lyt in plan.layouts do
-    let some obj := lm.objects[lyt.objectIdx]? | continue
-    IO.eprintln s!"[{lyt.objectIdx}] {obj.name} ({lyt.mappings.size} mappings)"
+  for lyt in g.layouts do
+    let some obj := g.objects[lyt.objectIdx]? | continue
+    IO.eprintln s!"[{lyt.objectIdx}] {obj.name} ({lyt.segments.size} segments)"
     if let some e := lyt.entry then
       IO.eprintln s!"  entry: 0x{Nat.hex e.toNat}"
-    for m in lyt.mappings do
-      IO.eprintln s!"  vaddr=0x{Nat.hex m.vaddr.toNat} len=0x{Nat.hex m.length.toNat} prot={m.prot}"
-  IO.eprintln s!"init order: {plan.initOrder}"
-  IO.eprintln s!"fini order: {plan.finiOrder}"
+    for s in lyt.segments do
+      IO.eprintln s!"  vaddr=0x{Nat.hex s.vaddr.toNat} len=0x{Nat.hex s.length.toNat} prot={s.prot}"
+  IO.eprintln s!"init order: {g.order}"
+  IO.eprintln s!"fini order: {g.order.reverse}"
 
   IO.eprintln "\n== Map =="
-  let (allRegions, bases) ← mapAll lm plan
-  for i in [:bases.size] do
-    let some obj := lm.objects[i]? | continue
-    let some b := bases[i]? | continue
-    IO.eprintln s!"[{i}] {obj.name} → 0x{Nat.hex b.toNat}"
+  let image ← Map.mapAll g g.layouts
+  for i in [:image.layouts.size] do
+    let some obj := g.objects[i]?     | continue
+    let some lyt := image.layouts[i]? | continue
+    IO.eprintln s!"[{i}] {obj.name} → 0x{Nat.hex lyt.base.toNat}"
 
   IO.eprintln "\n== Reloc =="
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
-  -- Width of the "[i] objname" prefix. Fixed; column will be ragged
-  -- if a fixture has unusually long names.
   let labelW := 16
-  -- Re-walk each object's relas to enrich each write with its type
-  -- and symbol name. The actual `applyAllRelocs` below uses the same
-  -- formula via `Reloc.plan`, so the trace and the writes match.
-  for i in [:lm.objects.size] do
-    let some obj := lm.objects[i]? | continue
-    let some base := bases[i]? | continue
+  let bases := image.layouts.map (·.base)
+  -- Re-walk each object's relas to enrich each patch with its type
+  -- and symbol name. The actual `applyPatches` below uses the same
+  -- formula via `Reloc.plan`, so the trace and the patches match.
+  for i in [:g.objects.size] do
+    let some obj := g.objects[i]? | continue
+    let some lyt := image.layouts[i]? | continue
+    let base := lyt.base
     let label := padR s!"[{i}] {obj.name}" labelW
     let printOne (r : Spec.Reloc.Rela64) : IO Unit := do
       let symValue : UInt64 := if r.sym == 0 then 0
-        else Reloc.resolveSymValue lm bases rt obj base i r.sym.toNat
+        else Reloc.resolveSymValue g bases rt i r.sym.toNat
       let inputs : Reloc.FormulaInputs :=
         { symValue, addend := r.r_addend, base, place := base + r.r_offset }
       match formula r.type inputs with
@@ -160,21 +162,23 @@ def debug (path : String) : IO Unit := do
         IO.eprintln s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size}B)  sym='{symName}'"
     for r in obj.elf.rela do printOne r
     for r in obj.elf.jmprel do printOne r
-  let writes := Reloc.plan formula lm bases rt
-  IO.eprintln s!"planned {writes.size} writes"
+  let patches ← match Reloc.plan formula g g.layouts rt with
+    | .ok ps   => pure ps
+    | .error e => throw (IO.userError s!"Reloc.plan: {e}")
+  IO.eprintln s!"planned {patches.size} patches"
 
   IO.eprintln "\n== Apply =="
-  applyAllRelocs allRegions bases writes
-  IO.eprintln s!"applied {writes.size} writes"
+  Apply.applyPatches image patches
+  IO.eprintln s!"applied {patches.size} patches"
 
   IO.eprintln "\n== Init =="
-  runInits lm bases plan
+  Exec.runInits g image g.order
   IO.eprintln "done"
 
   IO.eprintln "\n== Exec =="
-  transferControl mainObj plan bases path
+  Exec.transferControl mainObj image path
 
-end LeanLoad.Load
+end LeanLoad.Main
 
 /-- LeanLoad CLI.
 
@@ -188,10 +192,10 @@ end LeanLoad.Load
 def main (args : List String) : IO UInt32 := do
   match args with
   | ["--debug", path] =>
-    LeanLoad.Load.debug path
+    LeanLoad.Main.debug path
     return 0
   | [path] =>
-    LeanLoad.Load.load path
+    LeanLoad.Main.load path
     return 0  -- unreachable; loaded program terminates the process
   | _ =>
     IO.eprintln "usage: leanload [--debug] <path-to-elf>"

@@ -35,7 +35,7 @@ static inline lean_object * leanload_io_err(const char * msg) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Region (region.c)                                                   */
+/* Region (region.c) — one mapping = one Region                        */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
@@ -45,6 +45,17 @@ typedef struct {
 
 /* Lean external_class for region handles. Allocated on first use. */
 lean_external_class * leanload_region_class(void);
+
+/* ------------------------------------------------------------------ */
+/* FileHandle (file.c)                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int fd;          /* open(2)'d read-only fd, or -1 if closed */
+} leanload_filehandle;
+
+/* Lean external_class for FileHandle. The finalizer closes the fd. */
+lean_external_class * leanload_filehandle_class(void);
 
 #ifdef __cplusplus
 }

@@ -1,9 +1,10 @@
 /-
 Root of the `LeanLoad` library; re-exports every public module.
 
-For the proven-property catalogue, open `LeanLoad.Thm`. For the spec
-surface (gabi/abi transcriptions), open any `LeanLoad.Spec.*` module
-— each cites its specific gabi/abi section in its header.
+For the proven-property catalogue, browse `LeanLoad/Thm/` (one file
+per topic). For the spec surface (gabi/abi transcriptions), open any
+`LeanLoad.Spec.*` module — each cites its specific gabi/abi section
+in its header.
 -/
 import LeanLoad.Spec.Header
 import LeanLoad.Spec.Program
@@ -16,6 +17,7 @@ import LeanLoad.Spec.Reloc.X86_64
 import LeanLoad.Spec.GnuHash
 import LeanLoad.Spec.Reloc.Formula
 import LeanLoad.Layout
+import LeanLoad.Order
 import LeanLoad.Resolve
 import LeanLoad.Reloc
 import LeanLoad.Discover
@@ -23,4 +25,9 @@ import LeanLoad.Map
 import LeanLoad.Apply
 import LeanLoad.Exec
 import LeanLoad.Runtime
-import LeanLoad.Thm
+import LeanLoad.Thm.Parse
+import LeanLoad.Thm.Layout
+import LeanLoad.Thm.Reloc
+import LeanLoad.Thm.Resolve
+import LeanLoad.Thm.Discover
+import LeanLoad.Thm.GnuHash

@@ -1,15 +1,29 @@
 /-
-Map: lay out each object's `PT_LOAD` segments in mmap'd memory.
+Map: place each object's `PT_LOAD` segments at the address Layout
+chose. `MAP_FIXED` everywhere — no kernel-chosen bases.
 
-Goes through `LeanLoad.Region` (the trust boundary for memory ops).
+Per-object flow:
 
-- `ET_EXEC` (= 2): each mapping is its own `MAP_FIXED` region at its
-  absolute `vaddr`. Base = 0 (vaddrs are already absolute).
-- `ET_DYN`/PIE / `ET_REL`: one big anonymous region for the whole
-  object, kernel-chosen base. Each mapping gets `mprotectRange` on
-  its sub-range.
+  1. Anon `MAP_FIXED` reservation at `lyt.base` for `objectSpan` —
+     RW; zero-fills BSS-only pages + inter-segment gaps "for free"
+     (kernel-zeroed anonymous pages).
+  2. For each segment with `fileLenPaged > 0`:
+     - File-backed `MAP_PRIVATE | MAP_FIXED` overlay at
+       `lyt.base + s.vaddr` for `fileLenPaged` bytes from
+       `fileOffsetPaged`, with `s.prot ||| PROT_WRITE` (writable so
+       step 3 can zero partial-last-page BSS).
+     - Memset zero the partial-last-page BSS: bytes from
+       `pageInset + fileLen` to `pageInset + memsz`. Skipped if
+       `memsz = fileLen`.
+  3. `mprotectRange` each segment's full range to `s.prot` (drops
+     the temporary `PROT_WRITE` if `s.prot` doesn't include it).
 
-The IO writes that follow (relocation entries) live in `Apply.lean`.
+For `ET_EXEC`, `lyt.base` covers the absolute span; `s.vaddr` is
+within that range. For `ET_DYN`, `lyt.base` comes from
+`Layout.assignBases` (anchor + cumulative). All addresses are
+absolute by Map's IO time.
+
+The IO writes that follow (relocation patches) live in `Apply.lean`.
 -/
 
 import LeanLoad.Discover
@@ -17,55 +31,80 @@ import LeanLoad.Layout
 import LeanLoad.Reloc
 import LeanLoad.Runtime
 
-namespace LeanLoad.Load
+namespace LeanLoad.Map
 
 open LeanLoad
+open LeanLoad.Discover
+open LeanLoad.Layout
 
-/-- mmap a planned mapping at its absolute `vaddr`, copy bytes, then
-    mprotect. Used for `ET_EXEC` objects. -/
-def mapMapping (bytes : ByteArray) (m : Layout.Mapping) : IO Runtime.Region := do
-  let region ← Runtime.mmapAnonFixed m.vaddr m.length.toUSize
-  if m.fileLen > 0 then
-    let src := bytes.extract m.fileOff.toNat (m.fileOff.toNat + m.fileLen.toNat)
-    Runtime.write region m.pageInset.toUSize src
-  Runtime.mprotect region m.prot
-  return region
+/-- A `ByteArray` of `n` zero bytes. Used by Map for partial-last-page
+    BSS clears; small (typically ≤ one page). -/
+private def zeroBytes (n : Nat) : ByteArray :=
+  ⟨Array.replicate n 0⟩
 
-/-- The contiguous span an object's mappings need (relative). -/
-def objectSpan (lyt : Layout.ObjectLayout) : UInt64 :=
-  lyt.mappings.foldl (init := 0) fun m mapping => max m (mapping.vaddr + mapping.length)
+/-- Runtime artifact for one mapped object: the anon `reservation`
+    (covers the whole `[base, base + objectSpan)`) plus one
+    file-backed `Region` per segment with `fileLenPaged > 0` (aligned
+    with `Layout.ObjectLayout.segments`, with `none` for BSS-only
+    segments that have no file overlay). -/
+structure ObjectImage where
+  reservation : Runtime.Region
+  segments    : Array (Option Runtime.Region)
 
-/-- Map one object, dispatching by `e_type`. Returns its
-    region(s) and the chosen base address. -/
-def mapObject (lm : Discover.LinkMap) (lyt : Layout.ObjectLayout)
-    : IO (Array Runtime.Region × UInt64) := do
-  let some obj := lm.objects[lyt.objectIdx]?
+/-- Output of the Map stage. Pairs each `Layout.ObjectLayout` with
+    the `Region`s Map produced; downstream Apply / Exec read both the
+    layout-side data (bases, segments) and the runtime artifacts. -/
+structure ProcessImage where
+  layouts : Array ObjectLayout
+  objects : Array ObjectImage
+
+/-- Map every segment of one object at its Layout-assigned `base`,
+    returning the produced `ObjectImage`. -/
+def mapObject (g : DepGraph) (lyt : ObjectLayout) : IO ObjectImage := do
+  let some obj := g.objects[lyt.objectIdx]?
     | throw (IO.userError s!"mapObject: missing {lyt.objectIdx}")
-  let bytes := obj.elf.bytes
-  if obj.elf.header.e_type = 2 then
-    let mut regions := Array.mkEmpty lyt.mappings.size
-    for m in lyt.mappings do
-      regions := regions.push (← mapMapping bytes m)
-    return (regions, 0)
-  let region ← Runtime.mmapAnon (objectSpan lyt).toUSize
-  for m in lyt.mappings do
-    if m.fileLen > 0 then
-      let src := bytes.extract m.fileOff.toNat (m.fileOff.toNat + m.fileLen.toNat)
-      Runtime.write region (m.vaddr + m.pageInset).toUSize src
-  for m in lyt.mappings do
-    Runtime.mprotectRange region m.vaddr.toUSize m.length.toUSize m.prot
-  return (#[region], Runtime.base region)
+  let some h := obj.handle
+    | throw (IO.userError s!"mapObject: object {lyt.objectIdx} has no file handle")
+  -- Step 1: anon reservation (zero pages for BSS-only + inter-segment gaps).
+  let reservation ← Runtime.mmapAnonFixed lyt.base lyt.span.toUSize
+  -- Step 2: file-backed overlay + partial-page BSS zero per segment.
+  let mut segs : Array (Option Runtime.Region) := Array.mkEmpty lyt.segments.size
+  for s in lyt.segments do
+    let segRegion : Option Runtime.Region ←
+      if s.fileLenPaged > 0 then
+        let writableProt := s.prot ||| Runtime.PROT_WRITE
+        let r ← Runtime.mmapAt h (lyt.base + s.vaddr) s.fileLenPaged.toUSize
+                  writableProt s.fileOffsetPaged
+        pure (some r)
+      else pure none
+    segs := segs.push segRegion
+    let bssLen := s.phdr.p_memsz - s.fileLen
+    if bssLen > 0 then
+      let bssOff := (s.vaddr + s.pageInset + s.fileLen).toUSize
+      Runtime.write reservation bssOff (zeroBytes bssLen.toNat)
+  -- Step 3: drop PROT_WRITE for read-only / read-execute segments.
+  for s in lyt.segments do
+    Runtime.mprotectRange reservation s.vaddr.toUSize s.length.toUSize s.prot
+  return { reservation, segments := segs }
 
-/-- Map every object in a link map. Returns one region array per
-    object plus the chosen base addresses. -/
-def mapAll (lm : Discover.LinkMap) (plan : Layout.Layout)
-    : IO (Array (Array Runtime.Region) × Reloc.Bases) := do
-  let mut all : Array (Array Runtime.Region) := Array.mkEmpty plan.layouts.size
-  let mut bases : Reloc.Bases := Array.mkEmpty plan.layouts.size
-  for lyt in plan.layouts do
-    let (regions, base) ← mapObject lm lyt
-    all := all.push regions
-    bases := bases.push base
-  return (all, bases)
+/-- Map every object in a link map; return the full `ProcessImage`. -/
+def mapAll (g : DepGraph) (layouts : Array ObjectLayout) : IO ProcessImage := do
+  let mut objects : Array ObjectImage := Array.mkEmpty layouts.size
+  for lyt in layouts do
+    objects := objects.push (← mapObject g lyt)
+  return { layouts, objects }
 
-end LeanLoad.Load
+-- ============================================================================
+-- Integration test runner. Sanity-checks that one ObjectImage comes
+-- back per object.
+-- ============================================================================
+
+def test (g : DepGraph) (layouts : Array ObjectLayout) : IO Nat := do
+  let image ← mapAll g layouts
+  let mut failures := 0
+  if image.objects.size != g.objects.size then
+    IO.eprintln s!"image.objects.size {image.objects.size} ≠ object count {g.objects.size}"
+    failures := failures + 1
+  return failures
+
+end LeanLoad.Map

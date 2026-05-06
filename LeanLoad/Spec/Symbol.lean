@@ -35,10 +35,6 @@ def SHN_UNDEF  : UInt16 := 0
 def SHN_ABS    : UInt16 := 0xfff1
 def SHN_COMMON : UInt16 := 0xfff2
 
-#guard STB_GLOBAL = 1
-#guard STT_FUNC = 2
-#guard SHN_UNDEF = 0
-
 -- ============================================================================
 -- Symbol entry — gabi 05 (Elf64_Sym)
 -- ============================================================================
@@ -55,8 +51,6 @@ structure Symbol64 where
 
 /-- Size of one entry on disk (gabi 05: 4+1+1+2+8+8 = 24). -/
 def entrySize : Nat := 24
-
-#guard entrySize = 24
 
 /-- Symbol binding (high nibble of `st_info`). gabi 05 § Symbol Table. -/
 def Symbol64.bind (s : Symbol64) : UInt8 := s.st_info >>> 4

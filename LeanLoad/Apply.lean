@@ -1,5 +1,5 @@
 /-
-Apply: walk the planned `RelocWrite`s and poke bytes into mmap'd
+Apply: walk the planned `Patch`es and poke bytes into mmap'd
 memory. Trusted IO; the *what* is decided by `LeanLoad.Reloc`'s pure
 planner. Width safety (`size ∈ {4, 8}`) is proven by
 `Thm.formula_size_valid`, so the `unsupported width` branch is
@@ -7,12 +7,17 @@ unreachable for plans built from a supported per-arch formula.
 -/
 
 import LeanLoad.Discover
+import LeanLoad.Layout
+import LeanLoad.Map
 import LeanLoad.Reloc
+import LeanLoad.Resolve
 import LeanLoad.Runtime
 
-namespace LeanLoad.Load
+namespace LeanLoad.Apply
 
 open LeanLoad
+open LeanLoad.Discover
+open LeanLoad.Layout
 
 /-- Serialize a `UInt64` as 8 little-endian bytes. -/
 private def UInt64.toLEBytes (x : UInt64) : ByteArray :=
@@ -47,27 +52,46 @@ section UnitTest
 #guard (UInt64.toLEBytes32 0xCAFEBABE12345678).toList == [0x78, 0x56, 0x34, 0x12]
 end UnitTest
 
-/-- Apply one `RelocWrite` to the right region within the object.
-    For ET_DYN we mmap'd one contiguous region per object, so the
-    offset within is `targetVa - base`. ET_EXEC binaries normally
-    have no relocations to apply. -/
-def applyReloc (allRegions : Array (Array Runtime.Region))
-    (bases : Reloc.Bases) (w : Reloc.RelocWrite) : IO Unit := do
-  let some regions := allRegions[w.objectIdx]?
-    | throw (IO.userError s!"applyReloc: missing object {w.objectIdx}")
-  let some base := bases[w.objectIdx]?
-    | throw (IO.userError s!"applyReloc: missing base {w.objectIdx}")
+/-- Apply one `Patch` by writing into its object's reservation
+    `Region` at `offset = p.targetVa - lyt.base`. Bounds were
+    verified upstream in `Reloc.plan`. -/
+def applyPatch (image : Map.ProcessImage) (p : Reloc.Patch) : IO Unit := do
+  let some obj := image.objects[p.objectIdx]?
+    | throw (IO.userError s!"applyPatch: missing object {p.objectIdx}")
+  let some lyt := image.layouts[p.objectIdx]?
+    | throw (IO.userError s!"applyPatch: missing layout {p.objectIdx}")
   let bytes ←
-    if w.size = 8 then pure (UInt64.toLEBytes w.value)
-    else if w.size = 4 then pure (UInt64.toLEBytes32 w.value)
-    else throw (IO.userError s!"applyReloc: unsupported width {w.size}")
-  let some region := regions[0]?
-    | throw (IO.userError s!"applyReloc: no regions for object {w.objectIdx}")
-  let offset := (w.targetVa - base).toUSize
-  Runtime.write region offset bytes
+    if p.size = 8 then pure (UInt64.toLEBytes p.value)
+    else if p.size = 4 then pure (UInt64.toLEBytes32 p.value)
+    else throw (IO.userError s!"applyPatch: unsupported width {p.size}")
+  let offset := (p.targetVa - lyt.base).toUSize
+  Runtime.write obj.reservation offset bytes
 
-def applyAllRelocs (allRegions : Array (Array Runtime.Region))
-    (bases : Reloc.Bases) (writes : Array Reloc.RelocWrite) : IO Unit := do
-  for w in writes do applyReloc allRegions bases w
+/-- Apply every planned patch. Bounds rejection happens upstream in
+    `Reloc.plan`, so by the time patches reach here every target VA
+    is guaranteed in `[base, base + span)` for its object. -/
+def applyPatches (image : Map.ProcessImage) (patches : Array Reloc.Patch) : IO Unit := do
+  for p in patches do applyPatch image p
 
-end LeanLoad.Load
+-- ============================================================================
+-- Integration test runner. Pokes the planned patches through. The
+-- interesting bug-class (wrong width, target out of range, reading
+-- past mmap end) surfaces as IO errors, so completing without
+-- raising is the assertion.
+-- ============================================================================
+
+/-- Self-contained: re-runs Map and Reloc-plan internally so the
+    dispatch table can stay flat (`IO Nat`). Cost: extra mmaps that
+    persist for the process lifetime — negligible for our fixtures. -/
+def test (g : DepGraph) (layouts : Array ObjectLayout)
+    (formula : Reloc.Formula) (rt : Resolve.Table) : IO Nat := do
+  let image ← Map.mapAll g layouts
+  match Reloc.plan formula g layouts rt with
+  | .error e =>
+    IO.eprintln s!"Reloc.plan: {e}"
+    return 1
+  | .ok patches =>
+    applyPatches image patches
+    return 0
+
+end LeanLoad.Apply

@@ -64,11 +64,6 @@ def DF_TEXTREL    : UInt64 := 0x4
 def DF_BIND_NOW   : UInt64 := 0x8
 def DF_STATIC_TLS : UInt64 := 0x10
 
-#guard DT_NULL = 0
-#guard DT_NEEDED = 1
-#guard DT_INIT_ARRAY = 25
-#guard DT_RUNPATH = 29
-
 -- ============================================================================
 -- Dynamic entry — gabi 08 § Dynamic Section (Elf64_Dyn)
 -- ============================================================================
@@ -82,37 +77,5 @@ structure Dyn64 where
 
 /-- Size of one entry on disk: two 8-byte fields. -/
 def entrySize : Nat := 16
-
-#guard entrySize = 16
-
--- ============================================================================
--- Convenience: lookup helpers over a parsed `.dynamic` table.
--- ============================================================================
-
-/-- Find the first entry with the given tag. -/
-def find? (tab : Array Dyn64) (tag : UInt64) : Option Dyn64 :=
-  tab.find? (·.d_tag == tag)
-
-/-- All entries matching a tag (e.g. all `DT_NEEDED`). -/
-def findAll (tab : Array Dyn64) (tag : UInt64) : Array Dyn64 :=
-  tab.filter (·.d_tag == tag)
-
-section UnitTest
--- Synthetic .dynamic with three NEEDED entries plus singletons.
-private def tab : Array Dyn64 := #[
-  { d_tag := DT_NEEDED, d_un := 0x10 },
-  { d_tag := DT_RUNPATH, d_un := 0x20 },
-  { d_tag := DT_NEEDED, d_un := 0x30 },
-  { d_tag := DT_NEEDED, d_un := 0x40 },
-  { d_tag := DT_NULL,   d_un := 0 } ]
-
-#guard (find? tab DT_NEEDED).map (·.d_un)  = some 0x10   -- first match wins
-#guard (find? tab DT_RUNPATH).map (·.d_un) = some 0x20
-#guard  find? tab DT_HASH                  = none         -- absent
-
--- All three NEEDED entries, in declared order.
-#guard (findAll tab DT_NEEDED).map (·.d_un) = #[0x10, 0x30, 0x40]
-#guard (findAll tab DT_HASH).size           = 0
-end UnitTest
 
 end LeanLoad.Spec.Dynamic

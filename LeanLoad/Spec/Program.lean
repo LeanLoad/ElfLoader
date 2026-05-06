@@ -29,10 +29,6 @@ def PF_X : UInt32 := 0x1
 def PF_W : UInt32 := 0x2
 def PF_R : UInt32 := 0x4
 
-#guard PT_LOAD = 1
-#guard PT_DYNAMIC = 2
-#guard PF_R + PF_W + PF_X = 7
-
 -- ============================================================================
 -- Program header — gabi 07 § Program Header Entry (Elf64_Phdr)
 -- ============================================================================
@@ -51,7 +47,5 @@ structure Header64 where
 
 /-- Size of one entry on disk (gabi 07: 4+4+8*6 = 56). -/
 def entrySize : Nat := 56
-
-#guard entrySize = 56
 
 end LeanLoad.Spec.Program

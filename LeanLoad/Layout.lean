@@ -1,54 +1,26 @@
 /-
-Layout planning — pure.
+Layout — per-object segment arrangement, pure.
 
-Two algorithms, both consumed by the `Layout` stage and bundled into
-the `Layout` struct:
+Walks each parsed ELF's `PT_LOAD`s and presents them as `Segment`s,
+with mmap-ready fields (`vaddr`, `length`, `prot`, …) exposed as
+lazy accessors on the wrapped `Header64`. Also bundles per-object
+`ObjectLayout`s into the cross-object `Layout` struct consumed
+downstream by Map / Reloc / Apply / Exec.
 
-  1. Per-object mmap layout: walk `PT_LOAD`s, compute page-aligned
-     mappings + their `PROT_*` bits.
-  2. Init/fini order: DFS post-order over the `DT_NEEDED` graph
-     (gabi 08 § Initialization and Termination Functions). Cycles
-     are broken by a visited set; total via fuel.
-
-Spec basis: gabi 07 §§ Program Header, Base Address, Segment
-Permissions; gabi 08 § Initialization and Termination Functions.
+Init/fini ordering lives in `LeanLoad.Order` (gabi 08); this file
+covers gabi 07 (Program Header / Program Loading / Segment
+Permissions).
 -/
 
 import LeanLoad.Spec.Program
 import LeanLoad.Parse.File
 import LeanLoad.Discover
-import LeanLoad.TestUnit
 
 namespace LeanLoad.Layout
 
 open LeanLoad.Spec
 open LeanLoad
-
--- ============================================================================
--- One mmap chunk, with the bytes to copy from the source ELF.
--- ============================================================================
-
-/-- A single planned mmap region.
-
-    `vaddr` and `length` describe the mapping itself.
-    `fileOff`/`fileLen` describe how many bytes from the source ELF
-    should be copied into the region starting at `vaddr - aligned base`;
-    the tail (BSS) is left zero by anonymous mmap. -/
-structure Mapping where
-  /-- Page-aligned base address (mmap target). -/
-  vaddr   : UInt64
-  /-- mmap length in bytes (page-aligned). -/
-  length  : UInt64
-  /-- PROT_* bits for the final mprotect. -/
-  prot    : UInt32
-  /-- File offset to start copying bytes from. -/
-  fileOff : UInt64
-  /-- Number of bytes to copy (≤ `length`; remainder is BSS, left zero). -/
-  fileLen : UInt64
-  /-- Offset within the region where the copied bytes begin (handles the
-      case `p_vaddr` is not page-aligned). -/
-  pageInset : UInt64
-  deriving Repr
+open LeanLoad.Discover
 
 -- ============================================================================
 -- PF_* → PROT_* translation
@@ -94,228 +66,224 @@ def alignUp (x align : UInt64) : UInt64 :=
 #guard alignUp   0x1234 0 == 0x1234
 
 -- ============================================================================
--- Per-object layout (mappings + entry)
+-- Loadable segment — a `PT_LOAD` program header plus the mmap-ready
+-- accessors derived from it. The accessors (`vaddr`, `length`, `prot`,
+-- `fileOff`, `fileLen`, `pageInset`) are computed lazily; the planner
+-- doesn't cache them.
 -- ============================================================================
 
-/-- Build a layout mapping from a `PT_LOAD` program header. -/
-def mappingOfPhdr (ph : Program.Header64) : Mapping :=
-  let align := if ph.p_align == 0 then 1 else ph.p_align
-  let baseAligned := alignDown ph.p_vaddr align
-  let endAddr     := ph.p_vaddr + ph.p_memsz
-  let endAligned  := alignUp endAddr align
-  let pageInset   := ph.p_vaddr - baseAligned
-  { vaddr     := baseAligned
-    length    := endAligned - baseAligned
-    prot      := protOfFlags ph.p_flags
-    fileOff   := ph.p_offset
-    fileLen   := ph.p_filesz
-    pageInset := pageInset }
+/-- A loadable segment: a `Header64` whose `p_type = PT_LOAD`. The
+    `isLoad` field defaults via `decide` for direct construction with
+    a concrete phdr; the smart constructor `fromPhdr?` filters
+    arbitrary phdrs by type. -/
+structure Segment where
+  phdr   : Program.Header64
+  isLoad : phdr.p_type = Program.PT_LOAD := by decide
+  deriving Repr
+
+namespace Segment
+
+/-- Lift a `Header64` into a `Segment` if it is `PT_LOAD`. -/
+def fromPhdr? (ph : Program.Header64) : Option Segment :=
+  if h : ph.p_type = Program.PT_LOAD then some ⟨ph, h⟩ else none
+
+/-- Effective alignment (treats `p_align = 0` as 1). -/
+private def effectiveAlign (s : Segment) : UInt64 :=
+  if s.phdr.p_align == 0 then 1 else s.phdr.p_align
+
+/-- Page-aligned mmap base. -/
+def vaddr (s : Segment) : UInt64 := alignDown s.phdr.p_vaddr s.effectiveAlign
+
+/-- mmap length in bytes (page-aligned over the full memory range). -/
+def length (s : Segment) : UInt64 :=
+  alignUp (s.phdr.p_vaddr + s.phdr.p_memsz) s.effectiveAlign - s.vaddr
+
+/-- PROT_* bits for `mprotect`, translated from PF_*. -/
+def prot (s : Segment) : UInt32 := protOfFlags s.phdr.p_flags
+
+/-- File offset to start copying bytes from. -/
+def fileOff (s : Segment) : UInt64 := s.phdr.p_offset
+
+/-- Number of bytes to copy (≤ `length`; remainder is BSS). -/
+def fileLen (s : Segment) : UInt64 := s.phdr.p_filesz
+
+/-- Offset within the mapped region where copied bytes begin (handles
+    the case `p_vaddr` is not page-aligned). -/
+def pageInset (s : Segment) : UInt64 := s.phdr.p_vaddr - s.vaddr
+
+/-- Page-aligned length of the file-backed mmap range: covers
+    `pageInset + fileLen` rounded up. `≤ length` (BSS tail extends
+    beyond). -/
+def fileLenPaged (s : Segment) : UInt64 :=
+  alignUp (s.pageInset + s.fileLen) s.effectiveAlign
+
+/-- Page-aligned file offset for `mmap(2)`. Equals `p_offset -
+    pageInset` for gabi-07-conforming ELFs (the congruence
+    `p_vaddr ≡ p_offset (mod p_align)`). -/
+def fileOffsetPaged (s : Segment) : UInt64 :=
+  alignDown s.phdr.p_offset s.effectiveAlign
+
+/-- One past the last byte of the segment's mmap'd range. -/
+def endAddr (s : Segment) : UInt64 := s.vaddr + s.length
+
+/-- Two segments are disjoint when their `[vaddr, endAddr)` ranges don't overlap. -/
+def disjoint (s₁ s₂ : Segment) : Prop :=
+  s₁.endAddr ≤ s₂.vaddr ∨ s₂.endAddr ≤ s₁.vaddr
+
+end Segment
 
 -- Page-aligned vaddr at 0x1000, fits in one 0x1000 page → no inset.
 #guard
-  let m := mappingOfPhdr { (default : Program.Header64) with
+  let s : Segment := ⟨{ (default : Program.Header64) with
+    p_type := Program.PT_LOAD,
     p_vaddr := 0x1000, p_memsz := 0x800, p_filesz := 0x800,
     p_align := 0x1000, p_flags := Program.PF_R ||| Program.PF_X,
-    p_offset := 0x1000 }
-  m.vaddr = 0x1000 ∧ m.length = 0x1000 ∧ m.pageInset = 0 ∧ m.prot = 5
--- Unaligned vaddr 0x1234 with 0x1000 alignment: round-down to 0x1000,
--- pageInset = 0x234, length covers up to next page boundary after end.
+    p_offset := 0x1000 }, by decide⟩
+  s.vaddr = 0x1000 ∧ s.length = 0x1000 ∧ s.pageInset = 0 ∧ s.prot = 5
+-- Unaligned vaddr 0x1234 with 0x1000 alignment.
 #guard
-  let m := mappingOfPhdr { (default : Program.Header64) with
+  let s : Segment := ⟨{ (default : Program.Header64) with
+    p_type := Program.PT_LOAD,
     p_vaddr := 0x1234, p_memsz := 0x100, p_filesz := 0x100,
     p_align := 0x1000, p_flags := Program.PF_R ||| Program.PF_W,
-    p_offset := 0x1234 }
-  m.vaddr = 0x1000 ∧ m.length = 0x1000 ∧ m.pageInset = 0x234 ∧ m.prot = 3
--- p_align = 0 ⇒ treat as 1 (no alignment, identity).
+    p_offset := 0x1234 }, by decide⟩
+  s.vaddr = 0x1000 ∧ s.length = 0x1000 ∧ s.pageInset = 0x234 ∧ s.prot = 3
+-- p_align = 0 ⇒ identity.
 #guard
-  let m := mappingOfPhdr { (default : Program.Header64) with
+  let s : Segment := ⟨{ (default : Program.Header64) with
+    p_type := Program.PT_LOAD,
     p_vaddr := 0x42, p_memsz := 0x10, p_filesz := 0x10,
-    p_align := 0, p_flags := Program.PF_R }
-  m.vaddr = 0x42 ∧ m.length = 0x10 ∧ m.pageInset = 0
--- p_memsz > p_filesz (BSS tail): length covers memsz, fileLen tracks
--- only the file-backed portion.
+    p_align := 0, p_flags := Program.PF_R }, by decide⟩
+  s.vaddr = 0x42 ∧ s.length = 0x10 ∧ s.pageInset = 0
+-- BSS tail: memsz > filesz.
 #guard
-  let m := mappingOfPhdr { (default : Program.Header64) with
+  let s : Segment := ⟨{ (default : Program.Header64) with
+    p_type := Program.PT_LOAD,
     p_vaddr := 0x2000, p_memsz := 0x800, p_filesz := 0x200,
     p_align := 0x1000, p_flags := Program.PF_R ||| Program.PF_W,
-    p_offset := 0x2000 }
-  m.fileLen = 0x200 ∧ m.length = 0x1000
+    p_offset := 0x2000 }, by decide⟩
+  s.fileLen = 0x200 ∧ s.length = 0x1000
 
 /-- Layout for a single loaded object.
 
-    For `ET_EXEC`: mappings sit at absolute `p_vaddr`,
-    `preferredBase = 0` means "honour those addresses literally".
-    For `ET_DYN` (PIE / shared): `p_vaddr` is relative to a base the
-    kernel will choose at `mmap` time. `preferredBase = 0` means
-    "let the kernel pick". -/
+    `base` is the absolute mmap address at which the object's
+    segments will be placed. For `ET_EXEC` (vaddrs already absolute)
+    `base = 0` and Map uses `s.vaddr` directly. For `ET_DYN`, Layout
+    picks `base = dynAnchor + cumulative_offset` so each object lives
+    in its own non-overlapping slot starting at `dynAnchor`; Map then
+    uses `MAP_FIXED` everywhere — no kernel-chosen bases. -/
 structure ObjectLayout where
-  objectIdx     : Nat
-  preferredBase : UInt64
-  mappings      : Array Mapping
+  objectIdx : Nat
+  /-- Absolute mmap base address chosen by Layout. -/
+  base      : UInt64
+  segments  : Array Segment
   /-- The `e_entry` field. `none` for objects we never enter
       (e.g. shared libraries). -/
-  entry         : Option UInt64
+  entry     : Option UInt64
   /-- True for the main executable. -/
-  isMain        : Bool
+  isMain    : Bool
   deriving Repr
 
-/-- Layout for a single parsed ELF, given its index in the
-    `LinkMap.objects` array. -/
-def objectLayout (objectIdx : Nat) (isMain : Bool) (elf : Parse.File.ParsedElf) : ObjectLayout :=
-  let loads    := elf.phdrs.filter (·.p_type == Program.PT_LOAD)
-  let mappings := loads.map mappingOfPhdr
-  let entry    := if isMain then some elf.header.e_entry else none
-  { objectIdx, preferredBase := 0, mappings, entry, isMain }
+/-- Hardcoded anchor for the first `ET_DYN` object. Subsequent
+    `ET_DYN` objects stack above it. Picked to be high enough to
+    avoid colliding with the host process's typical mappings on
+    x86-64 / aarch64 (heap, libc, etc., usually in the low GB). -/
+def dynAnchor : UInt64 := 0x80000000
+
+/-- Extract the loadable segments from a parsed ELF. Filters
+    `phdrs` to `PT_LOAD` entries and wraps each in `Segment`. -/
+def segmentsOf (elf : Parse.File.ParsedElf) : Array Segment :=
+  elf.phdrs.filterMap Segment.fromPhdr?
+
+/-- The contiguous span an array of segments needs (relative to the
+    object's base). Used by `assignBases` (with `segmentsOf elf`) to
+    size each `ET_DYN` object's arena slot, and by `Map` (with
+    `lyt.segments`) for the per-object anon reservation. -/
+def objectSpan (segments : Array Segment) : UInt64 :=
+  segments.foldl (init := 0) fun acc s => max acc s.endAddr
+
+/-- The contiguous span of one object's segments — convenience
+    accessor for `objectSpan lyt.segments`, enables `lyt.span`. -/
+def ObjectLayout.span (lyt : ObjectLayout) : UInt64 :=
+  objectSpan lyt.segments
+
+/-- Layout for a single parsed ELF. `base` is decided by the
+    enclosing `fromDepGraph` (anchor + cumulative for `ET_DYN`,
+    0 for `ET_EXEC`). -/
+def objectLayout (objectIdx : Nat) (isMain : Bool) (base : UInt64)
+    (elf : Parse.File.ParsedElf) : ObjectLayout :=
+  let entry := if isMain then some elf.header.e_entry else none
+  { objectIdx, base, segments := segmentsOf elf, entry, isMain }
+
+/-- Segments are pairwise disjoint (`[vaddr, endAddr)` ranges don't overlap). -/
+def ObjectLayout.segmentsPairwiseDisjoint (lyt : ObjectLayout) : Prop :=
+  ∀ i j (_ : i < lyt.segments.size) (_ : j < lyt.segments.size),
+    i ≠ j → Segment.disjoint lyt.segments[i] lyt.segments[j]
+
+/-- Segments are sorted by `vaddr` with each one's end ≤ the next one's start.
+    The clean precondition under which pairwise disjointness follows; the
+    real-ELF discharge belongs to a future "PT_LOADs are well-formed" lemma. -/
+def ObjectLayout.segmentsSorted (lyt : ObjectLayout) : Prop :=
+  ∀ i j (_ : i < lyt.segments.size) (_ : j < lyt.segments.size),
+    i < j → lyt.segments[i].endAddr ≤ lyt.segments[j].vaddr
 
 -- ============================================================================
--- Init / fini order: DFS post-order over `DT_NEEDED`. Spec: gabi 08
--- § Initialization and Termination Functions.
---
--- > Before the initialization functions for any object A is called,
--- > the initialization functions for any other objects that object A
--- > depends on are called. … The order of initialization for circular
--- > dependencies is undefined.
---
--- Output: `Array Nat` of `LinkMap.objects` indices. Init runs them in
--- order; fini runs them in reverse.
+-- Layout-stage output is `Array ObjectLayout` (one entry per object,
+-- in `DepGraph.objects` order). Init/fini order (gabi 08) is
+-- computed separately in `LeanLoad.Order` and threaded directly to
+-- `Exec.runInits` — purely gabi-07 here (segment placement).
+-- Relocations are not part of `Layout` either; they depend on actual
+-- chosen bases and are computed post-Map by `LeanLoad.Reloc.plan`.
 -- ============================================================================
 
-/-- Find the index of an object whose `name` matches one of `nameOrSoname`.
-    Used to follow `DT_NEEDED` strings to their loaded objects. -/
-private def findObject (lm : Discover.LinkMap) (name : String) : Option Nat :=
-  lm.objects.findIdx? (·.name == name)
-
-/-- Depth-first traversal helper. `visited[i]` marks an object that
-    has either been emitted (`order` already contains it) or is
-    currently in the descent path (cycle protection).
-
-    `fuel` bounds the recursion depth and lets Lean mechanically
-    discharge termination. The caller (`initOrder`) seeds it with
-    `lm.objects.size`, which is sufficient because each recursive
-    call descends through one not-yet-visited object, and there are
-    at most `lm.objects.size` of those. With this, no `partial def`
-    is needed — `dfs` is structurally recursive on `fuel`. -/
-private def dfs (fuel : Nat) (lm : Discover.LinkMap)
-    (idx : Nat) (visited : Array Bool) (order : Array Nat) : Array Bool × Array Nat :=
-  match fuel with
-  | 0 => (visited, order)
-  | fuel + 1 => Id.run do
-    if h : idx < visited.size then
-      if visited[idx] then return (visited, order)
-    else
-      return (visited, order)
-    let mut visited := visited.set! idx true
-    let mut order := order
-    let some obj := lm.objects[idx]? | return (visited, order)
-    for needed in obj.elf.needed do
-      if let some childIdx := findObject lm needed then
-        let (v', o') := dfs fuel lm childIdx visited order
-        visited := v'
-        order := o'
-    order := order.push idx
-    return (visited, order)
-termination_by fuel
-
-/-- Compute init order: depth-first post-order from object 0 (main).
-    Result is an array of object indices to invoke in sequence. -/
-def initOrder (lm : Discover.LinkMap) : Array Nat :=
-  let n := lm.objects.size
-  if n == 0 then #[]
-  else
-    let visited := Array.replicate n false
-    let order : Array Nat := Array.mkEmpty n
-    (dfs n lm 0 visited order).snd
-
-/-- Termination order (`DT_FINI_ARRAY`, `DT_FINI`). Reverse of init. -/
-def finiOrder (lm : Discover.LinkMap) : Array Nat :=
-  (initOrder lm).reverse
-
--- ============================================================================
--- Bundled output: layouts + init/fini order. The output of the
--- Layout stage; consumed by Map / Reloc / Apply / Init / Exec.
---
--- Relocations are not part of `Layout` — they depend on actual chosen
--- bases and are computed post-Map by `LeanLoad.Reloc.plan`.
--- ============================================================================
-
-/-- The unified Layout-stage output. -/
-structure Layout where
-  layouts   : Array ObjectLayout
-  initOrder : Array Nat
-  finiOrder : Array Nat
-  deriving Repr
-
-/-- Build the Layout for a discovered link map. The first object
-    (index 0) is main. A single-element link map (a static binary
-    with no `DT_NEEDED`) is just the N=1 case of this. -/
-def fromLinkMap (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) : Layout :=
-  { layouts   := lm.objects.mapIdx fun idx obj => objectLayout idx (idx = 0) obj.elf
-    initOrder
-    finiOrder }
-
--- Empty-link map edge case (the strong size-equality is in `LeanLoad.Thm`).
-#guard (fromLinkMap { objects := #[] } #[] #[]).layouts.isEmpty
-
--- ============================================================================
--- Compile-time unit tests on synthetic link maps (`synthObj` from
--- `LeanLoad.TestUnit`).
--- ============================================================================
-section UnitTest
-open LeanLoad.TestUnit
-
-private def emptyLM   : Discover.LinkMap := { objects := #[] }
-private def loneLM    : Discover.LinkMap := { objects := #[synthObj "main"] }
-private def chainLM   : Discover.LinkMap := { objects := #[
-  synthObj "main"      (needed := #["libfoo.so"]),
-  synthObj "libfoo.so" (needed := #["libbar.so"]),
-  synthObj "libbar.so"
-] }
-/-- Diamond: main needs libfoo + libbar; both need libcommon (visited
-    once). Post-order = `[3, 1, 2, 0]`. -/
-private def diamondLM : Discover.LinkMap := { objects := #[
-  synthObj "main"         (needed := #["libfoo.so", "libbar.so"]),
-  synthObj "libfoo.so"    (needed := #["libcommon.so"]),
-  synthObj "libbar.so"    (needed := #["libcommon.so"]),
-  synthObj "libcommon.so"
-] }
-/-- Cycle libA ↔ libB. Order is implementation-defined (gabi 08 says
-    "undefined for circular dependencies") — we just check the visited
-    set terminates and emits every node exactly once. -/
-private def cycleLM   : Discover.LinkMap := { objects := #[
-  synthObj "main"    (needed := #["libA.so"]),
-  synthObj "libA.so" (needed := #["libB.so"]),
-  synthObj "libB.so" (needed := #["libA.so"])
-] }
-
-#guard initOrder emptyLM   = #[]
-#guard finiOrder emptyLM   = #[]
-#guard initOrder loneLM    = #[0]
-#guard initOrder chainLM   = #[2, 1, 0]
-#guard finiOrder chainLM   = #[0, 1, 2]
-#guard initOrder diamondLM = #[3, 1, 2, 0]
-#guard (initOrder cycleLM).size = 3
-
-end UnitTest
+/-- Assign an mmap base to each object in BFS order. `ET_EXEC`
+    objects keep `0`; `ET_DYN` objects start at `dynAnchor` and
+    stack by `alignUp objectSpan 0x1000`. -/
+def assignBases (g : DepGraph) : Array UInt64 := Id.run do
+  let mut bases : Array UInt64 := Array.mkEmpty g.objects.size
+  let mut cursor : UInt64 := dynAnchor
+  for h : i in [:g.objects.size] do
+    let obj := g.objects[i]
+    let isExec := obj.elf.header.e_type = 2
+    let base := if isExec then 0 else cursor
+    bases := bases.push base
+    if !isExec then
+      cursor := cursor + alignUp (objectSpan (segmentsOf obj.elf)) 0x1000
+  return bases
 
 end LeanLoad.Layout
 
--- ============================================================================
--- IO test runner. Init order: post-order DFS. Main (idx 0) is the
--- root, so it must appear last (after all of its transitive deps).
--- ============================================================================
-namespace LeanLoad.Layout.Test
+namespace LeanLoad.Discover.DepGraph
 
-open LeanLoad
+open LeanLoad.Layout
 
-def run (lm : Discover.LinkMap) : IO Nat := do
+/-- Build the per-object layouts for a discovered link map. The first
+    object (index 0) is main. -/
+def layouts (g : DepGraph) : Array ObjectLayout :=
+  let bases := assignBases g
+  g.objects.mapIdx fun i obj =>
+    objectLayout i (i = 0) (bases[i]?.getD 0) obj.elf
+
+-- Empty-link map edge case (the strong size-equality is in `LeanLoad.Thm.Layout`).
+#guard ({ objects := #[], deps := #[] } : DepGraph).layouts.isEmpty
+
+end LeanLoad.Discover.DepGraph
+
+namespace LeanLoad.Layout
+
+open LeanLoad.Discover
+
+-- ============================================================================
+-- IO test runner. Sanity-checks the per-object segment count over
+-- the discovered link map.
+-- ============================================================================
+
+def test (g : DepGraph) : IO Nat := do
   let mut failures := 0
-  let order := initOrder lm
-  if order.size != lm.objects.size then
-    IO.eprintln s!"init order size {order.size} ≠ object count {lm.objects.size}"
-    failures := failures + 1
-  if order.back? != some 0 then
-    IO.eprintln s!"main (idx 0) should be last in init order; got {order}"
+  let layouts := g.layouts
+  if layouts.size != g.objects.size then
+    IO.eprintln s!"layouts.size {layouts.size} ≠ object count {g.objects.size}"
     failures := failures + 1
   return failures
 
-end LeanLoad.Layout.Test
+end LeanLoad.Layout

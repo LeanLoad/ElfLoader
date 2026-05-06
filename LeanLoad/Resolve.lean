@@ -12,22 +12,23 @@ An object's symbol is a *definition* if `st_shndx ≠ SHN_UNDEF` and is
 not `STB_LOCAL`. An *undefined reference* has `st_shndx = SHN_UNDEF`.
 For each undefined reference across all loaded objects, we find a
 defining (object, symbol) pair via breadth-first search over the
-`LinkMap.objects` array (which `Discover` already returns in BFS
+`DepGraph.objects` array (which `Discover` already returns in BFS
 order: main first, then NEEDED entries in their declared order).
 -/
 
 import LeanLoad.Discover
 import LeanLoad.Spec.Symbol
-import LeanLoad.TestUnit
+import LeanLoad.Fixtures
 
 namespace LeanLoad.Resolve
 
 open LeanLoad.Spec
 
 open LeanLoad
+open LeanLoad.Discover
 
 /-- A resolved global symbol: its providing object's index in the
-    `LinkMap.objects` array and the symbol's index within that
+    `DepGraph.objects` array and the symbol's index within that
     object's `symtab`. -/
 structure SymRef where
   objectIdx : Nat
@@ -56,12 +57,12 @@ def findInObject (obj : Discover.LoadedObject) (name : String) : Option Nat :=
   obj.elf.symtab.findIdx? fun sym =>
     isGlobalDef sym && symName obj sym == some name
 
-/-- Resolve `name` against `lm` via breadth-first search over its
+/-- Resolve `name` against `g` via breadth-first search over its
     objects. Returns the providing `SymRef`, or `none` if no object
     defines it. -/
-def resolveByName (lm : Discover.LinkMap) (name : String) : Option SymRef := Id.run do
+def resolveByName (g : DepGraph) (name : String) : Option SymRef := Id.run do
   let mut idx := 0
-  for obj in lm.objects do
+  for obj in g.objects do
     if let some symIdx := findInObject obj name then
       return some { objectIdx := idx, symIdx }
     idx := idx + 1
@@ -75,8 +76,8 @@ structure Unresolved where
   deriving Repr
 
 /-- Result of building the resolution table for an entire
-    `LinkMap`. -/
-structure ResolutionTable where
+    `DepGraph`. -/
+structure Table where
   /-- One entry per undefined reference in any object. -/
   resolved : Array (Unresolved × Option SymRef)
   /-- Strong (non-weak) undef references that did not resolve.
@@ -89,12 +90,12 @@ structure ResolutionTable where
 
 /-- Walk every object's symbol table, look up each undefined
     reference's definition. -/
-def buildTable (lm : Discover.LinkMap) : ResolutionTable := Id.run do
+def buildTable (g : DepGraph) : Table := Id.run do
   let mut resolved : Array (Unresolved × Option SymRef) := #[]
   let mut missing : Array Unresolved := #[]
   let mut weakMissing : Array Unresolved := #[]
   let mut objIdx := 0
-  for obj in lm.objects do
+  for obj in g.objects do
     let mut symIdx := 0
     for sym in obj.elf.symtab do
       if isUndef sym then
@@ -103,7 +104,7 @@ def buildTable (lm : Discover.LinkMap) : ResolutionTable := Id.run do
         | some "" => pure ()
         | some n =>
           let entry : Unresolved := { objectIdx := objIdx, symIdx, name := n }
-          let r := resolveByName lm n
+          let r := resolveByName g n
           resolved := resolved.push (entry, r)
           if r.isNone then
             if isWeak sym then weakMissing := weakMissing.push entry
@@ -113,12 +114,12 @@ def buildTable (lm : Discover.LinkMap) : ResolutionTable := Id.run do
   return { resolved, missing, weakMissing }
 
 -- ============================================================================
--- Compile-time unit tests: synthesise a tiny `LinkMap` where main has an
+-- Compile-time unit tests: synthesise a tiny `DepGraph` where main has an
 -- undefined ref to `printf` and libc defines it, then check the
 -- resolver finds the right pair.
 -- ============================================================================
 section UnitTest
-open LeanLoad.TestUnit
+open LeanLoad.Fixtures
 
 /-- Pack `ss` into a NUL-separated `.dynstr`; offset 0 reserved for "". -/
 private def packStrings (ss : Array String) : Spec.StringTable.StringTable × Array Nat :=
@@ -140,44 +141,38 @@ private def undefSym (nameOff : UInt32) : Symbol.Symbol64 :=
     st_shndx := Symbol.SHN_UNDEF }
 
 /-- main's undef `printf`, libc's def `printf`. -/
-private def resolveLM : Discover.LinkMap :=
+private def resolveG : DepGraph :=
   let (mainStrtab, mOffs) := packStrings #["printf"]
   let (libcStrtab, lOffs) := packStrings #["printf"]
-  { objects := #[
-      synthObj "main"
-        (needed := #["libc.so"])
-        (symtab := #[default, undefSym mOffs[0]!.toUInt32])
-        (strtab := mainStrtab),
-      synthObj "libc.so"
-        (symtab := #[default, defSym lOffs[0]!.toUInt32 0xc0ffee])
-        (strtab := libcStrtab) ] }
+  synthDepGraph #[
+    synthObj "main"
+      (needed := #["libc.so"])
+      (symtab := #[default, undefSym mOffs[0]!.toUInt32])
+      (strtab := mainStrtab),
+    synthObj "libc.so"
+      (symtab := #[default, defSym lOffs[0]!.toUInt32 0xc0ffee])
+      (strtab := libcStrtab) ]
 
-#guard (resolveByName resolveLM "printf").map (·.objectIdx) = some 1
-#guard (resolveByName resolveLM "nonexistent")              = none
-#guard (buildTable    resolveLM).missing.size               = 0
+#guard (resolveByName resolveG "printf").map (·.objectIdx) = some 1
+#guard (resolveByName resolveG "nonexistent")              = none
+#guard (buildTable    resolveG).missing.size               = 0
 
 end UnitTest
-
-end LeanLoad.Resolve
 
 -- ============================================================================
 -- Tests.
 -- ============================================================================
-namespace LeanLoad.Resolve.Test
-
-open LeanLoad
-open LeanLoad.Spec
 
 /-- Discover `build/main`'s link map, build the resolution table, check
     that cross-library references resolve and the libbar↔libbaz cycle
     is handled both ways. -/
-def run (lm : Discover.LinkMap) : IO Nat := do
+def test (g : DepGraph) : IO Nat := do
   let mut failures := 0
-  if lm.objects.size < 4 then
-    IO.eprintln s!"expected ≥ 4 objects, got {lm.objects.size}"
+  if g.objects.size < 4 then
+    IO.eprintln s!"expected ≥ 4 objects, got {g.objects.size}"
     return failures + 1
 
-  let table := buildTable lm
+  let table := buildTable g
 
   if table.missing.size != 0 then
     IO.eprintln s!"expected 0 missing, got {table.missing.size}:"
@@ -191,12 +186,12 @@ def run (lm : Discover.LinkMap) : IO Nat := do
     ("libbaz_step",  "libbaz.so")
   ]
   for (sym, expectedProvider) in expectations do
-    match resolveByName lm sym with
+    match resolveByName g sym with
     | none =>
       IO.eprintln s!"{sym} did not resolve"
       failures := failures + 1
     | some r =>
-      match lm.objects[r.objectIdx]? with
+      match g.objects[r.objectIdx]? with
       | none => failures := failures + 1
       | some obj =>
         if obj.name != expectedProvider then
@@ -205,4 +200,4 @@ def run (lm : Discover.LinkMap) : IO Nat := do
 
   return failures
 
-end LeanLoad.Resolve.Test
+end LeanLoad.Resolve

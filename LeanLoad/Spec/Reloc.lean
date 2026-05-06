@@ -5,7 +5,7 @@ Spec: gabi 06 (`third_party/gabi/docsrc/elf/06-reloc.rst`).
 Architecture-specific relocation types and formula tables
 (`R_AARCH64_*` in `Spec/Reloc/Aarch64.lean`, `R_X86_64_*` in
 `Spec/Reloc/X86_64.lean`) live under `Spec/Reloc/`. The pure planner
-that turns parsed `Rela`s into a list of `RelocWrite`s is
+that turns parsed `Rela`s into a list of `Patch`es is
 `LeanLoad.Reloc`.
 
 `Elf64_Rela` packs symbol index and relocation type into `r_info`:
@@ -35,8 +35,6 @@ def Rela64.entrySize : Nat := 24
 
 def Rela64.sym (r : Rela64) : UInt32 := (r.r_info >>> 32).toUInt32
 def Rela64.type (r : Rela64) : UInt32 := (r.r_info &&& 0xffffffff).toUInt32
-
-#guard Rela64.entrySize = 24
 
 section UnitTest
 -- `r_info` packs sym (high 32) + type (low 32). Spot-check both halves.

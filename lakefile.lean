@@ -25,10 +25,8 @@ target libleanload_runtime (pkg : NPackage __name__) : FilePath := do
     let src ← inputFile (pkg.dir / "runtime" / s!"{name}.c") false
     buildO oFile src (weakArgs := #[s!"-I{lean.includeDir}"])
       (traceArgs := cFlags) (compiler := "cc")
-  let region ← buildRuntimeObj "region"
-  let exec   ← buildRuntimeObj "exec"
-  buildStaticLib (pkg.staticLibDir / nameToStaticLib "leanload_runtime")
-    #[region, exec]
+  let objs ← #["region", "file", "exec"].mapM buildRuntimeObj
+  buildStaticLib (pkg.staticLibDir / nameToStaticLib "leanload_runtime") objs
 
 -- ============================================================================
 -- Lean libraries and executables
@@ -44,6 +42,6 @@ lean_exe leanload where
   moreLinkArgs := runtimeLinkArgs
 
 lean_exe test where
-  root := `LeanLoad.TestIntegration
+  root := `LeanLoad.Test
   extraDepTargets := #[`libleanload_runtime]
   moreLinkArgs := runtimeLinkArgs

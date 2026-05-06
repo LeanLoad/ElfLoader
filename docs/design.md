@@ -11,12 +11,24 @@ Pipeline (one row per `--debug` section):
 | ------------ | ---- | ---------------------------------------------------------------------- |
 | **Discover** | IO   | path → `LinkMap` (transitive `DT_NEEDED` walk; calls `Parse` per file) |
 | **Resolve**  | pure | `LinkMap` → resolution table (undef ref → providing object/symbol)     |
-| **Plan**     | pure | `LinkMap` → mmap layout + init/fini order                              |
+| **Layout**   | pure | `LinkMap` → mmap layout + init/fini order                              |
 | **Map**      | IO   | layout → mmap'd regions × kernel-chosen bases                          |
-| **Reloc**    | pure | formula × bases × resolution → `Array RelocWrite`                      |
+| **Reloc**    | pure | formula × bases × resolution → `Array Patch`                      |
 | **Apply**    | IO   | walk the writes; poke bytes into mmap'd memory                         |
-| **Init**     | IO   | bases × init order → constructors called                               |
-| **Exec**     | IO   | build kernel-style stack, jump to entry; no return                     |
+| **Exec**     | IO   | call constructors in init order; build kernel-style stack, jump to entry; no return |
+
+## Key types (refinement seam)
+
+| Type                  | Module        | Contract                                                |
+| --------------------- | ------------- | ------------------------------------------------------- |
+| `Parser α`            | `Parse.Bytes` | Stateful read; advances the cursor or returns `Except`. |
+| `ParsedElf`           | `Parse.File`  | Result of decoding one ELF byte sequence.               |
+| `Discover.LinkMap`    | `Discover`    | Transitively-discovered dependency graph (BFS).         |
+| `Resolve.SymRef`      | `Resolve`     | A resolved symbol: `(objectIdx, symIdx)`.               |
+| `Layout.Layout`       | `Layout`      | Layouts + init/fini orders. **Refinement boundary.**    |
+| `Reloc.Formula`       | `Reloc`       | `(type, S, A, B, P) → Option write`. Pluggable per-arch. |
+| `Reloc.Patch`    | `Reloc`       | One planned memory write.                               |
+| `Runtime.Region`      | `Runtime`     | Opaque mmap'd handle (trust seam).                      |
 
 `Parse` (`LeanLoad/Parse/`) is a pure decoder called per file inside
 `Discover` — `ByteArray` → `ParsedElf`. It's the only step that reads
@@ -25,8 +37,8 @@ raw ELF bytes; every later stage operates on typed records.
 Two design rules:
 
 1. **The Layout output is the refinement seam.** `Plan.Layout.Layout`
-   (layouts + init/fini order), together with `Reloc.RelocWrite`s
-   from the post-bases planner, is what `Map`/`Apply`/`Init`/`Exec`
+   (layouts + init/fini order), together with `Reloc.Patch`s
+   from the post-bases planner, is what `Map`/`Apply`/`Exec`
    consume. Verification targets are stated against it.
 2. **Reloc planning straddles `Map`.** Layout and init order are
    computed pre-bases; relocation writes are computed post-bases
@@ -134,24 +146,43 @@ Both have a job, and adding one doesn't retire the other:
   nontrivial arithmetic, table lookups, formula evaluation, or
   has interesting edge cases (empty inputs, alignment boundaries,
   symbol-less relocations).
-- **Theorems in `LeanLoad.Thm`** prove the general invariants the
-  examples can't: totality (every input has a result), width-validity
-  (`r.size ∈ {4,8}`), refinement-seam structural integrity
-  (`fromLinkMap` produces one layout per object, deterministic),
-  VA→file-offset soundness, and so on. One theorem per `O*` proof
-  obligation in `verification.md`.
+- **Theorems under `LeanLoad/Thm/`** prove the general invariants
+  the examples can't: totality (every input has a result),
+  width-validity (`r.size ∈ {4,8}`), refinement-seam structural
+  integrity (`fromLinkMap` produces one layout per object,
+  deterministic), VA→file-offset soundness, and so on. One file per
+  topic; each theorem's docstring is its contract.
 
 A `#guard` shows *what the function does* on a concrete input; the
 theorem shows *what it always does*. The two are complementary
 audit surfaces.
 
-## Verification
+## Trust assumptions on the host process
 
-See `verification.md` for the running list of proof obligations and
-theorem statements. The audit surface is two files:
+LeanLoad performs in-process loading: the loaded binary's segments
+are `mmap`'d into leanload's own address space, and `transferControl`
+hands off without first replacing the process image. The IO load
+path (`Map.lean` + `Apply.lean` + `Exec.lean`) is conditioned on:
 
-- `LeanLoad.Thm` — typed catalogue of every proven theorem.
-- `verification.md` — prose context for each obligation.
+1. **Address-space disjointness.** The virtual-address ranges named
+   by the Layout output do not intersect any mapping currently in
+   use by leanload itself.
+2. **No concurrent address-space mutation.** No other thread calls
+   `mmap` / `munmap` / `mprotect` / `mremap` during materialise→exec.
+3. **No locks held across `transferControl`.** No host thread holds
+   a libc internal mutex (malloc arena, dynamic-loader lock, …) that
+   the loaded binary will then try to acquire.
+4. **Loaded binary uses `__NR_exit_group`, not `__NR_exit`.** The
+   thread-scoped `exit` syscall would only kill the calling thread;
+   other host threads survive and the process never terminates. The
+   `examples/static.c` fixture honors this; musl's `_exit` does too.
+5. **Signal handlers reset to `SIG_DFL`** before transfer of control,
+   so the loaded binary's faults do not wake Lean's `segv_handler`
+   (which deadlocks against libuv's pthread lock).
+
+Differential testing is the right time to revisit these, either by
+forking a single-threaded child before loading or by proving
+fixture-specific instances of the assumptions.
 
 ## Memory ownership
 

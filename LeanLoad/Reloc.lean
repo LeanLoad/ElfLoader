@@ -3,13 +3,14 @@ Relocation planning — pure.
 
 Consumes parsed `Rela` entries (from `Spec.Reloc`) plus a per-arch
 `Formula` and a resolution table (from `Resolve`); emits the
-list of `RelocWrite`s the runtime loader will perform.
+list of `Patch`s the runtime loader will perform.
 
 The formula notation `S, A, B, P` follows gabi 06 and the per-arch
 supplements. Per-arch formula tables live under `Spec/Reloc/`.
 -/
 
 import LeanLoad.Discover
+import LeanLoad.Layout
 import LeanLoad.Spec.Reloc
 import LeanLoad.Spec.Symbol
 import LeanLoad.Resolve
@@ -17,14 +18,16 @@ import LeanLoad.Resolve
 namespace LeanLoad.Reloc
 
 open LeanLoad
+open LeanLoad.Discover
+open LeanLoad.Layout
 
 -- ============================================================================
 -- A single planned write
 -- ============================================================================
 
 /-- One memory write computed from a relocation entry. -/
-structure RelocWrite where
-  /-- Index into `LinkMap.objects` of the object whose memory is
+structure Patch where
+  /-- Index into `DepGraph.objects` of the object whose memory is
       being written to (the relocation's "P" object). -/
   objectIdx : Nat
   /-- Target virtual address (post base relocation). -/
@@ -56,86 +59,113 @@ structure FormulaResult where
 /-- A relocation formula: an interpretation of `(type, inputs)`. -/
 abbrev Formula := UInt32 → FormulaInputs → Option FormulaResult
 
-/-- Bases array: chosen load base for each object in `LinkMap.objects`. -/
-abbrev Bases := Array UInt64
-
 -- ============================================================================
 -- Per-object planning
 -- ============================================================================
 
 /-- Look up the absolute value of a resolved symbol. -/
-def absoluteSymbolValue (lm : Discover.LinkMap) (bases : Bases)
+def absoluteSymbolValue (g : DepGraph) (bases : Array UInt64)
     (ref : Resolve.SymRef) : Option UInt64 := do
-  let provider ← lm.objects[ref.objectIdx]?
+  let provider ← g.objects[ref.objectIdx]?
   let sym ← provider.elf.symtab[ref.symIdx]?
   let base ← bases[ref.objectIdx]?
   return base + sym.st_value
 
 /-- Find the resolution for `(objectIdx, symIdx)` in a built table. -/
-def lookupResolved (rt : Resolve.ResolutionTable) (lm : Discover.LinkMap)
-    (bases : Bases) (objectIdx symIdx : Nat) : Option UInt64 := do
+def lookupResolved (rt : Resolve.Table) (g : DepGraph)
+    (bases : Array UInt64) (objectIdx symIdx : Nat) : Option UInt64 := do
   let (_, ref?) ← rt.resolved.find? fun (u, _) =>
     u.objectIdx == objectIdx && u.symIdx == symIdx
   let ref ← ref?
-  absoluteSymbolValue lm bases ref
+  absoluteSymbolValue g bases ref
 
 /-- Resolve the absolute value of a relocation's symbol reference.
 
     Three cases (in priority order):
-    1. `r.sym == 0`: no symbol; value is 0.
+    1. No `obj`/`base`/`sym` at the given indices: value is 0.
     2. The symbol is *defined* in `obj` itself (`st_shndx ≠ SHN_UNDEF`).
-       Use `obj.base + sym.st_value`.
+       Use `base + sym.st_value`.
     3. The symbol is undefined in `obj`. Look up the resolution table. -/
-def resolveSymValue (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Resolve.ResolutionTable) (obj : Discover.LoadedObject)
-    (base : UInt64) (objectIdx : Nat) (symIdx : Nat) : UInt64 :=
-  match obj.elf.symtab[symIdx]? with
-  | none     => 0
-  | some sym =>
+def resolveSymValue (g : DepGraph) (bases : Array UInt64)
+    (rt : Resolve.Table) (objectIdx symIdx : Nat) : UInt64 :=
+  let result : Option UInt64 := do
+    let obj  ← g.objects[objectIdx]?
+    let base ← bases[objectIdx]?
+    let sym  ← obj.elf.symtab[symIdx]?
     if sym.st_shndx != Spec.Symbol.SHN_UNDEF then
-      base + sym.st_value
+      return base + sym.st_value
     else
-      (lookupResolved rt lm bases objectIdx symIdx).getD 0
+      lookupResolved rt g bases objectIdx symIdx
+  result.getD 0
 
-/-- Plan all relocations for one object's `.rela.dyn` + `.rela.plt`. -/
-def planObject (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Resolve.ResolutionTable) (objectIdx : Nat) : Array RelocWrite :=
-  match lm.objects[objectIdx]?, bases[objectIdx]? with
-  | some obj, some base =>
-    let one (r : Spec.Reloc.Rela64) : Option RelocWrite :=
-      let symValue : UInt64 :=
-        if r.sym == 0 then 0
-        else resolveSymValue lm bases rt obj base objectIdx r.sym.toNat
-      let inputs : FormulaInputs :=
-        { symValue, addend := r.r_addend, base, place := base + r.r_offset }
-      (formula r.type inputs).map fun res =>
-        { objectIdx, targetVa := base + r.r_offset, value := res.value, size := res.size }
-    obj.elf.rela.filterMap one ++ obj.elf.jmprel.filterMap one
-  | _, _ => #[]
+/-- A write fits its object's mmap'd region: the byte range
+    `[targetVa, targetVa + size)` lies in `[base, base + span)`. -/
+def Patch.inRange (w : Patch) (base span : UInt64) : Bool :=
+  decide (base ≤ w.targetVa ∧ (w.targetVa - base).toNat + w.size ≤ span.toNat)
 
-/-- Plan relocations for every object. -/
-def plan (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Resolve.ResolutionTable) : Array RelocWrite :=
-  (Array.range lm.objects.size).flatMap (planObject formula lm bases rt)
+/-- Apply `formula` to a single rela: compute inputs, run the formula,
+    bounds-check the result. Returns `none` for no-op relocations
+    (`R_*_NONE` and unsupported types) or a `Patch` ready to apply.
+    Per-rela building block for `planObject`; also the simplest entry
+    point for testing per-arch formulas (default `symValue := 0`). -/
+def planRela (formula : Formula) (base span : UInt64) (objectIdx : Nat := 0)
+    (symValue : UInt64 := 0) (r : Spec.Reloc.Rela64) : Except String (Option Patch) := do
+  let inputs : FormulaInputs :=
+    { symValue, addend := r.r_addend, base, place := base + r.r_offset }
+  match formula r.type inputs with
+  | none     => return none
+  | some res =>
+    let w : Patch :=
+      { objectIdx, targetVa := base + r.r_offset, value := res.value, size := res.size }
+    unless w.inRange base span do
+      throw s!"reloc out of range: object={objectIdx} target={w.targetVa} size={w.size}"
+    return some w
 
-end LeanLoad.Reloc
+/-- Plan all relocations for one object's `.rela.dyn` + `.rela.plt`,
+    rejecting any patch whose target falls outside `[base, base + span)`. -/
+def planObject (formula : Formula) (g : DepGraph)
+    (layouts : Array ObjectLayout) (bases : Array UInt64)
+    (rt : Resolve.Table) (objectIdx : Nat) : Except String (Array Patch) := do
+  let some obj := g.objects[objectIdx]? | return #[]
+  let some lyt := layouts[objectIdx]? | return #[]
+  let mut acc : Array Patch := #[]
+  for r in obj.elf.rela ++ obj.elf.jmprel do
+    let symValue : UInt64 :=
+      if r.sym == 0 then 0
+      else resolveSymValue g bases rt objectIdx r.sym.toNat
+    if let some w ← planRela formula lyt.base lyt.span objectIdx symValue r then
+      acc := acc.push w
+  return acc
+
+/-- Plan relocations for every object. Fails fast on the first
+    out-of-range write — the loader refuses to apply any reloc unless
+    every reloc passes the bounds check. -/
+def plan (formula : Formula) (g : DepGraph)
+    (layouts : Array ObjectLayout) (rt : Resolve.Table) :
+    Except String (Array Patch) := do
+  let bases : Array UInt64 := layouts.map (·.base)
+  let mut acc : Array Patch := #[]
+  for i in [:g.objects.size] do
+    let chunk ← planObject formula g layouts bases rt i
+    acc := acc ++ chunk
+  return acc
 
 -- ============================================================================
 -- IO test runner. Parametric over the per-arch formula; the test
 -- driver picks the formula based on `e_machine` and calls this once.
 -- ============================================================================
-namespace LeanLoad.Reloc.Test
 
-open LeanLoad
-
-def run (formula : Reloc.Formula) (lm : Discover.LinkMap) : IO Nat := do
+def test (formula : Formula) (g : DepGraph) : IO Nat := do
   let mut failures := 0
-  let rt := Resolve.buildTable lm
-  let bases : Reloc.Bases := Array.replicate lm.objects.size 0
-  let writes := Reloc.plan formula lm bases rt
-  if writes.size == 0 then
-    IO.eprintln "expected nonzero relocation writes"
+  let rt := Resolve.buildTable g
+  match plan formula g g.layouts rt with
+  | .error e =>
+    IO.eprintln s!"plan failed: {e}"
     failures := failures + 1
+  | .ok writes =>
+    if writes.size == 0 then
+      IO.eprintln "expected nonzero relocation writes"
+      failures := failures + 1
   return failures
 
-end LeanLoad.Reloc.Test
+end LeanLoad.Reloc

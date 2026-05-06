@@ -3,7 +3,7 @@
 
 Walks `DT_NEEDED` transitively: read main, parse, walk its needed
 list, find each on disk via the search-path rules below, parse it,
-walk its needed list, and so on. Output is a `LinkMap` mapping each
+walk its needed list, and so on. Output is a `DepGraph` mapping each
 loaded object to its parsed form.
 
 This is the IO stage of "where do files live"; `LeanLoad.Resolve` (pure)
@@ -17,6 +17,7 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
 -/
 
 import LeanLoad.Parse.File
+import LeanLoad.Runtime
 
 namespace LeanLoad.Discover
 
@@ -72,27 +73,36 @@ structure LoadedObject where
   name : String
   /-- Filesystem path the bytes came from. -/
   path : String
+  /-- Open read-only file handle, kept for `pread` (parsing extras)
+      and `mmap` (Stage C). `none` for synthetic objects built by
+      `LeanLoad.Fixtures` that have no backing file. -/
+  handle : Option Runtime.FileHandle := none
   /-- Parsed ELF. -/
   elf  : File.ParsedElf
 
-/-- Output of `Discover`. The first entry is `main`; remaining entries
-    follow in BFS discovery order. -/
-structure LinkMap where
+/-- Output of `Discover` — the dependency graph of the loaded image.
+    The first entry of `objects` is `main`; remaining entries follow
+    in BFS discovery order. `deps[i]` lists the indices of
+    `objects[i]`'s `DT_NEEDED` entries (resolved at discover time);
+    parallel-indexed with `objects` (`deps.size = objects.size`). -/
+structure DepGraph where
   objects : Array LoadedObject
+  deps    : Array (Array Nat)
 
-namespace LinkMap
+namespace DepGraph
 
-def main? (lm : LinkMap) : Option LoadedObject :=
-  lm.objects[0]?
+def main? (g : DepGraph) : Option LoadedObject :=
+  g.objects[0]?
 
-end LinkMap
+end DepGraph
 
-/-- Read and parse an ELF file. -/
-def readAndParse (path : String) : IO File.ParsedElf := do
-  let bytes ← IO.FS.readBinFile path
-  match File.parse bytes with
-  | .ok e    => pure e
-  | .error e => throw (IO.userError s!"parse {path}: {e}")
+/-- Open the file (read-only handle) and parse it via per-section
+    `pread`s. The handle stays open for the loader's lifetime —
+    used downstream by Map for file-backed `mmap`. -/
+def readAndParse (path : String) : IO (Runtime.FileHandle × File.ParsedElf) := do
+  let handle ← Runtime.open path
+  let elf    ← File.parse handle
+  pure (handle, elf)
 
 /-- Find the first existing path among `paths`. -/
 def firstExisting (paths : Array String) : IO (Option String) := do
@@ -110,61 +120,86 @@ def resolveSoname (soname : String) (ctx : SearchContext) : IO (Option String) :
 def canonicalName (needed : String) (elf : File.ParsedElf) : String :=
   elf.soname.getD needed
 
+/-- The dedup primitive: is some object already loaded under this name?
+    Pure; the BFS loop calls it before resolving / parsing each
+    `DT_NEEDED` entry, and a second time after canonicalisation.
+    Soundness lemma: `dedup_iff` in `Thm.Resolve`. -/
+def alreadyLoaded (objs : Array LoadedObject) (name : String) : Bool :=
+  objs.any (·.name == name)
+
+/-- Resolve each object's `DT_NEEDED` strings to indices in `objects`.
+    The BFS already stored objects under their canonical names; we
+    just look each soname up. Pure post-pass over the BFS output. -/
+def buildDeps (objects : Array LoadedObject) : Array (Array Nat) :=
+  objects.map fun obj =>
+    obj.elf.needed.filterMap fun soname =>
+      objects.findIdx? (·.name == soname)
+
+/-- BFS loop body. Recurses on `fuel`; each call processes at most
+    one work item. Fuel = upper bound on total iterations; the BFS
+    naturally terminates (`alreadyLoaded` rejects each name twice
+    after first load), but Lean can't see that without an explicit
+    bound, so we cap it. -/
+private def discoverLoop (envPath : Option String) (fuel : Nat)
+    (objs : Array LoadedObject) (work : List (Option String × String)) :
+    IO (Array LoadedObject) := do
+  match fuel with
+  | 0 => return objs   -- bound exhausted; caller's responsibility to size it
+  | fuel + 1 =>
+    match work with
+    | []            => return objs
+    | (rp, sn) :: rest =>
+      if alreadyLoaded objs sn then
+        discoverLoop envPath fuel objs rest
+      else
+        let ctx : SearchContext := { runpath := rp, envPath, defaults := #[] }
+        match ← resolveSoname sn ctx with
+        | none =>
+          throw (IO.userError s!"discover: cannot find '{sn}' (runpath={rp}, env={envPath})")
+        | some path =>
+          let (depHandle, dep) ← readAndParse path
+          let canonical := canonicalName sn dep
+          if alreadyLoaded objs canonical then
+            discoverLoop envPath fuel objs rest
+          else
+            let objs' := objs.push { name := canonical, path, handle := some depHandle, elf := dep }
+            -- BFS: append new pairs at the back so deeper deps come after siblings.
+            let newPairs := dep.needed.toList.map fun n => (dep.runpath, n)
+            discoverLoop envPath fuel objs' (rest ++ newPairs)
+
 /-- Walk `DT_NEEDED` from `mainPath` transitively. Returns a
-    `LinkMap` containing main and all reachable dependencies in
+    `DepGraph` containing main and all reachable dependencies in
     BFS order. -/
-partial def discover (mainPath : String) : IO LinkMap := do
-  let main ← readAndParse mainPath
+def discover (mainPath : String) : IO DepGraph := do
+  let (mainHandle, main) ← readAndParse mainPath
   let envPath ← IO.getEnv "LD_LIBRARY_PATH"
   let mainName := main.soname.getD mainPath
-  let mut objs : Array LoadedObject :=
-    #[{ name := mainName, path := mainPath, elf := main }]
-  -- Worklist: pairs of (parent's runpath, soname to resolve).
-  let mut work : List (Option String × String) :=
+  let initObjs : Array LoadedObject :=
+    #[{ name := mainName, path := mainPath, handle := some mainHandle, elf := main }]
+  let initWork : List (Option String × String) :=
     main.needed.toList.map (fun n => (main.runpath, n))
-  while !work.isEmpty do
-    let (parentRunpath, soname) := work.head!
-    work := work.tail!
-    -- Already loaded?
-    if objs.any (·.name == soname) then
-      continue
-    let ctx : SearchContext :=
-      { runpath := parentRunpath, envPath, defaults := #[] }
-    match (← resolveSoname soname ctx) with
-    | none =>
-      throw (IO.userError s!"discover: cannot find '{soname}' (runpath={parentRunpath}, env={envPath})")
-    | some path =>
-      let dep ← readAndParse path
-      let canonical := canonicalName soname dep
-      -- Re-check dedup against canonical name.
-      if objs.any (·.name == canonical) then
-        continue
-      objs := objs.push { name := canonical, path, elf := dep }
-      -- BFS: append at the back so deeper deps are processed after siblings.
-      let newPairs := dep.needed.toList.map fun n => (dep.runpath, n)
-      work := work ++ newPairs
-  return { objects := objs }
-
-end LeanLoad.Discover
+  -- Fuel: a generous cap. Real binaries land in the low tens; 4096
+  -- leaves headroom and still discharges termination at type-check.
+  let objects ← discoverLoop envPath 4096 initObjs initWork
+  return { objects, deps := buildDeps objects }
 
 -- ============================================================================
 -- Tests.
 -- ============================================================================
-namespace LeanLoad.Discover.Test
 
 /-- The full link map of `build/main` should be exactly five
     objects: main, libfoo.so, libbar.so, libbaz.so, libc.so.
     libbar↔libbaz form a cycle (mutual NEEDED); the SONAME-keyed
     dedup must terminate the BFS. -/
-def expectedNames : Array String :=
+private def expectedNames : Array String :=
   #["main", "libfoo.so", "libbar.so", "libbaz.so", "libc.so"]
 
-def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
+def test (g : DepGraph) : IO Nat := do
   let mut failures := 0
-  let names := lm.objects.map (·.name)
+  let names := g.objects.map (·.name)
 
-  if lm.objects.size != expectedNames.size then
-    IO.eprintln s!"expected {expectedNames.size} objects, got {lm.objects.size}: {names}"
+  if g.objects.size != expectedNames.size then
+    IO.eprintln s!"expected {expectedNames.size} objects, got {g.objects.size}: {names}"
     failures := failures + 1
 
   for expected in expectedNames[1:] do
@@ -180,4 +215,4 @@ def run (lm : LeanLoad.Discover.LinkMap) : IO Nat := do
 
   return failures
 
-end LeanLoad.Discover.Test
+end LeanLoad.Discover

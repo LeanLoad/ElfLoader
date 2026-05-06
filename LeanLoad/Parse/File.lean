@@ -20,7 +20,8 @@ import LeanLoad.Parse.Dynamic
 import LeanLoad.Parse.StringTable
 import LeanLoad.Parse.Symbol
 import LeanLoad.Parse.Reloc
-import LeanLoad.Spec.GnuHash
+import LeanLoad.Parse.GnuHash
+import LeanLoad.Runtime
 
 namespace LeanLoad.Parse.File
 
@@ -71,7 +72,6 @@ end UnitTest
 
 /-- Everything the loader needs that comes from parsing a single ELF. -/
 structure ParsedElf where
-  bytes   : ByteArray
   header  : Spec.Header.ElfHeader64
   phdrs   : Array Spec.Program.Header64
   /-- The `.dynamic` array, empty if no `PT_DYNAMIC`. -/
@@ -104,98 +104,102 @@ structure ParsedElf where
 -- ============================================================================
 
 private def dynVal? (dyn : Array Spec.Dynamic.Dyn64) (tag : UInt64) : Option UInt64 :=
-  (Spec.Dynamic.find? dyn tag).map (·.d_un)
+  (Parse.Dynamic.find? dyn tag).map (·.d_un)
 
 private def dynPair? (dyn : Array Spec.Dynamic.Dyn64) (tagA tagB : UInt64) : Option (UInt64 × UInt64) := do
   let a ← dynVal? dyn tagA
   let b ← dynVal? dyn tagB
   return (a, b)
 
-private def vaOffsetOrThrow (phdrs : Array Spec.Program.Header64) (tag : String) (vaddr : UInt64)
-    : Except String Nat :=
+/-- Find the `PT_LOAD` whose file range covers `off`. Used to upper-
+    bound `DT_GNU_HASH`'s chain (no size field in the dynamic table). -/
+private def containingPTLoad (phdrs : Array Spec.Program.Header64) (off : Nat)
+    : Option Spec.Program.Header64 :=
+  phdrs.find? fun ph =>
+    ph.p_type == Spec.Program.PT_LOAD &&
+    ph.p_offset.toNat ≤ off &&
+    off < ph.p_offset.toNat + ph.p_filesz.toNat
+
+/-- `pread` `len` bytes at `offset` and run `parser` from the start.
+    Each section's parsers take an `offset` parameter that becomes 0
+    here (we already preadʼd from the file at the right place). -/
+private def parseSection {α} (h : Runtime.FileHandle) (label : String)
+    (offset : UInt64) (len : USize) (parser : Parser α) : IO α := do
+  let bytes ← Runtime.pread h offset len
+  match Parser.run bytes parser with
+  | .ok v    => pure v
+  | .error e => throw (IO.userError s!"parse {label}: {e}")
+
+/-- Resolve `vaddr` to a file offset; throw if no `PT_LOAD` covers it. -/
+private def vaToOffsetIO (phdrs : Array Spec.Program.Header64) (label : String)
+    (vaddr : UInt64) : IO Nat :=
   match vaToOffset phdrs vaddr with
-  | some off => .ok off
-  | none     => .error s!"{tag} va 0x{vaddr.toNat} not in PT_LOAD"
-
-private def parseAtDyn (phdrs : Array Spec.Program.Header64) (bytes : ByteArray)
-    (tag : String) (vaddr? : Option UInt64) (default : α) (p : Nat → Parser α)
-    : Except String α :=
-  match vaddr? with
-  | none       => .ok default
-  | some vaddr => do
-    let off ← vaOffsetOrThrow phdrs tag vaddr
-    Parser.run bytes (p off)
+  | some off => pure off
+  | none     => throw (IO.userError s!"parse {label}: va 0x{vaddr.toNat} not in any PT_LOAD")
 
 -- ============================================================================
--- Symbol count from `DT_GNU_HASH`. Layout is gnu-gabi § Hashes; the
--- count derivation is `Spec.GnuHash.symCount` (see that module for
--- the linker invariant we rely on, since gnu-gabi defines no count
--- tag and the algorithm itself is community lore).
+-- Top-level parser — `pread`-driven, one section per syscall.
 -- ============================================================================
 
-/-- Read a GNU hash table at file offset `off` and return the dynsym
-    count via `Spec.GnuHash.symCount`. Reads buckets exactly, then
-    reads chain entries up to the end of the byte buffer (the chain's
-    real length is unbounded by the table itself; the caller's file
-    size is the only natural upper bound). -/
-private def parseGnuHashSymCount (off : Nat) : Parser Nat := do
-  Bytes.seek off
-  let nbuckets   := (← Bytes.u32le).toNat
-  let symoffset  := (← Bytes.u32le).toNat
-  let bloomWords := (← Bytes.u32le).toNat
-  let _bloomShift ← Bytes.u32le
-  Bytes.skip (bloomWords * 8)  -- ELF64: each bloom word is 64 bits
-  let mut buckets : Array UInt32 := Array.mkEmpty nbuckets
-  for _ in [:nbuckets] do
-    buckets := buckets.push (← Bytes.u32le)
-  let s ← get
-  let chainBound := (s.bytes.size - s.pos) / 4
-  let mut chain : Array UInt32 := Array.mkEmpty chainBound
-  for _ in [:chainBound] do
-    chain := chain.push (← Bytes.u32le)
-  match Spec.GnuHash.symCount symoffset buckets chain with
-  | some n => return n
-  | none   => throw "parseGnuHashSymCount: chain has no end marker (malformed)"
+/-- Parse an ELF file via per-section `pread`s on a `FileHandle`.
+    Each section's bytes live in their own small `ByteArray` and are
+    GC'd after parsing — no whole-file `ByteArray` is constructed. -/
+def parse (h : Runtime.FileHandle) : IO ParsedElf := do
+  -- ELF header (64 bytes).
+  -- ELF header is fixed-size (gabi 02 Elf64_Ehdr: 64 bytes).
+  let header ← parseSection h "header" 0 64 Parse.Header.parse
 
--- ============================================================================
--- Top-level parser
--- ============================================================================
+  -- Phdr table (e_phnum × 56 bytes).
+  let phdrTableSize := (header.e_phnum.toNat * Spec.Program.entrySize).toUSize
+  let phdrs ← parseSection h "phdrs" header.e_phoff phdrTableSize
+                (Parse.Program.parseTable 0 header.e_phnum.toNat)
 
-/-- Parse an entire ELF file into a `ParsedElf`. -/
-def parse (bytes : ByteArray) : Except String ParsedElf := do
-  let header ← Parser.run bytes Parse.Header.parse
-  let phdrs  ← Parser.run bytes
-                 (Parse.Program.parseTable header.e_phoff.toNat header.e_phnum.toNat)
-
+  -- PT_DYNAMIC (sized by `p_filesz`).
   let dyn ← match phdrs.find? (·.p_type == Spec.Program.PT_DYNAMIC) with
-            | none    => pure #[]
-            | some ph => Parser.run bytes
-                          (Parse.Dynamic.parseTable ph.p_offset.toNat ph.p_filesz.toNat)
+    | none    => pure #[]
+    | some ph =>
+      parseSection h "dynamic" ph.p_offset ph.p_filesz.toNat.toUSize
+        (Parse.Dynamic.parseTable 0 ph.p_filesz.toNat)
 
+  -- DT_STRTAB (sized by DT_STRSZ).
   let strtab ← match dynPair? dyn Spec.Dynamic.DT_STRTAB Spec.Dynamic.DT_STRSZ with
     | none             => pure (ByteArray.mk #[])
     | some (vaddr, sz) =>
-      parseAtDyn phdrs bytes "DT_STRTAB" (some vaddr) (ByteArray.mk #[])
-        (fun off => Parse.StringTable.parse off sz.toNat)
+      let off ← vaToOffsetIO phdrs "DT_STRTAB" vaddr
+      parseSection h "DT_STRTAB" off.toUInt64 sz.toNat.toUSize
+        (Parse.StringTable.parse 0 sz.toNat)
 
+  -- Symbol count (from DT_HASH's nchain or by walking DT_GNU_HASH's chain).
   let symCount : Nat ←
     match dynVal? dyn Spec.Dynamic.DT_HASH, dynVal? dyn Spec.Dynamic.DT_GNU_HASH with
-    | some _, _ =>
-      parseAtDyn phdrs bytes "DT_HASH" (dynVal? dyn Spec.Dynamic.DT_HASH) 0
-        (fun off => do
-          let nchain ← Bytes.atOffset (off + 4) Bytes.u32le
-          return nchain.toNat)
-    | none, some _ =>
-      parseAtDyn phdrs bytes "DT_GNU_HASH"
-        (dynVal? dyn Spec.Dynamic.DT_GNU_HASH) 0 parseGnuHashSymCount
+    | some hashVa, _ =>
+      let off ← vaToOffsetIO phdrs "DT_HASH" hashVa
+      -- Need only the 8-byte (nbucket, nchain) header.
+      parseSection h "DT_HASH" off.toUInt64 8
+        (do let _ ← Bytes.u32le; let nchain ← Bytes.u32le; return nchain.toNat)
+    | none, some gnuHashVa =>
+      let off ← vaToOffsetIO phdrs "DT_GNU_HASH" gnuHashVa
+      -- Chain extends until end of containing PT_LOAD; pread that tail.
+      match containingPTLoad phdrs off with
+      | none    => throw (IO.userError s!"parse DT_GNU_HASH: offset 0x{off} in no PT_LOAD")
+      | some ph =>
+        let segEnd  := ph.p_offset.toNat + ph.p_filesz.toNat
+        let availLen := (segEnd - off).toUSize
+        parseSection h "DT_GNU_HASH" off.toUInt64 availLen
+          (Parse.GnuHash.parseSymCount 0)
     | none, none => pure 0
 
-  let symtab ←
-    if symCount == 0 then pure #[]
-    else parseAtDyn phdrs bytes "DT_SYMTAB" (dynVal? dyn Spec.Dynamic.DT_SYMTAB) #[]
-           (fun off => Parse.Symbol.parseTable off symCount)
+  -- DT_SYMTAB (sized by `symCount × Symbol64.entrySize`).
+  let symtab ← if symCount == 0 then pure #[]
+    else match dynVal? dyn Spec.Dynamic.DT_SYMTAB with
+      | none       => pure #[]
+      | some vaddr =>
+        let off := ← vaToOffsetIO phdrs "DT_SYMTAB" vaddr
+        let symSize := (symCount * Spec.Symbol.entrySize).toUSize
+        parseSection h "DT_SYMTAB" off.toUInt64 symSize
+          (Parse.Symbol.parseTable 0 symCount)
 
-  let neededOffsets := (Spec.Dynamic.findAll dyn Spec.Dynamic.DT_NEEDED).map (·.d_un)
+  let neededOffsets := (Parse.Dynamic.findAll dyn Spec.Dynamic.DT_NEEDED).map (·.d_un)
   let needed := neededOffsets.filterMap (fun off => Spec.StringTable.lookup strtab off.toNat)
 
   let lookupStr (tag : UInt64) : Option String :=
@@ -203,88 +207,70 @@ def parse (bytes : ByteArray) : Except String ParsedElf := do
   let soname  := lookupStr Spec.Dynamic.DT_SONAME
   let runpath := lookupStr Spec.Dynamic.DT_RUNPATH <|> lookupStr Spec.Dynamic.DT_RPATH
 
-  let parseRelaPair (tagAddr tagSz : UInt64) (label : String)
-      : Except String (Array Spec.Reloc.Rela64) :=
+  -- DT_RELA / DT_JMPREL (sized by their respective `*SZ`).
+  let parseRelaPair (tagAddr tagSz : UInt64) (label : String) : IO (Array Spec.Reloc.Rela64) := do
     match dynPair? dyn tagAddr tagSz with
-    | none             => .ok #[]
+    | none             => pure #[]
     | some (vaddr, sz) =>
+      let off ← vaToOffsetIO phdrs label vaddr
       let count := sz.toNat / Spec.Reloc.Rela64.entrySize
-      parseAtDyn phdrs bytes label (some vaddr) #[]
-        (fun off => Parse.Reloc.parseRelaTable off count)
+      parseSection h label off.toUInt64 sz.toNat.toUSize
+        (Parse.Reloc.parseRelaTable 0 count)
   let rela   ← parseRelaPair Spec.Dynamic.DT_RELA   Spec.Dynamic.DT_RELASZ   "DT_RELA"
   let jmprel ← parseRelaPair Spec.Dynamic.DT_JMPREL Spec.Dynamic.DT_PLTRELSZ "DT_JMPREL"
 
-  let parseFnArray (tagAddr tagSz : UInt64) (label : String)
-      : Except String (Array UInt64) :=
-    match dynPair? dyn tagAddr tagSz with
-    | none           => .ok #[]
+  -- DT_INIT_ARRAY (sized by DT_INIT_ARRAYSZ).
+  let initArr ← match dynPair? dyn Spec.Dynamic.DT_INIT_ARRAY Spec.Dynamic.DT_INIT_ARRAYSZ with
+    | none             => pure #[]
     | some (vaddr, sz) =>
+      let off ← vaToOffsetIO phdrs "DT_INIT_ARRAY" vaddr
       let count := sz.toNat / 8
-      parseAtDyn phdrs bytes label (some vaddr) #[]
-        (fun off => Bytes.parseArray off count Bytes.u64le)
-  let initArr ← parseFnArray Spec.Dynamic.DT_INIT_ARRAY Spec.Dynamic.DT_INIT_ARRAYSZ "DT_INIT_ARRAY"
+      parseSection h "DT_INIT_ARRAY" off.toUInt64 sz.toNat.toUSize
+        (Bytes.parseArray 0 count Bytes.u64le)
 
   return {
-    bytes, header, phdrs, dyn, strtab, symtab, needed, soname, runpath,
+    header, phdrs, dyn, strtab, symtab, needed, soname, runpath,
     rela, jmprel, initArr
   }
-
-end LeanLoad.Parse.File
 
 -- ============================================================================
 -- IO test runner. Parses the given bytes (typically `build/main`) and
 -- asserts the header + DT_NEEDED look reasonable for our musl-built
--- example. Aggregated by `LeanLoad.TestIntegration`.
+-- example. Aggregated by `LeanLoad.Test`.
 -- ============================================================================
-namespace LeanLoad.Parse.Test
 
-open LeanLoad
-
-/-- End-to-end smoke test: parse `bytes` and assert basics. -/
-def run (bytes : ByteArray) : IO Nat := do
+/-- End-to-end smoke test: parse via FileHandle and assert basics. -/
+def test (h : Runtime.FileHandle) : IO Nat := do
   let mut failures := 0
-
-  match Parse.Parser.run bytes Parse.Header.parse with
-  | .error e =>
-      IO.eprintln s!"Header.parse failed: {e}"
+  try
+    let elf ← parse h
+    if elf.header.e_type != Spec.Header.ET_DYN then
+      IO.eprintln s!"e_type: expected ET_DYN={Spec.Header.ET_DYN}, got {elf.header.e_type}"
       failures := failures + 1
-  | .ok h =>
-      if h.e_type != Spec.Header.ET_DYN then
-        IO.eprintln s!"e_type: expected ET_DYN={Spec.Header.ET_DYN}, got {h.e_type}"
-        failures := failures + 1
-      if h.e_ehsize != 64 then
-        IO.eprintln s!"e_ehsize: expected 64, got {h.e_ehsize}"
-        failures := failures + 1
-      if h.e_phentsize != 56 then
-        IO.eprintln s!"e_phentsize: expected 56, got {h.e_phentsize}"
-        failures := failures + 1
-      match Parse.Parser.run bytes
-              (Parse.Program.parseTable h.e_phoff.toNat h.e_phnum.toNat) with
-      | .error e =>
-          IO.eprintln s!"Program.parseTable failed: {e}"
-          failures := failures + 1
-      | .ok phs =>
-          if phs.size != h.e_phnum.toNat then
-            IO.eprintln s!"phnum mismatch: header says {h.e_phnum}, parsed {phs.size}"
-            failures := failures + 1
-
-  match Parse.File.parse bytes with
-  | .error e =>
-      IO.eprintln s!"File.parse failed: {e}"
+    if elf.header.e_ehsize != 64 then
+      IO.eprintln s!"e_ehsize: expected 64, got {elf.header.e_ehsize}"
       failures := failures + 1
-  | .ok elf =>
-      if elf.needed.size < 3 then
-        IO.eprintln s!"expected ≥ 3 NEEDED entries, got {elf.needed.size}: {elf.needed}"
-        failures := failures + 1
-      if !elf.needed.any (· == "libfoo.so") then
-        IO.eprintln s!"libfoo.so not in NEEDED: {elf.needed}"
-        failures := failures + 1
-      if !elf.needed.any (· == "libbar.so") then
-        IO.eprintln s!"libbar.so not in NEEDED: {elf.needed}"
-        failures := failures + 1
-      if elf.runpath.isNone then
-        IO.eprintln "expected DT_RUNPATH set"
-        failures := failures + 1
+    if elf.header.e_phentsize != 56 then
+      IO.eprintln s!"e_phentsize: expected 56, got {elf.header.e_phentsize}"
+      failures := failures + 1
+    if elf.phdrs.size != elf.header.e_phnum.toNat then
+      IO.eprintln s!"phnum mismatch: header says {elf.header.e_phnum}, parsed {elf.phdrs.size}"
+      failures := failures + 1
+    if elf.needed.size < 3 then
+      IO.eprintln s!"expected ≥ 3 NEEDED entries, got {elf.needed.size}: {elf.needed}"
+      failures := failures + 1
+    if !elf.needed.any (· == "libfoo.so") then
+      IO.eprintln s!"libfoo.so not in NEEDED: {elf.needed}"
+      failures := failures + 1
+    if !elf.needed.any (· == "libbar.so") then
+      IO.eprintln s!"libbar.so not in NEEDED: {elf.needed}"
+      failures := failures + 1
+    if elf.runpath.isNone then
+      IO.eprintln "expected DT_RUNPATH set"
+      failures := failures + 1
+  catch e =>
+    IO.eprintln s!"File.parse failed: {e}"
+    failures := failures + 1
   return failures
 
-end LeanLoad.Parse.Test
+end LeanLoad.Parse.File

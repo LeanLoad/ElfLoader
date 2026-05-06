@@ -41,11 +41,6 @@ def ET_CORE : UInt16 := 4
 def EM_X86_64  : UInt16 := 62
 def EM_AARCH64 : UInt16 := 183
 
-#guard ELFMAG0 = 0x7f
-#guard ELFCLASS64 = 2
-#guard ET_DYN = 3
-#guard EM_X86_64 = 62
-
 -- ============================================================================
 -- ELF identification — gabi 02 § ELF Identification
 -- ============================================================================
