@@ -1,4 +1,4 @@
-# LeanLoad
+# LeanLoad [![CI](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml/badge.svg)](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml)
 
 A verified ELF loader in Lean 4. Reads, plans, and runs Linux ELF
 binaries (static + dynamically-linked) through an eight-stage pipeline:
