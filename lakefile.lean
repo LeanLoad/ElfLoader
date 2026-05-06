@@ -44,6 +44,6 @@ lean_exe leanload where
   moreLinkArgs := runtimeLinkArgs
 
 lean_exe test where
-  root := `LeanLoad.Test
+  root := `LeanLoad.TestIntegration
   extraDepTargets := #[`libleanload_runtime]
   moreLinkArgs := runtimeLinkArgs

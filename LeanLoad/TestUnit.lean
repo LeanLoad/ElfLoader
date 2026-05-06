@@ -12,7 +12,7 @@ copes with musl-gcc's actual output".
 
 import LeanLoad.Discover
 
-namespace LeanLoad.Test
+namespace LeanLoad.TestUnit
 
 open LeanLoad
 open LeanLoad.Spec
@@ -43,4 +43,4 @@ def synthObj
     elf  := synthElf (needed := needed) (symtab := symtab)
                      (strtab := strtab) (rela := rela) }
 
-end LeanLoad.Test
+end LeanLoad.TestUnit

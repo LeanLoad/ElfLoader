@@ -18,7 +18,7 @@ order: main first, then NEEDED entries in their declared order).
 
 import LeanLoad.Discover
 import LeanLoad.Spec.Symbol
-import LeanLoad.TestFixture
+import LeanLoad.TestUnit
 
 namespace LeanLoad.Resolve
 
@@ -118,7 +118,7 @@ def buildTable (lm : Discover.LinkMap) : ResolutionTable := Id.run do
 -- resolver finds the right pair.
 -- ============================================================================
 section UnitTest
-open LeanLoad.Test
+open LeanLoad.TestUnit
 
 /-- Pack `ss` into a NUL-separated `.dynstr`; offset 0 reserved for "". -/
 private def packStrings (ss : Array String) : Spec.StringTable.StringTable × Array Nat :=

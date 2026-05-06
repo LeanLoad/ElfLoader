@@ -86,7 +86,7 @@ def formula : Formula := fun ty inp =>
 
 -- Planner-on-this-formula canary: one R_AARCH64_RELATIVE rela → one write.
 section UnitTest
-open LeanLoad.Test
+open LeanLoad.TestUnit
 
 private def relocLM : LeanLoad.Discover.LinkMap := {
   objects := #[synthObj "main"

@@ -17,7 +17,7 @@ Permissions; gabi 08 § Initialization and Termination Functions.
 import LeanLoad.Spec.Program
 import LeanLoad.Parse.File
 import LeanLoad.Discover
-import LeanLoad.TestFixture
+import LeanLoad.TestUnit
 
 namespace LeanLoad.Layout
 
@@ -258,10 +258,10 @@ def fromLinkMap (lm : Discover.LinkMap) (initOrder finiOrder : Array Nat) : Layo
 
 -- ============================================================================
 -- Compile-time unit tests on synthetic link maps (`synthObj` from
--- `LeanLoad.TestFixture`).
+-- `LeanLoad.TestUnit`).
 -- ============================================================================
 section UnitTest
-open LeanLoad.Test
+open LeanLoad.TestUnit
 
 private def emptyLM   : Discover.LinkMap := { objects := #[] }
 private def loneLM    : Discover.LinkMap := { objects := #[synthObj "main"] }

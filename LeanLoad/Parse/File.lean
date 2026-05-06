@@ -234,7 +234,7 @@ end LeanLoad.Parse.File
 -- ============================================================================
 -- IO test runner. Parses the given bytes (typically `build/main`) and
 -- asserts the header + DT_NEEDED look reasonable for our musl-built
--- example. Aggregated by `LeanLoad.Test`.
+-- example. Aggregated by `LeanLoad.TestIntegration`.
 -- ============================================================================
 namespace LeanLoad.Parse.Test
 
