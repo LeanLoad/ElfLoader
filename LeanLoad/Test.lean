@@ -53,10 +53,10 @@ private def parseTest (elf : Parse.File.ParsedElf) : Except String Unit := do
     s!"libbar.so not in NEEDED: {elf.needed}"
   check elf.runpath.isSome "expected DT_RUNPATH set"
 
-private def discoverTest (g : DepGraph) : Except String Unit := do
-  let names := g.objects.map (·.name)
-  check (g.objects.size == expectedNames.size)
-    s!"expected {expectedNames.size} objects, got {g.objects.size}: {names}"
+private def discoverTest (g : ObjectList) : Except String Unit := do
+  let names := g.val.map (·.name)
+  check (g.val.size == expectedNames.size)
+    s!"expected {expectedNames.size} objects, got {g.val.size}: {names}"
   for expected in expectedNames[1:] do
     check (names.any (· == expected))
       s!"{expected} missing from dependency graph: {names}"
@@ -64,7 +64,7 @@ private def discoverTest (g : DepGraph) : Except String Unit := do
     let occurrences := names.filter (· == nm) |>.size
     check (occurrences ≤ 1) s!"{nm} appears {occurrences} times — dedup failed"
 
-private def resolveTest (g : DepGraph) : Except String Unit := do
+private def resolveTest (g : ObjectList) : Except String Unit := do
   let table := Resolve.buildTable g
   let firstMissing := (table.missing[0]?.map (·.name)).getD ""
   check (table.missing.size == 0)
@@ -75,32 +75,32 @@ private def resolveTest (g : DepGraph) : Except String Unit := do
     match Resolve.resolveByName g sym with
     | none => .error s!"{sym} did not resolve"
     | some r =>
-      let provider := (g.objects[r.objectIdx]?.map (·.name)).getD "?"
+      let provider := (g.val[r.objectIdx]?.map (·.name)).getD "?"
       check (provider == expectedProvider)
         s!"{sym} resolved to {provider}, expected {expectedProvider}"
 
-private def layoutTest (g : DepGraph) : Except String Unit := do
+private def layoutTest (g : ObjectList) : Except String Unit := do
   -- `g.layouts` succeeds → returns a sized subtype; the size proof is
   -- the second component, so this test now only checks that the
   -- well-formedness validation succeeds (size match is by construction).
   let _ ← g.layouts
   .ok ()
 
-private def orderTest (g : DepGraph) : Except String Unit := do
-  let order := g.order
-  check (order.size == g.objects.size)
-    s!"order size {order.size} ≠ object count {g.objects.size}"
+private def orderTest (g : ObjectList) : Except String Unit := do
+  let order := Init.order g
+  check (order.size == g.val.size)
+    s!"order size {order.size} ≠ object count {g.val.size}"
   check (order.back? == some 0)
     s!"main (idx 0) should be last in order; got {order}"
 
-private def relocTest (g : DepGraph) (formula : Reloc.Formula) : Except String Unit := do
+private def relocTest (g : ObjectList) (formula : Reloc.Formula) : Except String Unit := do
   let layouts ← g.layouts
   let patches ← Reloc.plan formula g layouts (Resolve.buildTable g)
   check (patches.size > 0) "expected nonzero relocation writes"
 
-private def mapTest {n : Nat} (g : DepGraph) (image : Map.ProcessImage n) : Except String Unit :=
-  check (image.objects.size == g.objects.size)
-    s!"image.objects.size {image.objects.size} ≠ object count {g.objects.size}"
+private def mapTest {n : Nat} (g : ObjectList) (image : Map.ProcessImage n) : Except String Unit :=
+  check (image.objects.size == g.val.size)
+    s!"image.objects.size {image.objects.size} ≠ object count {g.val.size}"
 
 -- Apply has no test stage: its preconditions (objectIdx in bounds,
 -- patch in range, size ∈ {4,8}) are all guaranteed upstream by
@@ -124,11 +124,11 @@ def main : IO UInt32 := do
   -- Pure-stage tests own their computations. Only IO state (image)
   -- is captured at the harness level. Stop on first failure.
 
-  let g ← Discover.discover path
+  let rt := Runtime.Ops.real
+  let g ← Discover.discover rt path
   unless ← runStage "Discover" (discoverTest g) do return 1
 
-  let some main := g.main?
-    | do IO.eprintln "skip: empty dep graph"; return 0
+  let main := g.main
   unless ← runStage "Parse"   (parseTest main.elf)  do return 1
   unless ← runStage "Resolve" (resolveTest g)       do return 1
   unless ← runStage "Layout"  (layoutTest g)        do return 1
@@ -140,7 +140,7 @@ def main : IO UInt32 := do
 
   -- Map: needs IO (mmap); produces image consumed by mapTest.
   let layouts ← IO.ofExcept g.layouts
-  let image ← Map.mapAll g layouts
+  let image ← Map.mapAll rt g layouts
   unless ← runStage "Map" (mapTest g image) do return 1
 
   -- Apply has no test stage — see comment above. The actual apply

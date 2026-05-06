@@ -45,11 +45,11 @@ def formula : Formula := fun ty inp =>
   let A := inp.addend
   let B := inp.base
   if ty == R_AARCH64_NONE      then none
-  else if ty == R_AARCH64_ABS64     then some { value := S + A, size := 8 }
-  else if ty == R_AARCH64_ABS32     then some { value := S + A, size := 4 }
-  else if ty == R_AARCH64_GLOB_DAT  then some { value := S + A, size := 8 }
-  else if ty == R_AARCH64_JUMP_SLOT then some { value := S + A, size := 8 }
-  else if ty == R_AARCH64_RELATIVE  then some { value := B + A, size := 8 }
+  else if ty == R_AARCH64_ABS64     then some { value := S + A, size := .b8 }
+  else if ty == R_AARCH64_ABS32     then some { value := S + A, size := .b4 }
+  else if ty == R_AARCH64_GLOB_DAT  then some { value := S + A, size := .b8 }
+  else if ty == R_AARCH64_JUMP_SLOT then some { value := S + A, size := .b8 }
+  else if ty == R_AARCH64_RELATIVE  then some { value := B + A, size := .b8 }
   else none
 
 -- Compile-time unit tests. Evaluated at elaboration; a wrong table
@@ -66,33 +66,33 @@ def formula : Formula := fun ty inp =>
 #guard (formula R_AARCH64_RELATIVE { symValue := 0xdead, addend := 0xa90, base := 0x10000, place := 0 })
     == (formula R_AARCH64_RELATIVE { symValue := 0xbeef, addend := 0xa90, base := 0x10000, place := 0 })
 #guard (formula R_AARCH64_RELATIVE { symValue := 0,      addend := 0xa90, base := 0x10000, place := 0 })
-        == some { value := 0x10a90, size := 8 }
+        == some { value := 0x10a90, size := .b8 }
 
 -- ABS-family = S + A. Symmetrically, base and place are unused.
 #guard (formula R_AARCH64_ABS64 { symValue := 100, addend := 1, base := 0xdead, place := 0 })
     == (formula R_AARCH64_ABS64 { symValue := 100, addend := 1, base := 0xbeef, place := 0 })
 #guard (formula R_AARCH64_ABS64    { symValue := 0xfeedface, addend := 0, base := 0, place := 0 })
-        == some { value := 0xfeedface, size := 8 }
+        == some { value := 0xfeedface, size := .b8 }
 #guard (formula R_AARCH64_ABS32    { symValue := 0xc0ffee,   addend := 0, base := 0, place := 0 })
-        == some { value := 0xc0ffee,   size := 4 }
+        == some { value := 0xc0ffee,   size := .b4 }
 
 -- Same shape for GLOB_DAT / JUMP_SLOT (S + A, 8 bytes).
 #guard (formula R_AARCH64_GLOB_DAT  { symValue := 0xdeadbeef, addend := 0, base := 0, place := 0 })
-        == some { value := 0xdeadbeef, size := 8 }
+        == some { value := 0xdeadbeef, size := .b8 }
 #guard (formula R_AARCH64_JUMP_SLOT { symValue := 0xb16b00b5, addend := 0, base := 0, place := 0 })
-        == some { value := 0xb16b00b5, size := 8 }
+        == some { value := 0xb16b00b5, size := .b8 }
 
 -- UInt64 wraps modulo 2^64 (relevant for absolute relocs near
 -- the top of the address space).
 #guard (formula R_AARCH64_ABS64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
-        == some { value := 0, size := 8 }
+        == some { value := 0, size := .b8 }
 
 -- Planner-on-this-formula canary: one R_AARCH64_RELATIVE rela → one patch.
 private def aarch64Rela : LeanLoad.Spec.Reloc.Rela64 :=
   { r_offset := 0x1000, r_info := 1027, r_addend := 0xa90 }
 
 #guard match planRela (n := 1) formula 0x10000 0x100000 ⟨0, by decide⟩ (r := aarch64Rela) with
-       | .ok (some p) => p.size = 8
+       | .ok (some p) => p.size == .b8
        | _            => false
 
 end LeanLoad.Spec.Reloc.Aarch64

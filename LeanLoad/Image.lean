@@ -37,7 +37,7 @@ structure ObjectImage where
   segments    : Array (Option Runtime.Region)
 
 /-- Output of the Map stage: one `ObjectImage` per loaded object,
-    in `DepGraph.objects` order. Parameterised by the dep graph's
+    in `ObjectList.objects` order. Parameterised by the dep graph's
     object count `n`; the `size_eq` proof carries the size at the
     type level so consumers (`RelocApply`, `Exec`) can index into
     `objects` totally with `Fin n` — no `?`/`throw`. -/

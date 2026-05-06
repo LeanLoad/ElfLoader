@@ -35,13 +35,15 @@ open LeanLoad.Parse.Segment
 
 /-- One mmap-stage operation, scoped to a single object's reservation.
     The "which object" is encoded by the enclosing `ObjectPlan` —
-    no `objectIdx` field per op. -/
-inductive PerObjectOp where
+    no `objectIdx` field per op. Parameterised by `numSegs` so the
+    `overlay` `segIdx` is `Fin numSegs` and `MapApply` writes into
+    its segment slot totally — no `set!`. -/
+inductive PerObjectOp (numSegs : Nat) where
   /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `addr` with the
-      given `prot` and file offset. `segIdx` indexes into the object's
-      `layout.segments` (so apply can place the resulting `Region` in
-      the right slot). -/
-  | overlay  (segIdx : Nat) (addr : UInt64) (len : USize)
+      given `prot` and file offset. `segIdx : Fin numSegs` indexes
+      into the object's `layout.segments` (so apply can place the
+      resulting `Region` in the right slot). -/
+  | overlay  (segIdx : Fin numSegs) (addr : UInt64) (len : USize)
              (fileOff : UInt64) (prot : UInt32)
   /-- Clear partial-last-page BSS bytes inside the object's reservation. -/
   | bssZero  (offset : USize) (len : USize)
@@ -49,12 +51,12 @@ inductive PerObjectOp where
   | mprotect (offset : USize) (len : USize) (prot : UInt32)
   deriving Repr
 
-/-- Per-object plan: a layout and its derived ops. The reservation
-    `[layout.base, layout.base + layout.span)` is implicit (apply
-    always reserves before running ops). -/
+/-- Per-object plan: a layout and its derived ops. `numSegs` matches
+    `layout.segments.size`, so `MapApply`'s segment-slot array is
+    sized by the same `Nat` and `set` is total. -/
 structure ObjectPlan where
   layout : ObjectLayout
-  ops    : Array PerObjectOp
+  ops    : Array (PerObjectOp layout.segments.size)
   deriving Repr
 
 -- ============================================================================
@@ -63,12 +65,12 @@ structure ObjectPlan where
 
 /-- Plan one object's ops from its layout. -/
 private def planObject (lyt : ObjectLayout) : ObjectPlan := Id.run do
-  let mut ops : Array PerObjectOp := #[]
+  let mut ops : Array (PerObjectOp lyt.segments.size) := #[]
   for h : i in [:lyt.segments.size] do
     let s := lyt.segments[i]
     if s.fileLenPaged > 0 then
       let writableProt := s.prot ||| Runtime.PROT_WRITE
-      ops := ops.push (.overlay i (lyt.base + s.vaddr)
+      ops := ops.push (.overlay ⟨i, h.upper⟩ (lyt.base + s.vaddr)
                                 s.fileLenPaged.toUSize
                                 s.fileOffsetPaged
                                 writableProt)

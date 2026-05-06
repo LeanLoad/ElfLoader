@@ -1,20 +1,21 @@
 /-
 Layout-stage theorems.
 
-- `g.layouts` produces one layout per object on the success branch.
+- `g.layouts` produces one layout per object on the success branch
+  (the size invariant is in its return subtype) and additionally
+  packages a per-layout `segmentsSorted` proof — see `Layout.lean`.
 - `objectSpan` upper-bounds every segment (containment); sorted
   segments ⇒ pairwise disjoint.
+- `segmentsSortedB ↔ segmentsSorted` (decidable Bool ⇔ Prop) is the
+  audited bridge from the runtime check `g.layouts` runs to the
+  proof-level invariant downstream code consumes.
 
-`WellFormedElf` is the trust seam between the parsed ELF and the
-disjointness theorem. It bundles one assumption — PT_LOAD entries
-sorted by `p_vaddr` with non-overlapping ranges. gabi 07 § Program
-Loading mandates the sort; non-overlap is a de facto convention
-(every linker produces it; the loader's `Map.lean` relies on it for
-`MAP_FIXED` mmap correctness) but isn't formally stated by gabi.
-We take it as an axiomatic well-formedness assumption. The runtime
-check `Parse.Segment.wellFormed` decides it; if every object
-satisfies it, `g.layouts` returns `.ok` and the disjointness
-theorems apply.
+The trust seam is now structural: there's no axiomatic `WellFormedElf`
+side-condition. `g.layouts` either rejects an ELF whose page-aligned
+`PT_LOAD` ranges are not sorted/non-overlapping, or returns a witness
+that they are. gabi 07 mandates the sort; non-overlap is de facto
+(every linker produces it; `Map.lean`'s `MAP_FIXED` mmap requires it
+for correctness). The runtime check enforces both.
 -/
 
 import LeanLoad.Layout
@@ -24,11 +25,6 @@ namespace LeanLoad.Thm
 open LeanLoad.Layout
 open LeanLoad.Discover
 open LeanLoad.Parse.Segment
-
--- The "one layout per object" property is now in the *return type* of
--- `g.layouts`: it returns `Except String { a : Array ObjectLayout //
--- a.size = g.objects.size }`. The size proof is the second component
--- of the subtype — no separate theorem needed.
 
 /-- Each segment's `endAddr` is bounded by its object's `objectSpan`.
     The `foldl max 0` upper-bound, lifted to every input element. -/
@@ -70,44 +66,54 @@ theorem segmentsPairwiseDisjoint_of_segmentsSorted
     exact Or.inr (h j i hj hi hgt)
 
 -- ============================================================================
--- WellFormedElf: trust seam for segment disjointness.
+-- Bool ↔ Prop bridge for the runtime well-formedness check.
 -- ============================================================================
 
-/-- Well-formedness predicate on a parsed ELF. Bundles the PT_LOAD
-    invariant that the loader relies on:
+/-- The runtime check is sound: `segmentsSortedB` rejects every layout
+    whose page-aligned segments are not sorted with non-overlapping
+    `[vaddr, endAddr)` ranges.
 
-    - **Sorted (gabi 07 mandated)**: PT_LOAD entries appear in
-      ascending order of `p_vaddr`.
-    - **Non-overlapping (de facto, not gabi-mandated)**: their
-      `[vaddr, endAddr)` ranges are pairwise disjoint. Every linker
-      produces this; `Map.lean`'s `MAP_FIXED` mmap requires it for
-      correctness; gabi 07 doesn't formally state it. We treat it as
-      a trust assumption — `WellFormedElf elf` is the witness that a
-      caller can supply.
+    This is the converse of `segmentsSorted_of_segmentsSortedB`
+    (defined in `Layout.lean` so `g.layouts` can use it inline). -/
+theorem ObjectLayout.segmentsSortedB_of_segmentsSorted
+    (lyt : ObjectLayout) (h : lyt.segmentsSorted) :
+    lyt.segmentsSortedB = true := by
+  unfold ObjectLayout.segmentsSortedB
+  rw [List.all_eq_true]
+  intro i hi
+  rw [List.all_eq_true]
+  intro j hj
+  rw [List.mem_range] at hi hj
+  by_cases hlt : i < j
+  · have hle := h i j hi hj hlt
+    rw [Array.getElem?_eq_getElem hi, Array.getElem?_eq_getElem hj]
+    simp [hle]
+  · simp [hlt]
 
-    Combined into one condition (`endAddr[i] ≤ vaddr[j]` for `i < j`),
-    matching `ObjectLayout.segmentsSorted`. -/
-structure WellFormedElf (elf : Parse.File.ParsedElf) : Prop where
-  segmentsSorted :
-    ∀ i j (_ : i < (segmentsOf elf).size) (_ : j < (segmentsOf elf).size),
-      i < j → (segmentsOf elf)[i].endAddr ≤ (segmentsOf elf)[j].vaddr
+/-- Full equivalence: the decidable Bool check decides the proof-level
+    invariant. `g.layouts` can therefore use `segmentsSortedB` at
+    runtime and pack a `segmentsSorted` witness into its return type
+    without any unproved bridge. -/
+theorem ObjectLayout.segmentsSortedB_iff_segmentsSorted (lyt : ObjectLayout) :
+    lyt.segmentsSortedB = true ↔ lyt.segmentsSorted :=
+  ⟨ObjectLayout.segmentsSorted_of_segmentsSortedB lyt,
+   ObjectLayout.segmentsSortedB_of_segmentsSorted lyt⟩
 
-/-- Discharge `ObjectLayout.segmentsSorted` from `WellFormedElf` for
-    any layout produced via `objectLayout` from the same ELF. -/
-theorem ObjectLayout.segmentsSorted_of_wellFormed
-    (isMain : Bool) (base : UInt64)
-    (elf : Parse.File.ParsedElf) (h : WellFormedElf elf) :
-    (objectLayout isMain base elf).segmentsSorted := by
-  intro i j hi hj hlt
-  exact h.segmentsSorted i j hi hj hlt
+-- ============================================================================
+-- Disjointness for free from the witness `g.layouts` produces.
+-- ============================================================================
 
-/-- End-to-end: a `WellFormedElf` discharges segment pairwise
-    disjointness on any layout built from it. -/
-theorem ObjectLayout.segmentsPairwiseDisjoint_of_wellFormed
-    (isMain : Bool) (base : UInt64)
-    (elf : Parse.File.ParsedElf) (h : WellFormedElf elf) :
-    (objectLayout isMain base elf).segmentsPairwiseDisjoint :=
-  segmentsPairwiseDisjoint_of_segmentsSorted _
-    (segmentsSorted_of_wellFormed isMain base elf h)
+/-- Every layout in `g.layouts`' success array has pairwise disjoint
+    segments. Combines the per-layout `segmentsSorted` witness packed
+    into the return subtype with `segmentsPairwiseDisjoint_of_segmentsSorted`.
+    No `WellFormedElf` hypothesis required — the runtime check at
+    `g.layouts` is the structural witness. -/
+theorem ObjectList.layouts_segmentsPairwiseDisjoint
+    (g : ObjectList)
+    {a : Array ObjectLayout}
+    (h : a.size = g.val.size ∧ ∀ (i : Nat) (hi : i < a.size), a[i].segmentsSorted)
+    (i : Nat) (hi : i < a.size) :
+    a[i].segmentsPairwiseDisjoint :=
+  segmentsPairwiseDisjoint_of_segmentsSorted _ (h.right i hi)
 
 end LeanLoad.Thm

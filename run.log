@@ -234,6 +234,7 @@ planned 148 patches
 applied 148 patches
 
 == Init ==
+calling 8 constructor(s)
 [libfoo] ctor
 done
 

@@ -1,15 +1,23 @@
 # LeanLoad [![CI](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml/badge.svg)](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml)
 
 A verified ELF loader in Lean 4. Reads, plans, and runs Linux ELF
-binaries (static + dynamically-linked) through a seven-stage pipeline:
+binaries (static + dynamically-linked) through a pipeline split into
+**pure planners** (verified core) and **trusted IO appliers** (FFI to
+`mmap` / `mprotect` / `pread`):
 
-- **Discover** — walk `DT_NEEDED`, parse each file, build the link map.
-- **Resolve** — find each undef symbol's defining object via BFS.
-- **Layout** — compute per-object mmap layout and init/fini order.
-- **Map** — `mmap` each object's segments; kernel picks bases.
-- **Reloc** — compute per-arch relocation writes.
-- **Apply** — execute the writes into mmap'd memory.
-- **Exec** — call constructors in init order, build a kernel-style stack, jump to entry.
+| Stage    | Pure planner   | Trusted IO         | What it does                                                                                  |
+| -------- | -------------- | ------------------ | --------------------------------------------------------------------------------------------- |
+| Discover | `DiscoverPlan` | `DiscoverApply`    | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
+| Parse    | `Parse/*`      | `Parse/File.parse` | Decode each ELF; carry a `WellFormed` segment witness in the type.                            |
+| Resolve  | `Resolve`      | —                  | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`.            |
+| Layout   | `Layout`       | —                  | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
+| Map      | `MapPlan`      | `MapApply`         | Anon reservation + per-segment overlay/zero/mprotect; `Fin segIdx` for total slot writes.     |
+| Reloc    | `RelocPlan`    | `RelocApply`       | Per-arch formula → `Patch` list; `PatchSize` (`b4`/`b8`) makes apply dispatch structural.     |
+| Init     | `InitPlan`     | `InitApply`        | DFS post-order over deps, then per-object `init_array` resolution → constructor address list. |
+| Exec     | —              | `Exec`             | Build kernel-style stack + auxv; jump to entry. Does not return.                              |
+
+Every `*Plan` is pure Lean; every `*Apply` only orchestrates IO calls
+the planner already approved.
 
 Targets AArch64 + x86-64 with musl libc. The verified core is pure
 Lean.
@@ -67,27 +75,31 @@ LeanLoad/
     StringTable.lean       view a `ByteArray` slice as a string table
     Symbol.lean            Symbol64 decoder
     Reloc.lean             Rela64 decoder
+    Segment.lean           Segment + WellFormed (sorted, sized, aligned, congruent, non-overlap)
     GnuHash.lean           DT_GNU_HASH chain reader → dynsym count
-    File.lean              ParsedElf aggregate + top-level parse
+    File.lean              ParsedElf aggregate + top-level parse with WellFormed witness
   Thm/                     proven theorems — one file per topic, docstring is the contract
-    Parse.lean             VA → file-offset soundness within PT_LOAD
-    Layout.lean            layout determinism; segment containment; sorted ⇒ pairwise disjoint
-    Reloc.lean             per-arch reloc widths are 4 or 8; planner→applier width bridge
-    Resolve.lean           symbol indices returned by lookup are in-bounds
-    Discover.lean          BFS dedup primitive matches its intended predicate
+    Parse.lean             VA → file-offset soundness within PT_LOAD; WellFormed ↔ WellFormedB
+    Layout.lean            sorted ⇒ pairwise disjoint; runtime check ↔ proof-level invariant
+    Resolve.lean           findInObject's index is in-bounds of obj.elf.symtab
+    Discover.lean          BFS dedup primitive iff loaded; nodup-preservation on push
     GnuHash.lean           soundness of the dynsym-count derivation
-  Main.lean                CLI + `load` orchestration
+  DiscoverPlan.lean        BFS dedup + LoadedObject + ObjectList (non-empty subtype)
+  DiscoverApply.lean       walk DT_NEEDED via IO; thread non-emptiness witness through the loop
+  Resolve.lean             undef ref → SymRef n / Unresolved n / Table n (Fin n on objectIdx)
+  Layout.lean              per-object Segment + ObjectLayout; assignBases; layouts validator
+  Image.lean               ProcessImage n (parameterised by object count, size_eq witness)
+  MapPlan.lean             ObjectPlan + PerObjectOp numSegs (Fin segIdx)
+  MapApply.lean            mmap + memcpy + mprotect (IO); per-object iteration
+  RelocPlan.lean           Patch n (Fin objectIdx) + PatchSize (b4/b8); planner per-arch formula
+  RelocApply.lean          dispatch on PatchSize; total `image.objects[p.objectIdx]` (Fin n)
+  InitPlan.lean            buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
+  InitApply.lean           call each constructor address (IO)
+  Exec.lean                kernel-style stack + auxv + transferControl (does not return)
+  Runtime.lean             @[extern] trust seam (FileHandle, Region, mmap*, patch{32,64}, …)
+  Main.lean                CLI + load / debug orchestration
   Test.lean                test exe entry — drives every stage except Exec
-  Fixtures.lean            shared synthObj/synthElf for `#guard` blocks
-  Discover.lean            IO walk + LinkMap type
-  Resolve.lean             undef ref → providing object/symbol (pure)
-  Layout.lean              per-object Segment + ObjectLayout; disjointness predicates
-  Order.lean               init/fini DFS post-order over DT_NEEDED (gabi 08)
-  Reloc.lean               formula → write list (pure, post-bases)
-  Map.lean                 mmap + memcpy + mprotect (IO)
-  Apply.lean               poke reloc bytes into mmap'd memory (IO)
-  Runtime.lean             @[extern] trust seam (runtime/*.c)
-  Exec.lean                init/fini calls + control transfer (IO)
+  Fixtures.lean            shared synthObj for `#guard` blocks
 runtime/                   C shims (unverified)
   runtime.h                shared header (decls + helpers)
   region.c                 mmap / mprotect / write

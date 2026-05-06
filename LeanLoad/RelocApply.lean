@@ -20,32 +20,32 @@ open LeanLoad.Discover
 open LeanLoad.Layout
 
 /-- Apply one `Patch n` by writing into its object's reservation
-    `Region` at `offset = p.targetVa - obj.layout.base`. Total
-    indexing — `Patch n`'s `objectIdx : Fin n` and
-    `ProcessImage n`'s `size_eq : objects.size = n` together let us
-    use `image.objects[p.objectIdx]` without `?` or `throw`.
+    `Region` at `offset = p.targetVa - obj.layout.base`. Totally
+    typed — every precondition is in the type, no `?`/`throw`/branch
+    on a runtime tag.
 
-    **Trust seam.** Bounds are proven structurally:
+    **Trust seam.** All preconditions are structural:
     - `p.objectIdx.val < image.objects.size`: from `p.objectIdx : Fin n`
       and `image.size_eq : image.objects.size = n`.
     - `p.targetVa ∈ [obj.layout.base, obj.layout.base + lyt.span)`:
-      enforced by `Patch.inRange` in `Reloc.planRela`.
-    - `p.size ∈ {4, 8}`: proven by `Thm.formula_size_valid` for any
-      verified per-arch formula. (Width branch defaults non-`8` to
-      `4` — the only other valid width.) -/
-def applyPatch {n : Nat} (image : Map.ProcessImage n) (p : Reloc.Patch n) : IO Unit :=
+      enforced by `Patch.inRange` in `Reloc.planRela` (re-checked
+      here would only repeat the planner's invariant).
+    - Width is 4 or 8: `p.size : PatchSize` only has those two
+      constructors, so the dispatch below is exhaustive — no
+      "unsupported width" branch can exist. -/
+def applyPatch {n : Nat} (rt : Runtime.Ops) (image : Map.ProcessImage n)
+    (p : Reloc.Patch n) : IO Unit :=
   let h : p.objectIdx.val < image.objects.size := image.size_eq.symm ▸ p.objectIdx.isLt
   let obj := image.objects[p.objectIdx.val]'h
   let offset := (p.targetVa - obj.layout.base).toUSize
-  if p.size = 8 then
-    Runtime.patch64 obj.reservation offset p.value
-  else
-    Runtime.patch32 obj.reservation offset p.value
+  match p.size with
+  | .b8 => rt.patch64 obj.reservation offset p.value
+  | .b4 => rt.patch32 obj.reservation offset p.value
 
 /-- Apply every planned patch. With `n` matched between image and
     patches at the type level, no per-patch bounds checks needed. -/
-def applyPatches {n : Nat} (image : Map.ProcessImage n) (patches : Array (Reloc.Patch n)) :
-    IO Unit := do
-  for p in patches do applyPatch image p
+def applyPatches {n : Nat} (rt : Runtime.Ops) (image : Map.ProcessImage n)
+    (patches : Array (Reloc.Patch n)) : IO Unit := do
+  for p in patches do applyPatch rt image p
 
 end LeanLoad.Apply

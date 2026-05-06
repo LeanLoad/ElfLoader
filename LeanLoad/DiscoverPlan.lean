@@ -82,22 +82,40 @@ structure LoadedObject where
   handle : Option Runtime.FileHandle := none
   /-- Parsed ELF. -/
   elf  : File.ParsedElf
+  /-- Parse-time well-formedness witness on `elf`'s PT_LOAD segments
+      (sortedness, file/mem sizing, alignment, gabi-07 congruence,
+      raw non-overlap). `Parse.File.parse` constructs this via
+      `Parse.Segment.WellFormedB`; synthetic ELFs in `Fixtures` get
+      it for free via `decide` (their phdrs are empty, so the
+      predicate is vacuously true). -/
+  elf_wf : Parse.Segment.WellFormed (Parse.Segment.fromPhdrs elf.phdrs) := by decide
 
-/-- Output of `Discover` — the dependency graph of the loaded image.
-    The first entry of `objects` is `main`; remaining entries follow
-    in BFS discovery order. `deps[i]` lists the indices of
-    `objects[i]`'s `DT_NEEDED` entries (resolved at discover time);
-    parallel-indexed with `objects` (`deps.size = objects.size`). -/
-structure DepGraph where
-  objects : Array LoadedObject
-  deps    : Array (Array Nat)
+/-- Output of `Discover` — the loaded objects in BFS discovery order
+    with `main` at index 0. The non-emptiness witness is in the type:
+    `Discover.discover` always seeds with main, and BFS only ever
+    pushes (never removes), so `0 < g.val.size` holds by construction.
+    Encoding the invariant in the type makes `g.main` total (no
+    `Option`) and removes the "what if there's no main" defensive
+    code from every consumer.
 
-namespace DepGraph
+    Access pattern: callers peel via `g.val` to use Array methods
+    (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). The subtype
+    layer is purposefully visible — every `.val` is a reminder that
+    we're stripping a load-bearing invariant. Use `g.main` whenever
+    main is what you want, not `g.val[0]?`.
 
-def main? (g : DepGraph) : Option LoadedObject :=
-  g.objects[0]?
+    Dep edges are *not* stored. The only downstream consumer is
+    `LeanLoad.Init.computeOrder` (init/fini), which re-derives them
+    from `obj.elf.needed`. -/
+abbrev ObjectList := { a : Array LoadedObject // 0 < a.size }
 
-end DepGraph
+namespace ObjectList
+
+/-- The main executable — total because the subtype carries the
+    non-emptiness witness. -/
+def main (g : ObjectList) : LoadedObject := g.val[0]'g.property
+
+end ObjectList
 
 -- ============================================================================
 -- Pure helpers
@@ -114,14 +132,6 @@ def canonicalName (needed : String) (elf : File.ParsedElf) : String :=
     Soundness lemma: `alreadyLoaded_iff` in `Thm.Discover`. -/
 def alreadyLoaded (objs : Array LoadedObject) (name : String) : Bool :=
   objs.any (·.name == name)
-
-/-- Resolve each object's `DT_NEEDED` strings to indices in `objects`.
-    The BFS already stored objects under their canonical names; we
-    just look each soname up. Pure post-pass over the BFS output. -/
-def buildDeps (objects : Array LoadedObject) : Array (Array Nat) :=
-  objects.map fun obj =>
-    obj.elf.needed.filterMap fun soname =>
-      objects.findIdx? (·.name == soname)
 
 -- ============================================================================
 -- Plan: per-step decision + state integration
@@ -152,18 +162,36 @@ def step (objs : Array LoadedObject) (work : List WorkItem) : StepResult :=
 /-- Pure integration: given a freshly resolved + parsed dep, update
     `(objs, work)`. Performs the *post-canonicalisation* dedup
     (`canonicalName` may differ from the soname we resolved through);
-    a hit returns the unchanged state. -/
+    a hit returns the unchanged state.
+
+    Takes the parsed-ELF + witness as a single subtype so the
+    `LoadedObject.elf_wf` field is total at construction. -/
 def integrate (objs : Array LoadedObject) (rest : List WorkItem)
     (sn : String) (path : String) (handle : Runtime.FileHandle)
-    (parsedElf : File.ParsedElf) : Array LoadedObject × List WorkItem :=
-  let canonical := canonicalName sn parsedElf
+    (parsed : { elf : File.ParsedElf //
+                Parse.Segment.WellFormed (Parse.Segment.fromPhdrs elf.phdrs) }) :
+    Array LoadedObject × List WorkItem :=
+  let canonical := canonicalName sn parsed.val
   if alreadyLoaded objs canonical then
     (objs, rest)
   else
     let obj : LoadedObject :=
-      { name := canonical, path, handle := some handle, elf := parsedElf }
+      { name := canonical, path, handle := some handle,
+        elf := parsed.val, elf_wf := parsed.property }
     let newPairs : List WorkItem :=
-      parsedElf.needed.toList.map (fun n => (parsedElf.runpath, n))
+      parsed.val.needed.toList.map (fun n => (parsed.val.runpath, n))
     (objs.push obj, rest ++ newPairs)
+
+/-- `integrate` only ever pushes (or no-ops); preserves the
+    `0 < .size` lower bound that `ObjectList` carries. Used by
+    `discoverLoop` to thread the non-emptiness invariant. -/
+theorem integrate_size_pos (objs : Array LoadedObject) (rest : List WorkItem)
+    (sn : String) (path : String) (handle : Runtime.FileHandle)
+    (parsed : { elf : File.ParsedElf //
+                Parse.Segment.WellFormed (Parse.Segment.fromPhdrs elf.phdrs) })
+    (h : 0 < objs.size) :
+    0 < (integrate objs rest sn path handle parsed).fst.size := by
+  by_cases hh : alreadyLoaded objs (canonicalName sn parsed.val) <;>
+    simp [integrate, hh, Array.size_push, h]
 
 end LeanLoad.Discover

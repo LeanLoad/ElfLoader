@@ -20,7 +20,10 @@ open LeanLoad.Parse
 open LeanLoad.Discover
 
 /-- Build a synthetic `LoadedObject` (name + synthetic ELF). All ELF
-    fields default; override only what a test cares about. -/
+    fields default; override only what a test cares about. The
+    `elf_wf` witness is discharged by `decide` — synthetic ELFs have
+    no PT_LOAD segments (`phdrs = #[]`), so `WellFormed #[]` is
+    vacuously true. -/
 def synthObj
     (name   : String)
     (needed : Array String          := #[])
@@ -28,14 +31,14 @@ def synthObj
     (strtab : Spec.StringTable.StringTable    := ⟨#[]⟩)
     (rela   : Array Reloc.Rela64    := #[])
     : LoadedObject :=
+  let elf : File.ParsedElf :=
+    { (default : File.ParsedElf) with phdrs := #[], needed, symtab, strtab, rela }
   { name
     path := s!"<synth:{name}>"
-    elf  := { (default : File.ParsedElf) with needed, symtab, strtab, rela } }
-
-/-- Build a synthetic `DepGraph` from a list of objects, deriving
-    `deps` via `Discover.buildDeps` (resolves each `needed` string
-    against the canonical names of `objs`). -/
-def synthDepGraph (objs : Array LoadedObject) : DepGraph :=
-  { objects := objs, deps := buildDeps objs }
+    elf
+    -- `elf.phdrs = #[]` ⇒ goal reduces to `WellFormed #[]`, discharged
+    -- by the closed lemma `Parse.Segment.WellFormed_nil` (inline `decide`
+    -- fails because synthObj's free parameters leave the goal open).
+    elf_wf := Parse.Segment.WellFormed_nil }
 
 end LeanLoad.Fixtures

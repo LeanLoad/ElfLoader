@@ -25,20 +25,33 @@ open LeanLoad.Layout
 -- A single planned write
 -- ============================================================================
 
+/-- Width of a relocation write: ELF dynamic relocations write either
+    a 32-bit or a 64-bit value at the target. Encoding the choice as
+    a 2-element type means `RelocApply.applyPatch` dispatches
+    structurally — no `if size = 8 ...` runtime check, no
+    `Thm.formula_size_valid` lookup. -/
+inductive PatchSize where | b4 | b8
+  deriving Repr, BEq
+
+/-- Width as a `Nat`, for diagnostics / `inRange` arithmetic. -/
+def PatchSize.toNat : PatchSize → Nat
+  | .b4 => 4
+  | .b8 => 8
+
 /-- One memory write computed from a relocation entry, parameterised by
     the dep graph's object count `n`. The `objectIdx : Fin n` carries
     the bounds proof at the type level — `Apply.applyPatch` indexes
     into `image.objects` totally, no `?`/`throw` needed. -/
 structure Patch (n : Nat) where
-  /-- Index into `DepGraph.objects` of the object whose memory is
+  /-- Index into `ObjectList.objects` of the object whose memory is
       being written to (the relocation's "P" object). -/
   objectIdx : Fin n
   /-- Target virtual address (post base relocation). -/
   targetVa  : UInt64
   /-- Value to write. -/
   value     : UInt64
-  /-- Width of the write in bytes (typically 4 or 8). -/
-  size      : Nat
+  /-- Width of the write (4 or 8 bytes). -/
+  size      : PatchSize
   deriving Repr
 
 /-- Inputs to a single relocation formula. Notation follows gabi 06. -/
@@ -56,7 +69,7 @@ structure FormulaInputs where
 /-- The result of applying a relocation formula. -/
 structure FormulaResult where
   value : UInt64
-  size  : Nat
+  size  : PatchSize
   deriving Repr, BEq
 
 /-- A relocation formula: an interpretation of `(type, inputs)`. -/
@@ -66,19 +79,20 @@ abbrev Formula := UInt32 → FormulaInputs → Option FormulaResult
 -- Per-object planning
 -- ============================================================================
 
-/-- Look up the absolute value of a resolved symbol. -/
-def absoluteSymbolValue (g : DepGraph) (bases : Array UInt64)
-    (ref : Resolve.SymRef) : Option UInt64 := do
-  let provider ← g.objects[ref.objectIdx]?
+/-- Look up the absolute value of a resolved symbol. The `Fin n` in
+    `ref.objectIdx` makes the `g.val[…]` indexing total. -/
+def absoluteSymbolValue (g : ObjectList) (bases : Array UInt64)
+    (ref : Resolve.SymRef g.val.size) : Option UInt64 := do
+  let provider := g.val[ref.objectIdx]
   let sym ← provider.elf.symtab[ref.symIdx]?
-  let base ← bases[ref.objectIdx]?
+  let base ← bases[ref.objectIdx.val]?
   return base + sym.st_value
 
 /-- Find the resolution for `(objectIdx, symIdx)` in a built table. -/
-def lookupResolved (rt : Resolve.Table) (g : DepGraph)
+def lookupResolved (g : ObjectList) (rt : Resolve.Table g.val.size)
     (bases : Array UInt64) (objectIdx symIdx : Nat) : Option UInt64 := do
   let (_, ref?) ← rt.resolved.find? fun (u, _) =>
-    u.objectIdx == objectIdx && u.symIdx == symIdx
+    u.objectIdx.val == objectIdx && u.symIdx == symIdx
   let ref ← ref?
   absoluteSymbolValue g bases ref
 
@@ -89,22 +103,22 @@ def lookupResolved (rt : Resolve.Table) (g : DepGraph)
     2. The symbol is *defined* in `obj` itself (`st_shndx ≠ SHN_UNDEF`).
        Use `base + sym.st_value`.
     3. The symbol is undefined in `obj`. Look up the resolution table. -/
-def resolveSymValue (g : DepGraph) (bases : Array UInt64)
-    (rt : Resolve.Table) (objectIdx symIdx : Nat) : UInt64 :=
+def resolveSymValue (g : ObjectList) (bases : Array UInt64)
+    (rt : Resolve.Table g.val.size) (objectIdx symIdx : Nat) : UInt64 :=
   let result : Option UInt64 := do
-    let obj  ← g.objects[objectIdx]?
+    let obj  ← g.val[objectIdx]?
     let base ← bases[objectIdx]?
     let sym  ← obj.elf.symtab[symIdx]?
     if sym.st_shndx != Spec.Symbol.SHN_UNDEF then
       return base + sym.st_value
     else
-      lookupResolved rt g bases objectIdx symIdx
+      lookupResolved g rt bases objectIdx symIdx
   result.getD 0
 
 /-- A write fits its object's mmap'd region: the byte range
     `[targetVa, targetVa + size)` lies in `[base, base + span)`. -/
 def Patch.inRange (w : Patch n) (base span : UInt64) : Bool :=
-  decide (base ≤ w.targetVa ∧ (w.targetVa - base).toNat + w.size ≤ span.toNat)
+  decide (base ≤ w.targetVa ∧ (w.targetVa - base).toNat + w.size.toNat ≤ span.toNat)
 
 /-- Apply `formula` to a single rela: compute inputs, run the formula,
     bounds-check the result. Returns `none` for no-op relocations
@@ -122,18 +136,18 @@ def planRela {n : Nat} (formula : Formula) (base span : UInt64)
     let w : Patch n :=
       { objectIdx, targetVa := base + r.r_offset, value := res.value, size := res.size }
     unless w.inRange base span do
-      throw s!"reloc out of range: object={objectIdx.val} target={w.targetVa} size={w.size}"
+      throw s!"reloc out of range: object={objectIdx.val} target={w.targetVa} size={w.size.toNat}"
     return some w
 
 /-- Plan all relocations for one object's `.rela.dyn` + `.rela.plt`,
     rejecting any patch whose target falls outside `[base, base + span)`. -/
-def planObject (formula : Formula) (g : DepGraph)
+def planObject (formula : Formula) (g : ObjectList)
     (layouts : Array ObjectLayout) (bases : Array UInt64)
-    (rt : Resolve.Table) (objectIdx : Fin g.objects.size) :
-    Except String (Array (Patch g.objects.size)) := do
-  let obj := g.objects[objectIdx]
+    (rt : Resolve.Table g.val.size) (objectIdx : Fin g.val.size) :
+    Except String (Array (Patch g.val.size)) := do
+  let obj := g.val[objectIdx]
   let some lyt := layouts[objectIdx.val]? | return #[]
-  let mut acc : Array (Patch g.objects.size) := #[]
+  let mut acc : Array (Patch g.val.size) := #[]
   for r in obj.elf.rela ++ obj.elf.jmprel do
     let symValue : UInt64 :=
       if r.sym == 0 then 0
@@ -145,12 +159,12 @@ def planObject (formula : Formula) (g : DepGraph)
 /-- Plan relocations for every object. Fails fast on the first
     out-of-range write — the loader refuses to apply any reloc unless
     every reloc passes the bounds check. -/
-def plan (formula : Formula) (g : DepGraph)
-    (layouts : Array ObjectLayout) (rt : Resolve.Table) :
-    Except String (Array (Patch g.objects.size)) := do
+def plan (formula : Formula) (g : ObjectList)
+    (layouts : Array ObjectLayout) (rt : Resolve.Table g.val.size) :
+    Except String (Array (Patch g.val.size)) := do
   let bases : Array UInt64 := layouts.map (·.base)
-  let mut acc : Array (Patch g.objects.size) := #[]
-  for h : i in [:g.objects.size] do
+  let mut acc : Array (Patch g.val.size) := #[]
+  for h : i in [:g.val.size] do
     let chunk ← planObject formula g layouts bases rt ⟨i, h.upper⟩
     acc := acc ++ chunk
   return acc

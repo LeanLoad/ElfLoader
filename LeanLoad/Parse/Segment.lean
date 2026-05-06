@@ -15,7 +15,6 @@ Spec: gabi 07 § Program Header.
 -/
 
 import LeanLoad.Spec.Program
-import LeanLoad.Parse.File
 
 namespace LeanLoad.Parse.Segment
 
@@ -45,29 +44,99 @@ def fileLen (s : Segment) : UInt64 := s.phdr.p_filesz
 
 end Segment
 
-/-- Extract the loadable segments from a parsed ELF. Filters
-    `phdrs` to `PT_LOAD` entries and wraps each in `Segment`. -/
-def segmentsOf (elf : Parse.File.ParsedElf) : Array Segment :=
-  elf.phdrs.filterMap Segment.fromPhdr?
+/-- Extract loadable segments from a phdr table. Filters by
+    `PT_LOAD` and wraps each in `Segment`. The ParsedElf-keyed
+    helper `segmentsOf` lives in `Parse.File`. -/
+def fromPhdrs (phdrs : Array Spec.Program.Header64) : Array Segment :=
+  phdrs.filterMap Segment.fromPhdr?
 
 -- ============================================================================
--- Well-formedness check (parse-level: raw `p_vaddr` + `p_memsz`)
+-- Parse-time well-formedness on PT_LOAD segments.
+--
+-- `WellFormedB` is the single source of truth — a decidable Bool that
+-- runs in `Parse.File.parse` and rejects malformed ELFs at the
+-- parse boundary. `WellFormed` is the propositional reading of the
+-- same Bool, defined as `WellFormedB = true`, used wherever code
+-- carries the witness as a Prop (subtype components, structure
+-- fields). They are *the same property* — no bridge to maintain.
+--
+-- Named accessors for individual clauses (`WellFormed.sorted`,
+-- `WellFormed.nonOverlap`, …) live in `Thm/Parse.lean` — they are
+-- proof-only and not needed by the production path, which only
+-- packs/unpacks the witness as an opaque hypothesis.
+--
+-- All five clauses are pure properties of header bytes — no loader
+-- page-size knowledge. The loader still runs an additional page-
+-- aligned check (`Layout.segmentsSortedB`) that can't be evaluated
+-- here because it depends on a chosen page size, but the structural
+-- pre-conditions for that check are fixed here.
 -- ============================================================================
 
-/-- Bool-decidable check for "PT_LOAD segments are sorted by `p_vaddr`
-    with non-overlapping `[p_vaddr, p_vaddr + p_memsz)` ranges". gabi
-    07 mandates the sort; non-overlap is de facto (every linker
-    produces it; `Map.lean`'s `MAP_FIXED` mmap requires it for
-    correctness). The check is at parse level — uses only raw header
-    fields, no loader-level page alignment. The O(n²) pairwise scan
-    is fine: real ELFs have <10 PT_LOAD entries. -/
-def wellFormed (elf : Parse.File.ParsedElf) : Bool :=
-  let segs := segmentsOf elf
-  (List.range segs.size).all fun i =>
-    (List.range segs.size).all fun j =>
-      decide (i ≥ j) ||
-        (match segs[i]?, segs[j]? with
-         | some s, some s' => decide (s.phdr.p_vaddr + s.phdr.p_memsz ≤ s'.phdr.p_vaddr)
-         | _, _ => true)
+/-- Decidable parse-time well-formedness check on PT_LOAD segments.
+    Bundles four gabi-07 mandates plus one de-facto convention,
+    each as a finite pairwise/per-entry scan over `segs.size`. Real
+    ELFs have <10 PT_LOAD entries, so the O(n²) loops are immaterial.
+
+    Clauses:
+    1. **Sorted by `p_vaddr`** — gabi 07 § Program Loading: "PT_LOAD
+       entries appear in p_vaddr order in the program header".
+    2. **`p_filesz ≤ p_memsz`** — gabi 07 § Program Header (PT_LOAD):
+       "p_memsz cannot be smaller than p_filesz". The `[p_filesz,
+       p_memsz)` tail is BSS.
+    3. **`p_align` is 0 or a power of two** — gabi 07 § Program Header:
+       "If p_align is greater than zero, it must be a positive
+       integral power of two". `p_align = 0` means "no alignment
+       constraint" and is treated as 1 by the loader.
+    4. **`p_vaddr ≡ p_offset (mod p_align)`** — gabi 07 § Program
+       Header: "p_vaddr should equal p_offset, modulo p_align".
+       Specified as SHOULD (not MUST), but `Layout.fileOffsetPaged`
+       relies on it; without it `mmap(2)` would map the wrong file
+       bytes for page-unaligned segments.
+    5. **`[p_vaddr, p_vaddr + p_memsz)` ranges pairwise disjoint** —
+       *de facto* convention, NOT gabi-mandated. Every linker
+       produces it; `Map.lean`'s `MAP_FIXED` mmap relies on the
+       stronger page-aligned form (`Layout.segmentsSortedB`) for
+       correctness, which follows from this raw non-overlap together
+       with `p_align ≥ pageSize` and segment-start page-alignment
+       (also de facto). -/
+def WellFormedB (segs : Array Segment) : Bool :=
+  let pair (p : Segment → Segment → Bool) : Bool :=
+    (List.range segs.size).all fun i =>
+      (List.range segs.size).all fun j =>
+        !decide (i < j) ||
+          (match segs[i]?, segs[j]? with
+           | some s, some s' => p s s'
+           | _, _ => true)
+  let perEntry (p : Segment → Bool) : Bool :=
+    (List.range segs.size).all fun i =>
+      match segs[i]? with
+      | some s => p s
+      | none   => true
+  pair (fun s s' => decide (s.phdr.p_vaddr ≤ s'.phdr.p_vaddr)) &&
+  perEntry (fun s => decide (s.phdr.p_filesz ≤ s.phdr.p_memsz)) &&
+  perEntry (fun s =>
+    let a := s.phdr.p_align
+    decide (a = 0) || decide ((a &&& (a - 1)) = 0)) &&
+  perEntry (fun s =>
+    let a := s.phdr.p_align
+    decide (a = 0) ||
+    decide (s.phdr.p_vaddr % a = s.phdr.p_offset % a)) &&
+  pair (fun s s' =>
+    decide (s.phdr.p_vaddr + s.phdr.p_memsz ≤ s'.phdr.p_vaddr))
+
+/-- Propositional reading of `WellFormedB`. The witness `Parse.File.parse`
+    packs into the parsed-ELF subtype and that `LoadedObject.elf_wf`
+    carries. Definitionally `WellFormedB segs = true`, so the runtime
+    check decides this Prop with no separate bridge. Named accessors
+    for individual clauses (`sorted`, `nonOverlap`, …) live in
+    `Thm/Parse.lean`. -/
+abbrev WellFormed (segs : Array Segment) : Prop := WellFormedB segs = true
+
+/-- The empty segment array is well-formed by `decide` on a closed
+    term. Used by synthetic ELFs in `Fixtures` (which have no PT_LOAD
+    entries); inlining `decide` at those sites fails because the
+    surrounding parameters leave the goal open and `decide +revert`
+    quantifies over an infinite type. -/
+theorem WellFormed_nil : WellFormed (#[] : Array Segment) := by decide
 
 end LeanLoad.Parse.Segment

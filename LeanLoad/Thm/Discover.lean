@@ -1,19 +1,17 @@
 /-
 Discover-stage theorems.
 
-Two flavours of property here:
-
   - `alreadyLoaded` soundness — the BFS dedup primitive returns true
     exactly when some loaded object already carries the requested name.
     Used by `Discover.discover` to terminate the BFS.
 
-  - Structural invariants of `buildDeps` — the post-pass that resolves
-    each object's `DT_NEEDED` strings to indices in `objects`. The
-    parallel-array shape (`deps.size = objects.size`) and in-bounds
-    property (`∀ i, ∀ j ∈ deps[i], j < objects.size`) are simple
-    consequences of `Array.map` and `findIdx?` semantics. They let
-    downstream proofs (Order, Reloc) drop redundant precondition
-    checks.
+  - The dedup-pushes-stay-Nodup lemma, capturing the contract of the
+    BFS dedup mechanism: if `alreadyLoaded` says `false`, pushing
+    preserves the name-uniqueness invariant.
+
+The `buildDeps` size + in-bounds invariants used to live here too,
+but `buildDeps` has moved to `LeanLoad.InitPlan` (init/fini are its
+only consumer). Its theorems live in `LeanLoad.Thm.InitPlan`.
 -/
 
 import LeanLoad.DiscoverPlan
@@ -30,24 +28,6 @@ theorem alreadyLoaded_iff
   unfold alreadyLoaded
   rw [Array.any_eq_true']
   simp
-
-/-- `buildDeps` produces an array of the same length as its input —
-    parallel-array invariant for `g.objects` / `g.deps`. -/
-theorem buildDeps_size (objects : Array LoadedObject) :
-    (buildDeps objects).size = objects.size := by
-  unfold buildDeps
-  simp
-
-/-- Every entry of `(buildDeps objects)[i]` is a valid index into
-    `objects`. Follows from `findIdx?`'s in-bounds guarantee. -/
-theorem buildDeps_in_bounds (objects : Array LoadedObject)
-    (i : Nat) (hi : i < objects.size) (j : Nat)
-    (hj : j ∈ (buildDeps objects)[i]'(by rw [buildDeps_size]; exact hi)) :
-    j < objects.size := by
-  unfold buildDeps at hj
-  simp at hj
-  obtain ⟨_, _, hfind⟩ := hj
-  exact Array.findIdx?_eq_some_iff_getElem.mp hfind |>.1
 
 /-- Dedup primitive's correctness: if the loop's invariant
     `objs.names` is `Nodup` holds and the next candidate's name passes

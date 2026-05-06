@@ -1,16 +1,18 @@
 /-
 Layout — per-object segment arrangement, pure.
 
+Spec: gabi 07 § Program Header (positional concerns — base
+assignment, span over loadable segments).
+
 Layout consumes `Array Parse.Segment.Segment` (typed `PT_LOAD`s)
 that the parser already produced, and assigns each object an mmap
-base + builds the cross-object plan that Map / Reloc / Apply / Exec
-consume. Validation that the parser-produced segments are well-
-formed (sorted, non-overlapping) happens at the boundary in
-`g.layouts`, which returns `Except String (Array ObjectLayout)`.
+base + builds the per-object plan that Map / Reloc / Apply / Exec
+consume. Validation that the parser-produced segments are page-
+aligned-sorted and non-overlapping happens at the boundary in
+`g.layouts`, which returns a sized subtype carrying the witness.
 
-Dependency ordering lives in `LeanLoad.Order` (gabi 08); this file
-covers gabi 07 positional concerns (base assignment, span over
-loadable segments).
+Init/fini ordering lives in `LeanLoad.InitPlan` (gabi 08); this
+file is purely gabi-07.
 -/
 
 import LeanLoad.Parse.Segment
@@ -203,12 +205,12 @@ def ObjectLayout.span (lyt : ObjectLayout) : UInt64 :=
   objectSpan lyt.segments
 
 /-- Layout for a single parsed ELF. `base` is decided by the
-    enclosing `DepGraph.layouts` (anchor + cumulative for `ET_DYN`,
+    enclosing `ObjectList.layouts` (anchor + cumulative for `ET_DYN`,
     0 for `ET_EXEC`). -/
 def objectLayout (isMain : Bool) (base : UInt64)
     (elf : Parse.File.ParsedElf) : ObjectLayout :=
   let entry := if isMain then some elf.header.e_entry else none
-  { base, segments := segmentsOf elf, entry, isMain }
+  { base, segments := Parse.File.segmentsOf elf, entry, isMain }
 
 /-- Segments are pairwise disjoint (`[vaddr, endAddr)` ranges don't overlap). -/
 def ObjectLayout.segmentsPairwiseDisjoint (lyt : ObjectLayout) : Prop :=
@@ -216,15 +218,48 @@ def ObjectLayout.segmentsPairwiseDisjoint (lyt : ObjectLayout) : Prop :=
     i ≠ j → Segment.disjoint lyt.segments[i] lyt.segments[j]
 
 /-- Segments are sorted by `vaddr` with each one's end ≤ the next one's start.
-    The clean precondition under which pairwise disjointness follows; the
-    real-ELF discharge comes from `Parse.Segment.wellFormed`. -/
+    The clean precondition under which pairwise disjointness follows. The
+    real-ELF discharge comes from `segmentsSortedB` — a decidable Bool
+    mirror checked at runtime in `ObjectList.layouts`, with the forward
+    bridge `segmentsSorted_of_segmentsSortedB` below. -/
 def ObjectLayout.segmentsSorted (lyt : ObjectLayout) : Prop :=
   ∀ i j (_ : i < lyt.segments.size) (_ : j < lyt.segments.size),
     i < j → lyt.segments[i].endAddr ≤ lyt.segments[j].vaddr
 
+/-- Decidable Bool mirror of `segmentsSorted` over loader-level
+    page-aligned `vaddr`/`endAddr`. The O(n²) pairwise scan is fine —
+    real ELFs have <10 PT_LOAD entries. -/
+def ObjectLayout.segmentsSortedB (lyt : ObjectLayout) : Bool :=
+  (List.range lyt.segments.size).all fun i =>
+    (List.range lyt.segments.size).all fun j =>
+      !decide (i < j) ||
+        (match lyt.segments[i]?, lyt.segments[j]? with
+         | some s, some s' => decide (s.endAddr ≤ s'.vaddr)
+         | _, _ => true)
+
+/-- Forward bridge: the runtime check decides the proof-level invariant.
+    Used inline by `ObjectList.layouts` to discharge the per-layout
+    sortedness obligation in its return subtype. The converse and full
+    iff statement live in `Thm/Layout.lean`. -/
+theorem ObjectLayout.segmentsSorted_of_segmentsSortedB
+    (lyt : ObjectLayout) (h : lyt.segmentsSortedB = true) :
+    lyt.segmentsSorted := by
+  intro i j hi hj hlt
+  unfold ObjectLayout.segmentsSortedB at h
+  rw [List.all_eq_true] at h
+  have h1 := h i (List.mem_range.mpr hi)
+  rw [List.all_eq_true] at h1
+  have h2 := h1 j (List.mem_range.mpr hj)
+  rw [Array.getElem?_eq_getElem hi, Array.getElem?_eq_getElem hj] at h2
+  simp only [Bool.or_eq_true, Bool.not_eq_eq_eq_not, Bool.not_true,
+             decide_eq_false_iff_not, decide_eq_true_eq] at h2
+  rcases h2 with hnlt | hle
+  · exact absurd hlt hnlt
+  · exact hle
+
 -- ============================================================================
 -- Layout-stage output is `Array ObjectLayout` (one entry per object,
--- in `DepGraph.objects` order). `g.layouts` returns
+-- in `ObjectList.objects` order). `g.layouts` returns
 -- `Except String (Array ObjectLayout)` — the well-formedness check
 -- runs here at the boundary; a malformed ELF surfaces as an error
 -- before Map (which would otherwise produce undefined behaviour
@@ -240,43 +275,62 @@ def ObjectLayout.segmentsSorted (lyt : ObjectLayout) : Prop :=
 /-- Assign an mmap base to each object in BFS order. `ET_EXEC`
     objects keep `0`; `ET_DYN` objects start at `dynAnchor` and
     stack by `alignUp objectSpan 0x1000`. -/
-def assignBases (g : DepGraph) : Array UInt64 := Id.run do
-  let mut bases : Array UInt64 := Array.mkEmpty g.objects.size
+def assignBases (g : ObjectList) : Array UInt64 := Id.run do
+  let mut bases : Array UInt64 := Array.mkEmpty g.val.size
   let mut cursor : UInt64 := dynAnchor
-  for h : i in [:g.objects.size] do
-    let obj := g.objects[i]
+  for h : i in [:g.val.size] do
+    let obj := g.val[i]
     let isExec := obj.elf.header.e_type = 2
     let base := if isExec then 0 else cursor
     bases := bases.push base
     if !isExec then
-      cursor := cursor + alignUp (objectSpan (segmentsOf obj.elf)) 0x1000
+      cursor := cursor + alignUp (objectSpan (Parse.File.segmentsOf obj.elf)) 0x1000
   return bases
 
 end LeanLoad.Layout
 
-namespace LeanLoad.Discover.DepGraph
+namespace LeanLoad.Discover.ObjectList
 
 open LeanLoad.Layout
 open LeanLoad.Parse.Segment
 
 /-- Build the per-object layouts for a discovered dep graph. The
-    first object (index 0) is main. Each ELF is checked for
-    well-formed segments (sorted by `vaddr` with non-overlapping
-    ranges); a malformed ELF surfaces as `error`.
+    first object (index 0) is main. Each layout's segments are checked
+    for loader-level well-formedness (page-aligned `[vaddr, endAddr)`
+    ranges sorted and non-overlapping — required for `MAP_FIXED`
+    correctness). A malformed object surfaces as `error`.
 
-    Returns a sized subtype `{ a : Array ObjectLayout // a.size =
-    g.objects.size }`: the size invariant is in the type, so
-    downstream consumers (`Map.mapAll`, `Reloc.plan`) get the size
-    for free without runtime checks. -/
-def layouts (g : DepGraph) : Except String { a : Array ObjectLayout // a.size = g.objects.size } :=
-  match g.objects.findIdx? (fun obj => !wellFormed obj.elf) with
+    Returns a sized subtype carrying *two* invariants in the type:
+
+    - `a.size = g.objects.size` — one layout per object, by construction.
+    - `∀ i, a[i].segmentsSorted` — per-layout sortedness, which combined
+      with `Thm.segmentsPairwiseDisjoint_of_segmentsSorted` discharges
+      `segmentsPairwiseDisjoint` for every layout.
+
+    Downstream consumers (`Map.mapAll`, `Reloc.plan`) get both for free
+    without runtime checks. -/
+def layouts (g : ObjectList) :
+    Except String { a : Array ObjectLayout //
+      a.size = g.val.size ∧
+      ∀ (i : Nat) (h : i < a.size), a[i].segmentsSorted } :=
+  let bases := assignBases g
+  let arr := g.val.mapIdx fun i obj =>
+    objectLayout (i = 0) (bases[i]?.getD 0) obj.elf
+  match harr : arr.findIdx? (fun lyt => lyt.segmentsSortedB == false) with
   | some i =>
-    let name := (g.objects[i]?.map (·.name)).getD "?"
+    let name := (g.val[i]?.map (·.name)).getD "?"
     .error s!"layouts: object[{i}] ({name}) has malformed PT_LOAD segments"
   | none =>
-    let bases := assignBases g
-    let arr := g.objects.mapIdx fun i obj =>
-      objectLayout (i = 0) (bases[i]?.getD 0) obj.elf
-    .ok ⟨arr, by simp [arr]⟩
+    .ok ⟨arr, by
+      refine ⟨by simp [arr], ?_⟩
+      intro i hi
+      have hall : ∀ x ∈ arr, (x.segmentsSortedB == false) = false :=
+        Array.findIdx?_eq_none_iff.mp harr
+      have hi_in : arr[i] ∈ arr := Array.getElem_mem hi
+      have hb : arr[i].segmentsSortedB = true := by
+        have := hall arr[i] hi_in
+        simp at this
+        exact this
+      exact ObjectLayout.segmentsSorted_of_segmentsSortedB _ hb⟩
 
-end LeanLoad.Discover.DepGraph
+end LeanLoad.Discover.ObjectList

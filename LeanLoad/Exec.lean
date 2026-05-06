@@ -1,19 +1,18 @@
 /-
-Exec stage: invoke each loaded object's constructors, then build the
-kernel-style stack and hand control to the loaded image.
+Exec stage: call constructors and hand control to the loaded image.
+The pure decisions (which ctor addresses, what stack contents, what
+order) live in `LeanLoad.InitPlan`; this file owns the IO seam —
+calling each ctor and the no-return `execAndJump`.
 
-Spec: gabi 08 § Initialization and Termination Functions, gabi 08 §
-Process Initialization. ET_DYN init-array entries are relative
-addresses (gabi 07 § Base Address) and need the chosen base added;
-ET_EXEC entries are already absolute. AT_PHDR / AT_PHENT / AT_PHNUM
-/ AT_ENTRY in the auxv are required by the process-startup contract
-(populated by `Runtime.execAndJump` in `runtime/exec.c`).
+Spec: gabi 08 § Process Initialization. AT_PHDR / AT_PHENT /
+AT_PHNUM / AT_ENTRY in the auxv are required by the process-startup
+contract (populated by `Runtime.execAndJump` in `runtime/exec.c`).
 -/
 
 import LeanLoad.DiscoverPlan
 import LeanLoad.Image
+import LeanLoad.InitPlan
 import LeanLoad.Layout
-import LeanLoad.RelocPlan
 import LeanLoad.Runtime
 import LeanLoad.Spec.Program
 
@@ -23,22 +22,18 @@ open LeanLoad
 open LeanLoad.Discover
 
 -- ============================================================================
--- Init / fini invocation
+-- Init: call each constructor address.
+--
+-- Formerly `LeanLoad.Init.apply` in `InitApply.lean`. Lives here
+-- alongside `transferControl` because both are the trusted IO seam
+-- after Map+Apply have prepared memory; splitting them across two
+-- files added file count without separating concerns.
 -- ============================================================================
 
-/-- Call constructors for every object in `order`, including main.
-    Pass `g.order` (DFS post-order over deps); `runFini`, when added,
-    will walk `g.order.reverse`. ET_DYN init-array entries are
-    relative addresses and need the chosen base added; ET_EXEC
-    entries are already absolute. -/
-def runInits {n : Nat} (g : DepGraph) (image : Map.ProcessImage n) (order : Array Nat) : IO Unit := do
-  for objectIdx in order do
-    let some obj    := g.objects[objectIdx]?     | continue
-    let some imgObj := image.objects[objectIdx]? | continue
-    let isExec := obj.elf.header.e_type = 2
-    for entry in obj.elf.initArr do
-      let fnAddr := if isExec then entry else imgObj.layout.base + entry
-      if fnAddr != 0 then Runtime.callCtor fnAddr
+/-- Call each constructor address in `addrs`. Init callers pass the
+    result of `Init.plan` as-is; fini callers pass `(Init.plan ...).reverse`. -/
+def runInits (rt : Runtime.Ops) (addrs : Array UInt64) : IO Unit :=
+  addrs.forM rt.callCtor
 
 -- ============================================================================
 -- Stack + jump (does not return)
@@ -48,15 +43,15 @@ def runInits {n : Nat} (g : DepGraph) (image : Map.ProcessImage n) (order : Arra
 def stackBytes : USize := 8 * 1024 * 1024
 
 /-- Allocate kernel-style stack and jump to entry. **Does not return.** -/
-def transferControl {n : Nat} (mainObj : Discover.LoadedObject) (image : Map.ProcessImage n)
-    (path : String) : IO Unit := do
+def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : Discover.LoadedObject)
+    (image : Map.ProcessImage n) (path : String) : IO Unit := do
   let some mainImg := image.objects[0]?
     | throw (IO.userError "load: empty objects")
-  let stack ← Runtime.mmapStack stackBytes
+  let stack ← rt.mmapStack stackBytes
   let entry  := mainImg.layout.base + mainImg.layout.entry.getD 0
   let phdrVa := mainImg.layout.base + mainObj.elf.header.e_phoff
   let phnum  := mainObj.elf.header.e_phnum.toUInt64
   let phent  := Spec.Program.entrySize.toUInt64
-  Runtime.execAndJump entry phdrVa phent phnum 0 stack path
+  rt.execAndJump entry phdrVa phent phnum 0 stack path
 
 end LeanLoad.Exec

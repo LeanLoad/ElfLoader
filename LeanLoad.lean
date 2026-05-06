@@ -18,21 +18,19 @@ import LeanLoad.Spec.GnuHash
 import LeanLoad.Spec.Reloc.Formula
 
 import LeanLoad.Layout
-import LeanLoad.Order
-import LeanLoad.Resolve
-import LeanLoad.RelocPlan
 import LeanLoad.DiscoverPlan
 import LeanLoad.DiscoverApply
+import LeanLoad.Resolve
 import LeanLoad.Image
 import LeanLoad.MapPlan
 import LeanLoad.MapApply
+import LeanLoad.RelocPlan
 import LeanLoad.RelocApply
+import LeanLoad.InitPlan
 import LeanLoad.Exec
 import LeanLoad.Runtime
 import LeanLoad.Thm.Parse
 import LeanLoad.Thm.Layout
-import LeanLoad.Thm.RelocPlan
 import LeanLoad.Thm.Resolve
 import LeanLoad.Thm.Discover
 import LeanLoad.Thm.GnuHash
-import LeanLoad.Thm.Order

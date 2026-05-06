@@ -21,6 +21,7 @@ import LeanLoad.Parse.StringTable
 import LeanLoad.Parse.Symbol
 import LeanLoad.Parse.Reloc
 import LeanLoad.Parse.GnuHash
+import LeanLoad.Parse.Segment
 import LeanLoad.Runtime
 
 namespace LeanLoad.Parse.File
@@ -120,12 +121,13 @@ private def containingPTLoad (phdrs : Array Spec.Program.Header64) (off : Nat)
     ph.p_offset.toNat ≤ off &&
     off < ph.p_offset.toNat + ph.p_filesz.toNat
 
-/-- `pread` `len` bytes at `offset` and run `parser` from the start.
-    Each section's parsers take an `offset` parameter that becomes 0
-    here (we already preadʼd from the file at the right place). -/
-private def parseSection {α} (h : Runtime.FileHandle) (label : String)
-    (offset : UInt64) (len : USize) (parser : Parser α) : IO α := do
-  let bytes ← Runtime.pread h offset len
+/-- `pread` `len` bytes at `offset` (via the runtime capability) and
+    run `parser` from the start. Each section's parsers take an
+    `offset` parameter that becomes 0 here (we already preadʼd from
+    the file at the right place). -/
+private def parseSection {α} (rt : Runtime.Ops) (h : Runtime.FileHandle)
+    (label : String) (offset : UInt64) (len : USize) (parser : Parser α) : IO α := do
+  let bytes ← rt.pread h offset len
   match Parser.run bytes parser with
   | .ok v    => pure v
   | .error e => throw (IO.userError s!"parse {label}: {e}")
@@ -143,22 +145,30 @@ private def vaToOffsetIO (phdrs : Array Spec.Program.Header64) (label : String)
 
 /-- Parse an ELF file via per-section `pread`s on a `FileHandle`.
     Each section's bytes live in their own small `ByteArray` and are
-    GC'd after parsing — no whole-file `ByteArray` is constructed. -/
-def parse (h : Runtime.FileHandle) : IO ParsedElf := do
+    GC'd after parsing — no whole-file `ByteArray` is constructed.
+
+    This is the *raw* parser: it returns a `ParsedElf` without
+    validating PT_LOAD well-formedness. The structural checks
+    (`Parse.Segment.WellFormedB`) are pure and run separately via
+    `validate`; callers that want both compose `parse` then
+    `validate`. The split keeps I/O failure (short reads, missing
+    sections) distinct from validation failure (well-formed bytes
+    that nevertheless violate gabi-07 / linker conventions). -/
+def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO ParsedElf := do
   -- ELF header (64 bytes).
   -- ELF header is fixed-size (gabi 02 Elf64_Ehdr: 64 bytes).
-  let header ← parseSection h "header" 0 64 Parse.Header.parse
+  let header ← parseSection rt h "header" 0 64 Parse.Header.parse
 
   -- Phdr table (e_phnum × 56 bytes).
   let phdrTableSize := (header.e_phnum.toNat * Spec.Program.entrySize).toUSize
-  let phdrs ← parseSection h "phdrs" header.e_phoff phdrTableSize
+  let phdrs ← parseSection rt h "phdrs" header.e_phoff phdrTableSize
                 (Parse.Program.parseTable 0 header.e_phnum.toNat)
 
   -- PT_DYNAMIC (sized by `p_filesz`).
   let dyn ← match phdrs.find? (·.p_type == Spec.Program.PT_DYNAMIC) with
     | none    => pure #[]
     | some ph =>
-      parseSection h "dynamic" ph.p_offset ph.p_filesz.toNat.toUSize
+      parseSection rt h "dynamic" ph.p_offset ph.p_filesz.toNat.toUSize
         (Parse.Dynamic.parseTable 0 ph.p_filesz.toNat)
 
   -- DT_STRTAB (sized by DT_STRSZ).
@@ -166,7 +176,7 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
     | none             => pure (ByteArray.mk #[])
     | some (vaddr, sz) =>
       let off ← vaToOffsetIO phdrs "DT_STRTAB" vaddr
-      parseSection h "DT_STRTAB" off.toUInt64 sz.toNat.toUSize
+      parseSection rt h "DT_STRTAB" off.toUInt64 sz.toNat.toUSize
         (Parse.StringTable.parse 0 sz.toNat)
 
   -- Symbol count (from DT_HASH's nchain or by walking DT_GNU_HASH's chain).
@@ -175,7 +185,7 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
     | some hashVa, _ =>
       let off ← vaToOffsetIO phdrs "DT_HASH" hashVa
       -- Need only the 8-byte (nbucket, nchain) header.
-      parseSection h "DT_HASH" off.toUInt64 8
+      parseSection rt h "DT_HASH" off.toUInt64 8
         (do let _ ← Bytes.u32le; let nchain ← Bytes.u32le; return nchain.toNat)
     | none, some gnuHashVa =>
       let off ← vaToOffsetIO phdrs "DT_GNU_HASH" gnuHashVa
@@ -185,7 +195,7 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
       | some ph =>
         let segEnd  := ph.p_offset.toNat + ph.p_filesz.toNat
         let availLen := (segEnd - off).toUSize
-        parseSection h "DT_GNU_HASH" off.toUInt64 availLen
+        parseSection rt h "DT_GNU_HASH" off.toUInt64 availLen
           (Parse.GnuHash.parseSymCount 0)
     | none, none => pure 0
 
@@ -196,7 +206,7 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
       | some vaddr =>
         let off := ← vaToOffsetIO phdrs "DT_SYMTAB" vaddr
         let symSize := (symCount * Spec.Symbol.entrySize).toUSize
-        parseSection h "DT_SYMTAB" off.toUInt64 symSize
+        parseSection rt h "DT_SYMTAB" off.toUInt64 symSize
           (Parse.Symbol.parseTable 0 symCount)
 
   let neededOffsets := (Parse.Dynamic.findAll dyn Spec.Dynamic.DT_NEEDED).map (·.d_un)
@@ -214,7 +224,7 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
     | some (vaddr, sz) =>
       let off ← vaToOffsetIO phdrs label vaddr
       let count := sz.toNat / Spec.Reloc.Rela64.entrySize
-      parseSection h label off.toUInt64 sz.toNat.toUSize
+      parseSection rt h label off.toUInt64 sz.toNat.toUSize
         (Parse.Reloc.parseRelaTable 0 count)
   let rela   ← parseRelaPair Spec.Dynamic.DT_RELA   Spec.Dynamic.DT_RELASZ   "DT_RELA"
   let jmprel ← parseRelaPair Spec.Dynamic.DT_JMPREL Spec.Dynamic.DT_PLTRELSZ "DT_JMPREL"
@@ -225,12 +235,39 @@ def parse (h : Runtime.FileHandle) : IO ParsedElf := do
     | some (vaddr, sz) =>
       let off ← vaToOffsetIO phdrs "DT_INIT_ARRAY" vaddr
       let count := sz.toNat / 8
-      parseSection h "DT_INIT_ARRAY" off.toUInt64 sz.toNat.toUSize
+      parseSection rt h "DT_INIT_ARRAY" off.toUInt64 sz.toNat.toUSize
         (Bytes.parseArray 0 count Bytes.u64le)
 
   return {
     header, phdrs, dyn, strtab, symtab, needed, soname, runpath,
     rela, jmprel, initArr
   }
+
+/-- Convenience: extract loadable segments from a parsed ELF. -/
+def segmentsOf (elf : ParsedElf) : Array Parse.Segment.Segment :=
+  Parse.Segment.fromPhdrs elf.phdrs
+
+/-- Pure parse-time validation: check the PT_LOAD well-formedness
+    invariant (sortedness, file/mem sizing, alignment, gabi-07
+    congruence, raw non-overlap) and return the parsed ELF together
+    with the witness on success.
+
+    All five clauses are properties of header bytes only — no I/O —
+    so this is `Except`-valued, separate from `parse`'s `IO`. The
+    boundary between "well-formed bytes but malformed structure" and
+    "I/O failure / unparseable bytes" is now type-level: the former
+    becomes a structured `Except` error, the latter stays an
+    `IO.userError`. Compose via `parse h >>= IO.ofExcept ∘ validate`
+    to get the witnessed subtype back. -/
+def validate (elf : ParsedElf) :
+    Except String
+      { e : ParsedElf // Parse.Segment.WellFormed (Parse.Segment.fromPhdrs e.phdrs) } :=
+  if h : Parse.Segment.WellFormedB (Parse.Segment.fromPhdrs elf.phdrs) = true then
+    .ok ⟨elf, h⟩
+  else
+    .error "validate: malformed PT_LOAD segments \
+      (gabi-07 mandates: sort by p_vaddr, p_filesz ≤ p_memsz, p_align \
+      is a power of 2, p_vaddr ≡ p_offset mod p_align; non-overlap is \
+      de facto from linker)"
 
 end LeanLoad.Parse.File

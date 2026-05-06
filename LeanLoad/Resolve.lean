@@ -12,7 +12,7 @@ An object's symbol is a *definition* if `st_shndx ≠ SHN_UNDEF` and is
 not `STB_LOCAL`. An *undefined reference* has `st_shndx = SHN_UNDEF`.
 For each undefined reference across all loaded objects, we find a
 defining (object, symbol) pair via breadth-first search over the
-`DepGraph.objects` array (which `Discover` already returns in BFS
+`ObjectList.objects` array (which `Discover` already returns in BFS
 order: main first, then NEEDED entries in their declared order).
 -/
 
@@ -27,11 +27,13 @@ open LeanLoad.Spec
 open LeanLoad
 open LeanLoad.Discover
 
-/-- A resolved global symbol: its providing object's index in the
-    `DepGraph.objects` array and the symbol's index within that
-    object's `symtab`. -/
-structure SymRef where
-  objectIdx : Nat
+/-- A resolved global symbol, parameterised by the dep graph's
+    object count `n`. The `Fin n` carries the bounds proof at the
+    type level — every consumer indexes `g.val` totally, no `?`. The
+    `symIdx : Nat` stays unbounded because its valid range depends
+    on the specific object referenced; consumers still `[]?` it. -/
+structure SymRef (n : Nat) where
+  objectIdx : Fin n
   symIdx    : Nat
   deriving Repr
 
@@ -60,42 +62,44 @@ def findInObject (obj : Discover.LoadedObject) (name : String) : Option Nat :=
 /-- Resolve `name` against `g` via breadth-first search over its
     objects. Returns the providing `SymRef`, or `none` if no object
     defines it. -/
-def resolveByName (g : DepGraph) (name : String) : Option SymRef := Id.run do
-  let mut idx := 0
-  for obj in g.objects do
-    if let some symIdx := findInObject obj name then
-      return some { objectIdx := idx, symIdx }
-    idx := idx + 1
+def resolveByName (g : ObjectList) (name : String) : Option (SymRef g.val.size) := Id.run do
+  for h : objectIdx in [:g.val.size] do
+    if let some symIdx := findInObject g.val[objectIdx] name then
+      return some { objectIdx := ⟨objectIdx, h.upper⟩, symIdx }
   return none
 
-/-- A failed-to-resolve undefined symbol; useful for diagnostics. -/
-structure Unresolved where
-  objectIdx : Nat
+/-- A failed-to-resolve undefined symbol; useful for diagnostics.
+    Same `Fin n` parameterisation as `SymRef` so `Table.missing[i].objectIdx`
+    is total. -/
+structure Unresolved (n : Nat) where
+  objectIdx : Fin n
   symIdx    : Nat
   name      : String
   deriving Repr
 
 /-- Result of building the resolution table for an entire
-    `DepGraph`. -/
-structure Table where
+    `ObjectList`. Parameterised by the dep graph's object count so
+    every contained `Unresolved` / `SymRef` carries its bounds
+    proof. -/
+structure Table (n : Nat) where
   /-- One entry per undefined reference in any object. -/
-  resolved : Array (Unresolved × Option SymRef)
+  resolved : Array (Unresolved n × Option (SymRef n))
   /-- Strong (non-weak) undef references that did not resolve.
       A non-empty `missing` means the program would fail at load. -/
-  missing  : Array Unresolved
+  missing  : Array (Unresolved n)
   /-- Weak undef references that did not resolve. Allowed by gabi 05;
       surfaced for diagnostics only. -/
-  weakMissing : Array Unresolved
+  weakMissing : Array (Unresolved n)
   deriving Repr
 
 /-- Walk every object's symbol table, look up each undefined
     reference's definition. -/
-def buildTable (g : DepGraph) : Table := Id.run do
-  let mut resolved : Array (Unresolved × Option SymRef) := #[]
-  let mut missing : Array Unresolved := #[]
-  let mut weakMissing : Array Unresolved := #[]
-  let mut objIdx := 0
-  for obj in g.objects do
+def buildTable (g : ObjectList) : Table g.val.size := Id.run do
+  let mut resolved : Array (Unresolved g.val.size × Option (SymRef g.val.size)) := #[]
+  let mut missing : Array (Unresolved g.val.size) := #[]
+  let mut weakMissing : Array (Unresolved g.val.size) := #[]
+  for h : objectIdx in [:g.val.size] do
+    let obj := g.val[objectIdx]
     let mut symIdx := 0
     for sym in obj.elf.symtab do
       if isUndef sym then
@@ -103,18 +107,18 @@ def buildTable (g : DepGraph) : Table := Id.run do
         | none    => pure ()
         | some "" => pure ()
         | some n =>
-          let entry : Unresolved := { objectIdx := objIdx, symIdx, name := n }
+          let entry : Unresolved g.val.size :=
+            { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := n }
           let r := resolveByName g n
           resolved := resolved.push (entry, r)
           if r.isNone then
             if isWeak sym then weakMissing := weakMissing.push entry
             else missing := missing.push entry
       symIdx := symIdx + 1
-    objIdx := objIdx + 1
   return { resolved, missing, weakMissing }
 
 -- ============================================================================
--- Compile-time unit tests: synthesise a tiny `DepGraph` where main has an
+-- Compile-time unit tests: synthesise a tiny `ObjectList` where main has an
 -- undefined ref to `printf` and libc defines it, then check the
 -- resolver finds the right pair.
 -- ============================================================================
@@ -141,19 +145,19 @@ private def undefSym (nameOff : UInt32) : Symbol.Symbol64 :=
     st_shndx := Symbol.SHN_UNDEF }
 
 /-- main's undef `printf`, libc's def `printf`. -/
-private def resolveG : DepGraph :=
+private def resolveG : ObjectList :=
   let (mainStrtab, mOffs) := packStrings #["printf"]
   let (libcStrtab, lOffs) := packStrings #["printf"]
-  synthDepGraph #[
+  ⟨#[
     synthObj "main"
       (needed := #["libc.so"])
       (symtab := #[default, undefSym mOffs[0]!.toUInt32])
       (strtab := mainStrtab),
     synthObj "libc.so"
       (symtab := #[default, defSym lOffs[0]!.toUInt32 0xc0ffee])
-      (strtab := libcStrtab) ]
+      (strtab := libcStrtab) ], by simp⟩
 
-#guard (resolveByName resolveG "printf").map (·.objectIdx) = some 1
+#guard (resolveByName resolveG "printf").map (·.objectIdx.val) = some 1
 #guard (resolveByName resolveG "nonexistent")              = none
 #guard (buildTable    resolveG).missing.size               = 0
 
