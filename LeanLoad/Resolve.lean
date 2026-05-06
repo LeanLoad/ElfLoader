@@ -163,7 +163,7 @@ end UnitTest
 -- Tests.
 -- ============================================================================
 
-/-- Discover `build/main`'s link map, build the resolution table, check
+/-- Discover `build/main`'s dep graph, build the resolution table, check
     that cross-library references resolve and the libbar↔libbaz cycle
     is handled both ways. -/
 def test (g : DepGraph) : IO Nat := do

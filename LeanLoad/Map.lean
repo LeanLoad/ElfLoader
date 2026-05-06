@@ -87,7 +87,7 @@ def mapObject (g : DepGraph) (lyt : ObjectLayout) : IO ObjectImage := do
     Runtime.mprotectRange reservation s.vaddr.toUSize s.length.toUSize s.prot
   return { reservation, segments := segs }
 
-/-- Map every object in a link map; return the full `ProcessImage`. -/
+/-- Map every object in a dep graph; return the full `ProcessImage`. -/
 def mapAll (g : DepGraph) (layouts : Array ObjectLayout) : IO ProcessImage := do
   let mut objects : Array ObjectImage := Array.mkEmpty layouts.size
   for lyt in layouts do

@@ -29,25 +29,27 @@ open LeanLoad.Discover
     `fuel` bounds the recursion depth. The caller seeds it with
     `g.objects.size`; each recursive call descends through one
     not-yet-visited object, so the bound is tight. With fuel, no
-    `partial def` — `dfs` is structurally recursive. -/
-private def dfs (fuel : Nat) (g : DepGraph)
-    (idx : Nat) (visited : Array Bool) (order : Array Nat) : Array Bool × Array Nat :=
+    `partial def` — `dfs` is structurally recursive.
+
+    Pure-recursive form: the inner `for childIdx in childIdxs` is
+    `Array.foldl` over `(visited, order)`, threading both as the
+    fold accumulator. Lifts directly under `Array.foldl_induction`
+    in `LeanLoad.Thm.Order`. Public (not `private`) so the theorem
+    file can quantify over its result. -/
+def dfs (fuel : Nat) (g : DepGraph) (idx : Nat)
+    (visited : Array Bool) (order : Array Nat) : Array Bool × Array Nat :=
   match fuel with
   | 0 => (visited, order)
-  | fuel + 1 => Id.run do
+  | fuel + 1 =>
     if h : idx < visited.size then
-      if visited[idx] then return (visited, order)
-    else
-      return (visited, order)
-    let mut visited := visited.set! idx true
-    let mut order := order
-    if let some childIdxs := g.deps[idx]? then
-      for childIdx in childIdxs do
-        let (v', o') := dfs fuel g childIdx visited order
-        visited := v'
-        order := o'
-    order := order.push idx
-    return (visited, order)
+      if visited[idx] then (visited, order)
+      else
+        let visited := visited.set idx true
+        let children := (g.deps[idx]?).getD #[]
+        let (v, o) := children.foldl (init := (visited, order))
+                        (fun st c => dfs fuel g c st.1 st.2)
+        (v, o.push idx)
+    else (visited, order)
 termination_by fuel
 
 end LeanLoad.Order
@@ -75,8 +77,8 @@ open LeanLoad
 open LeanLoad.Discover
 
 -- ============================================================================
--- Compile-time unit tests on synthetic link maps (`synthObj` from
--- `LeanLoad.Fixtures`).
+-- Compile-time unit tests on synthetic dep graphs (`synthDepGraph`
+-- from `LeanLoad.Fixtures`).
 -- ============================================================================
 section UnitTest
 open LeanLoad.Fixtures

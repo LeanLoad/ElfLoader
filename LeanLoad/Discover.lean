@@ -1,10 +1,10 @@
 /-
-`LeanLoad.Discover` — assemble the dependency link map of an ELF.
+`LeanLoad.Discover` — assemble the dependency graph of an ELF.
 
 Walks `DT_NEEDED` transitively: read main, parse, walk its needed
 list, find each on disk via the search-path rules below, parse it,
-walk its needed list, and so on. Output is a `DepGraph` mapping each
-loaded object to its parsed form.
+walk its needed list, and so on. Output is a `DepGraph` of every
+loaded object plus the object-index edges between them.
 
 This is the IO stage of "where do files live"; `LeanLoad.Resolve` (pure)
 takes over for "how do their bytes interact".
@@ -18,50 +18,13 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
 
 import LeanLoad.Parse.File
 import LeanLoad.Runtime
+import LeanLoad.Search
 
 namespace LeanLoad.Discover
 
 open LeanLoad
 open LeanLoad.Parse
-
--- ============================================================================
--- Search-path resolution (pure)
--- ============================================================================
-
-/-- Split a colon-separated path list. Empty entries are dropped. -/
-def parsePathList (s : String) : Array String :=
-  s.splitOn ":" |>.filter (! ·.isEmpty) |>.toArray
-
-#guard parsePathList "" = #[]
-#guard parsePathList "/a:/b" = #["/a", "/b"]
-#guard parsePathList "/a::/b" = #["/a", "/b"]
-
-/-- Search context for one resolution call. -/
-structure SearchContext where
-  /-- The owning object's `DT_RUNPATH`, if any. Per-binary, not transitive. -/
-  runpath  : Option String := none
-  /-- Host's `LD_LIBRARY_PATH`, if set. -/
-  envPath  : Option String := none
-  /-- Caller-supplied default paths (`/lib`, `/usr/lib`, ...). Empty for
-      hermetic tests. -/
-  defaults : Array String  := #[]
-
-/-- Enumerate candidate paths for `soname` under `ctx`. If `soname`
-    contains `/` the result is `#[soname]` (treated as a path). -/
-def searchCandidates (soname : String) (ctx : SearchContext) : Array String :=
-  if soname.contains '/' then
-    #[soname]
-  else
-    let dirs : Array String := Id.run do
-      let mut acc : Array String := #[]
-      if let some p := ctx.envPath  then acc := acc ++ parsePathList p
-      if let some p := ctx.runpath  then acc := acc ++ parsePathList p
-      acc := acc ++ ctx.defaults
-      return acc
-    dirs.map (fun d => s!"{d}/{soname}")
-
-#guard searchCandidates "/abs/path" {} = #["/abs/path"]
-#guard searchCandidates "libfoo.so" { runpath := some "/a:/b" } = #["/a/libfoo.so", "/b/libfoo.so"]
+open LeanLoad.Search
 
 /-- One loaded object. Identified by its `DT_SONAME` if present (else
     by the `DT_NEEDED` string we resolved through), and by the file
@@ -187,8 +150,8 @@ def discover (mainPath : String) : IO DepGraph := do
 -- Tests.
 -- ============================================================================
 
-/-- The full link map of `build/main` should be exactly five
-    objects: main, libfoo.so, libbar.so, libbaz.so, libc.so.
+/-- The full dependency graph of `build/main` should contain exactly
+    five objects: main, libfoo.so, libbar.so, libbaz.so, libc.so.
     libbar↔libbaz form a cycle (mutual NEEDED); the SONAME-keyed
     dedup must terminate the BFS. -/
 private def expectedNames : Array String :=
@@ -204,7 +167,7 @@ def test (g : DepGraph) : IO Nat := do
 
   for expected in expectedNames[1:] do
     if !names.any (· == expected) then
-      IO.eprintln s!"{expected} missing from link map: {names}"
+      IO.eprintln s!"{expected} missing from dependency graph: {names}"
       failures := failures + 1
 
   for nm in names do

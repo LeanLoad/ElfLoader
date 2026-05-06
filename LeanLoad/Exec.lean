@@ -27,10 +27,10 @@ open LeanLoad.Discover
 -- ============================================================================
 
 /-- Call constructors for every object in `order`, including main.
-    `order` is `g.order` (DFS post-order over deps); `runFini`, when
-    added, will walk it in reverse. ET_DYN init-array entries are
-    relative addresses and need the chosen base added; ET_EXEC entries
-    are already absolute. -/
+    Pass `g.order` (DFS post-order over deps); `runFini`, when added,
+    will walk `g.order.reverse`. ET_DYN init-array entries are
+    relative addresses and need the chosen base added; ET_EXEC
+    entries are already absolute. -/
 def runInits (g : DepGraph) (image : Map.ProcessImage) (order : Array Nat) : IO Unit := do
   for objectIdx in order do
     let some obj := g.objects[objectIdx]?     | continue

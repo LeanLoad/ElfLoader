@@ -30,7 +30,7 @@ def main : IO UInt32 := do
     return 0
   let g     ← Discover.discover path
   let some main := g.main?
-    | do IO.eprintln "skip: empty link map"; return 0
+    | do IO.eprintln "skip: empty dep graph"; return 0
   let some formula := Spec.Reloc.formulaFor main.elf.header.e_machine
     | do IO.eprintln s!"skip: unsupported e_machine={main.elf.header.e_machine}"; return 0
   let some mainHandle := main.handle

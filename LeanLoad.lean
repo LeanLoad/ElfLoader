@@ -16,6 +16,7 @@ import LeanLoad.Spec.Reloc.Aarch64
 import LeanLoad.Spec.Reloc.X86_64
 import LeanLoad.Spec.GnuHash
 import LeanLoad.Spec.Reloc.Formula
+import LeanLoad.Search
 import LeanLoad.Layout
 import LeanLoad.Order
 import LeanLoad.Resolve
@@ -31,3 +32,4 @@ import LeanLoad.Thm.Reloc
 import LeanLoad.Thm.Resolve
 import LeanLoad.Thm.Discover
 import LeanLoad.Thm.GnuHash
+import LeanLoad.Thm.Order

@@ -3,11 +3,12 @@ Layout — per-object segment arrangement, pure.
 
 Walks each parsed ELF's `PT_LOAD`s and presents them as `Segment`s,
 with mmap-ready fields (`vaddr`, `length`, `prot`, …) exposed as
-lazy accessors on the wrapped `Header64`. Also bundles per-object
-`ObjectLayout`s into the cross-object `Layout` struct consumed
-downstream by Map / Reloc / Apply / Exec.
+lazy accessors on the wrapped `Header64`. The dot-notation
+`g.layouts` (defined here under `Discover.DepGraph`) yields the
+`Array ObjectLayout` consumed downstream by Map / Reloc / Apply /
+Exec.
 
-Init/fini ordering lives in `LeanLoad.Order` (gabi 08); this file
+Dependency ordering lives in `LeanLoad.Order` (gabi 08); this file
 covers gabi 07 (Program Header / Program Loading / Segment
 Permissions).
 -/
@@ -208,7 +209,7 @@ def ObjectLayout.span (lyt : ObjectLayout) : UInt64 :=
   objectSpan lyt.segments
 
 /-- Layout for a single parsed ELF. `base` is decided by the
-    enclosing `fromDepGraph` (anchor + cumulative for `ET_DYN`,
+    enclosing `DepGraph.layouts` (anchor + cumulative for `ET_DYN`,
     0 for `ET_EXEC`). -/
 def objectLayout (objectIdx : Nat) (isMain : Bool) (base : UInt64)
     (elf : Parse.File.ParsedElf) : ObjectLayout :=
@@ -257,14 +258,14 @@ namespace LeanLoad.Discover.DepGraph
 
 open LeanLoad.Layout
 
-/-- Build the per-object layouts for a discovered link map. The first
-    object (index 0) is main. -/
+/-- Build the per-object layouts for a discovered dep graph. The
+    first object (index 0) is main. -/
 def layouts (g : DepGraph) : Array ObjectLayout :=
   let bases := assignBases g
   g.objects.mapIdx fun i obj =>
     objectLayout i (i = 0) (bases[i]?.getD 0) obj.elf
 
--- Empty-link map edge case (the strong size-equality is in `LeanLoad.Thm.Layout`).
+-- Empty-graph edge case (the strong size-equality is in `LeanLoad.Thm.Layout`).
 #guard ({ objects := #[], deps := #[] } : DepGraph).layouts.isEmpty
 
 end LeanLoad.Discover.DepGraph
@@ -275,7 +276,7 @@ open LeanLoad.Discover
 
 -- ============================================================================
 -- IO test runner. Sanity-checks the per-object segment count over
--- the discovered link map.
+-- the discovered dep graph.
 -- ============================================================================
 
 def test (g : DepGraph) : IO Nat := do

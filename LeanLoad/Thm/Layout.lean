@@ -1,7 +1,7 @@
 /-
 Layout-stage theorems.
 
-- `fromDepGraph` produces one layout per object (refinement-seam shape).
+- `g.layouts` produces one layout per object (refinement-seam shape).
 - `objectSpan` upper-bounds every segment (containment); sorted
   segments ⇒ pairwise disjoint.
 

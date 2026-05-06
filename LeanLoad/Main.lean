@@ -10,14 +10,15 @@ goes through this file (`Main.lean`), `Map.lean`, `Apply.lean`, or
 `Exec.lean`.
 
 Pipeline:
-  1. Discover (IO):   path → link map
-  2. Resolve  (pure): link map → resolution table
-  3. Layout   (pure): link map → layouts + init/fini order
-  4. Map      (IO):   layouts → regions × kernel-chosen bases
-  5. Reloc    (pure): link map × resolution × bases → writes
-  6. Apply    (IO):   writes → memory mutated
-  7. Init     (IO):   bases × init order → constructors called
-  8. Exec     (IO):   no return
+  1. Discover (IO):   path → dep graph
+  2. Resolve  (pure): dep graph → resolution table
+  3. Layout   (pure): dep graph → per-object layouts (`g.layouts`)
+  4. Order    (pure): dep graph → init order (`g.order`)
+  5. Map      (IO):   layouts → regions at chosen bases
+  6. Reloc    (pure): dep graph × layouts × resolution → patches
+  7. Apply    (IO):   patches → memory mutated
+  8. Init     (IO):   image × order → constructors called
+  9. Exec     (IO):   no return
 -/
 
 import LeanLoad
@@ -56,7 +57,7 @@ private def Nat.hex12 (n : Nat) : String :=
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
   let some mainObj := g.objects[0]?
-    | throw (IO.userError "load: empty link map")
+    | throw (IO.userError "load: empty dep graph")
   let rt   := Resolve.buildTable g
   if let some u := rt.missing[0]? then
     throw (IO.userError s!"load: {rt.missing.size} unresolved strong symbol(s); first: {u.name}")
@@ -82,7 +83,7 @@ def debug (path : String) : IO Unit := do
   for obj in g.objects do
     IO.eprintln s!"{obj.name}  ({obj.path})"
   let some mainObj := g.objects[0]?
-    | throw (IO.userError "debug: empty link map")
+    | throw (IO.userError "debug: empty dep graph")
 
   IO.eprintln "\n== Resolve =="
   let rt := Resolve.buildTable g
