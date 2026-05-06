@@ -11,20 +11,11 @@ namespace LeanLoad.Parse.Reloc
 open LeanLoad.Parse.Bytes
 open LeanLoad.Spec.Reloc
 
-def parseRel : Parser Rel64 := do
-  let r_offset ← u64le
-  let r_info   ← u64le
-  return { r_offset, r_info }
-
 def parseRela : Parser Rela64 := do
   let r_offset ← u64le
   let r_info   ← u64le
   let r_addend ← u64le
   return { r_offset, r_info, r_addend }
-
-/-- Parse `count` `Elf64_Rel` entries starting at `offset`. -/
-def parseRelTable (offset count : Nat) : Parser (Array Rel64) :=
-  parseArray offset count parseRel
 
 /-- Parse `count` `Elf64_Rela` entries starting at `offset`. -/
 def parseRelaTable (offset count : Nat) : Parser (Array Rela64) :=

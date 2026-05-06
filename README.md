@@ -5,7 +5,7 @@ binaries (static + dynamically-linked) through an eight-stage pipeline:
 
 - **Discover** — walk `DT_NEEDED`, parse each file, build the link map.
 - **Resolve** — find each undef symbol's defining object via BFS.
-- **Plan** — compute per-object mmap layout and init/fini order.
+- **Layout** — compute per-object mmap layout and init/fini order.
 - **Map** — `mmap` each object's segments; kernel picks bases.
 - **Reloc** — compute per-arch relocation writes.
 - **Apply** — execute the writes into mmap'd memory.
@@ -15,7 +15,7 @@ binaries (static + dynamically-linked) through an eight-stage pipeline:
 Targets AArch64 + x86-64 with musl libc. The verified core is pure
 Lean.
 
-https://github.com/ShawnZhong/LeanLoad/blob/59fceebb199e9a367e1fee6d979909ca566efe20/run.log#L1-L213
+https://github.com/ShawnZhong/LeanLoad/blob/8efc31143c07302e9fc5743b7e144602fd5eb0c2/run.log#L1-L213
 
 ## Quick start
 

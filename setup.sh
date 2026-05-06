@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # One-shot setup: system C toolchain, elan (Lean toolchain manager),
-# and git submodules. The exact Lean version is pinned in
+# and the build-dep submodules. The exact Lean version is pinned in
 # `lean-toolchain` and elan installs it on first `lake` invocation.
+#
+# Reference submodules (gabi, x86-64-ABI, lean4, ELFSage, etc.) are
+# documentation/spec sources and are NOT init'd by default — they're
+# multi-GB and only needed when actively cross-checking the spec.
+# Run `git submodule update --init --recursive` manually if you want
+# the full set.
 set -euxo pipefail
 cd "$(dirname "$0")"
 
@@ -23,5 +29,6 @@ else
   export PATH="$HOME/.elan/bin:$PATH"
 fi
 
-# Submodules: gabi, musl, x86-64-ABI, …
-git submodule update --init --recursive
+# Build-dep submodules only (musl libc + nolibc for the static
+# fixture). Matches what CI inits.
+git submodule update --init third_party/musl third_party/nolibc

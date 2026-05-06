@@ -6,7 +6,7 @@ list, find each on disk via the search-path rules below, parse it,
 walk its needed list, and so on. Output is a `LinkMap` mapping each
 loaded object to its parsed form.
 
-This is the IO stage of "where do files live"; `Spec.Resolve` (pure)
+This is the IO stage of "where do files live"; `LeanLoad.Resolve` (pure)
 takes over for "how do their bytes interact".
 
 Search-path rules per gabi 08 § Shared Object Dependencies:
@@ -84,12 +84,6 @@ namespace LinkMap
 
 def main? (lm : LinkMap) : Option LoadedObject :=
   lm.objects[0]?
-
-def find? (lm : LinkMap) (name : String) : Option LoadedObject :=
-  lm.objects.find? (·.name == name)
-
-def names (lm : LinkMap) : Array String :=
-  lm.objects.map (·.name)
 
 end LinkMap
 

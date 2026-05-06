@@ -30,8 +30,9 @@ Two design rules:
    consume. Verification targets are stated against it.
 2. **Reloc planning straddles `Map`.** Layout and init order are
    computed pre-bases; relocation writes are computed post-bases
-   (kernel chooses bases at mmap time). Both are pure and both live
-   in `Plan/`; the `load` orchestration threads bases between them.
+   (kernel chooses bases at mmap time). Both are pure (`Layout.lean`,
+   `Reloc.lean`); the `load` orchestration threads bases between
+   them.
 
 ## Module layout
 
@@ -42,8 +43,8 @@ LeanLoad/
   Test.lean                test exe entry
   Discover.lean            IO walk + LinkMap type
   Resolve.lean             undef ref → providing object/symbol (pure)
+  Layout.lean              mappings + init/fini order (pure)
   Reloc.lean               formula → write list (pure post-bases)
-  Formula.lean             per-`e_machine` formula dispatch
   Map.lean                 mmap + memcpy + mprotect (IO)
   Apply.lean               poke reloc bytes into mmap'd memory (IO)
   Region.lean              @[extern] for memory ops (runtime/region.c)
@@ -59,14 +60,13 @@ LeanLoad/
     Reloc.lean             gabi 06 § Relocation
     Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations
     Reloc/X86_64.lean      x86-64-ABI § Relocation Types
+    Reloc/Formula.lean     per-`e_machine` dispatch (gabi 02 § e_machine)
     GnuHash.lean           gnu-gabi § Hashes
   Parse/                   byte decoders (impl)
     Bytes.lean             parser monad
     Header.lean Program.lean Dynamic.lean
     StringTable.lean Symbol.lean Reloc.lean
     File.lean              ParsedElf aggregate + parse
-  Plan/
-    Layout.lean            mappings + init/fini order (Layout stage)
 runtime/                   C shims (unverified)
   region.{h,c}             mmap / mprotect / write
   exec.{h,c}               ctor invocation + transfer of control
@@ -82,7 +82,8 @@ third_party/               submodules (gabi, musl, …)
 
 ## Trust boundary
 
-- **Verified**: `LeanLoad/Spec/`, `LeanLoad/Parse/`, `LeanLoad/Plan/`.
+- **Verified**: `LeanLoad/Spec/`, `LeanLoad/Parse/`, plus the pure
+  top-level modules (`Resolve.lean`, `Layout.lean`, `Reloc.lean`).
   Pure Lean; no `IO`; no imports of `Region`, `Exec`'s extern block,
   or `runtime/`.
 - **Trusted**: `runtime/*` (audited C, ~150 lines), the
@@ -99,9 +100,11 @@ A grep for `@[extern]` outside `LeanLoad/Region.lean` and
   in `LeanLoad/Spec/` cites a specific section of gabi 02–08, the
   AArch64 ELF ABI supplement, etc. The def *is* the spec — there is
   no second copy.
-- **Impl**: parsers (`Parse/`), pure pipeline functions (`Plan/`),
-  IO orchestration (`Discover.lean`, `Map.lean`, `Exec.lean`,
-  `Main.lean`). These implement gabi's prose-level algorithms; we
+- **Impl**: parsers (`Parse/`), pure pipeline (`Resolve.lean`,
+  `Layout.lean`, `Reloc.lean`, `Spec/Reloc/Formula.lean`), IO
+  orchestration (`Discover.lean`, `Map.lean`, `Apply.lean`,
+  `Exec.lean`, `Main.lean`). These implement gabi's prose-level
+  algorithms; we
   prove properties about them in `Thm.lean`.
 
 The split is enforced by which directory things live in. A reader
@@ -113,8 +116,8 @@ auditing "what does LeanLoad believe about ELF" reads only `Spec/`.
 (`ElfHeader64`, `Header64` (Phdr), `Rela64`); no 32-bit / typeclass
 abstraction layer. The reloc planner is parametric over a per-arch
 `Formula` type; per-arch tables live under
-`Spec/Reloc/{Aarch64,X86_64}.lean` and `Plan/Formula.lean` dispatches
-on `e_machine`.
+`Spec/Reloc/{Aarch64,X86_64}.lean` and `Spec/Reloc/Formula.lean`
+dispatches on `e_machine`.
 
 **Parser scope: loader-minimal.** A loader does not need to parse
 the full ELF, only what is reachable from program headers and the
@@ -157,7 +160,7 @@ dump shows discovered objects, layouts, and init/fini order.
 
 Three rules that pay off across the project:
 
-1. **`deriving Repr` on every type in `Spec/`, `Parse/`, `Plan/`.**
+1. **`deriving Repr` on every spec/parse/pipeline type.**
    Then `--debug` is structured by construction.
 2. **Deterministic output.** No timestamps, no hash-iteration order,
    no addresses chosen by ASLR in the plan. Sort everything that has

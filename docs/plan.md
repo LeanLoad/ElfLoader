@@ -22,7 +22,7 @@ Pipeline (matches `--debug` output):
 - **Map** — `mmap` per object (`MAP_FIXED` for `ET_EXEC`, anonymous +
   kernel-chosen base for `ET_DYN`), memcpy segment bytes, `mprotect`.
 - **Reloc / Apply** — `Reloc.plan` evaluates per-arch `Formula`
-  (AArch64 + x86-64); `Map.applyAllRelocs` pokes the resulting bytes.
+  (AArch64 + x86-64); `Apply.applyAllRelocs` pokes the resulting bytes.
 - **Init** — invoke each object's `DT_INIT_ARRAY` entries in
   `initOrder`.
 - **Exec** — kernel-style stack (argc/argv/envp/auxv) + AArch64 /

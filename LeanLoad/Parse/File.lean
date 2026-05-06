@@ -69,18 +69,12 @@ structure ParsedElf where
   rela    : Array Spec.Reloc.Rela64
   /-- PLT relocations from `DT_JMPREL` (only `Rela` form supported). -/
   jmprel  : Array Spec.Reloc.Rela64
-  /-- Address of `DT_INIT`, if present. -/
-  initFn  : Option UInt64
-  /-- Address of `DT_FINI`, if present. -/
-  finiFn  : Option UInt64
   /-- `DT_INIT_ARRAY` entries — already parsed from the file bytes. For
       `ET_DYN`, each entry is a relative address; the runtime adds the
-      chosen base. For `ET_EXEC`, entries are absolute. -/
+      chosen base. For `ET_EXEC`, entries are absolute. (gabi 08 also
+      defines `DT_INIT`, `DT_FINI`, `DT_FINI_ARRAY`, `DT_PREINIT_ARRAY`;
+      none are consumed by the loader yet — added back when needed.) -/
   initArr : Array UInt64
-  /-- `DT_FINI_ARRAY` entries, same convention as `initArr`. -/
-  finiArr : Array UInt64
-  /-- `DT_PREINIT_ARRAY` entries, same convention. -/
-  preinitArr : Array UInt64
   deriving Inhabited
 
 -- ============================================================================
@@ -198,8 +192,6 @@ def parse (bytes : ByteArray) : Except String ParsedElf := do
   let rela   ← parseRelaPair Spec.Dynamic.DT_RELA   Spec.Dynamic.DT_RELASZ   "DT_RELA"
   let jmprel ← parseRelaPair Spec.Dynamic.DT_JMPREL Spec.Dynamic.DT_PLTRELSZ "DT_JMPREL"
 
-  let initFn := dynVal? dyn Spec.Dynamic.DT_INIT
-  let finiFn := dynVal? dyn Spec.Dynamic.DT_FINI
   let parseFnArray (tagAddr tagSz : UInt64) (label : String)
       : Except String (Array UInt64) :=
     match dynPair? dyn tagAddr tagSz with
@@ -208,13 +200,11 @@ def parse (bytes : ByteArray) : Except String ParsedElf := do
       let count := sz.toNat / 8
       parseAtDyn phdrs bytes label (some vaddr) #[]
         (fun off => Bytes.parseArray off count Bytes.u64le)
-  let initArr    ← parseFnArray Spec.Dynamic.DT_INIT_ARRAY    Spec.Dynamic.DT_INIT_ARRAYSZ    "DT_INIT_ARRAY"
-  let finiArr    ← parseFnArray Spec.Dynamic.DT_FINI_ARRAY    Spec.Dynamic.DT_FINI_ARRAYSZ    "DT_FINI_ARRAY"
-  let preinitArr ← parseFnArray Spec.Dynamic.DT_PREINIT_ARRAY Spec.Dynamic.DT_PREINIT_ARRAYSZ "DT_PREINIT_ARRAY"
+  let initArr ← parseFnArray Spec.Dynamic.DT_INIT_ARRAY Spec.Dynamic.DT_INIT_ARRAYSZ "DT_INIT_ARRAY"
 
   return {
     bytes, header, phdrs, dyn, strtab, symtab, needed, soname, runpath,
-    rela, jmprel, initFn, finiFn, initArr, finiArr, preinitArr
+    rela, jmprel, initArr
   }
 
 end LeanLoad.Parse.File

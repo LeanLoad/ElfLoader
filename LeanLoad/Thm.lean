@@ -21,10 +21,11 @@ import LeanLoad.Spec.Header
 import LeanLoad.Spec.Program
 import LeanLoad.Spec.Symbol
 import LeanLoad.Spec.Reloc
-import LeanLoad.Layout
 import LeanLoad.Spec.Reloc.Aarch64
 import LeanLoad.Spec.Reloc.X86_64
 import LeanLoad.Spec.GnuHash
+import LeanLoad.Layout
+import LeanLoad.Reloc
 
 namespace LeanLoad.Thm
 

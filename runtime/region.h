@@ -1,8 +1,10 @@
 /* Memory region: a foreign-owned mmap'd buffer.
  *
- * Wrapped in a Lean external object (`LeanLoad.FFI.Region.Region`).
- * The finalizer calls munmap; users read/write via the helpers in
- * `LeanLoad.FFI.Region`.
+ * Wrapped in a Lean external object (`LeanLoad.Region.Region`).
+ * Mappings live for the lifetime of the process — the finalizer
+ * deliberately does NOT `munmap` (see `leanload_region_finalize`
+ * in region.c); the kernel reclaims at exit. Users read/write via
+ * the helpers in `LeanLoad.Region`.
  */
 
 #ifndef LEANLOAD_REGION_H

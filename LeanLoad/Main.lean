@@ -2,22 +2,22 @@
 LeanLoad CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is the
-glue that ties the verified core (`Spec`, `Parse`, `Plan`) to the FFI
-layer (`runtime/`). Verified code (`Spec/`, `Parse/`, plus the pure
-modules `Resolve.lean`, `Layout.lean`, `Reloc.lean`,
-`Spec/Reloc/Formula.lean`) must not import `LeanLoad.Region`'s
-externs; everything that crosses into the kernel goes through this
-file (`Main.lean`), `Map.lean`, `Apply.lean`, or `Exec.lean`.
+glue that ties the verified core (`Spec`, `Parse`, plus the pure
+top-level modules `Resolve`, `Layout`, `Reloc`, `Spec/Reloc/Formula`)
+to the FFI layer (`runtime/`). Verified code must not import
+`LeanLoad.Region`'s externs; everything that crosses into the kernel
+goes through this file (`Main.lean`), `Map.lean`, `Apply.lean`, or
+`Exec.lean`.
 
 Pipeline:
-  1. Discover (IO):  path → link map
-  2. Resolve (pure): link map → resolution table
-  3. Plan    (pure): link map → layouts + init order  (no bases)
-  4. Map     (IO):   layouts → regions × kernel-chosen bases
-  5. Reloc   (pure): link map × resolution × bases → writes
-  6. Apply   (IO):   writes → memory mutated
-  7. Init    (IO):   bases × init order → constructors called
-  8. Exec    (IO):   no return
+  1. Discover (IO):   path → link map
+  2. Resolve  (pure): link map → resolution table
+  3. Layout   (pure): link map → layouts + init/fini order
+  4. Map      (IO):   layouts → regions × kernel-chosen bases
+  5. Reloc    (pure): link map × resolution × bases → writes
+  6. Apply    (IO):   writes → memory mutated
+  7. Init     (IO):   bases × init order → constructors called
+  8. Exec     (IO):   no return
 -/
 
 import LeanLoad
@@ -69,17 +69,19 @@ def load (path : String) : IO Unit := do
 
 /-- `--debug`: same as `load` but with a header and summary per stage,
     so a developer can see which stages succeeded if the loaded image
-    misbehaves. Like `load`, this transfers control and does not
-    return — the loaded program owns the process. -/
+    misbehaves. Stage prints go to **stderr** so they don't intermix
+    with the loaded program's stdout (and stderr is unbuffered, so we
+    don't lose late banners across the `transferControl` fork).
+    Like `load`, this transfers control and does not return. -/
 def debug (path : String) : IO Unit := do
-  IO.println "== Discover =="
+  IO.eprintln "== Discover =="
   let lm ← Discover.discover path
   for obj in lm.objects do
-    IO.println s!"{obj.name}  ({obj.path})"
+    IO.eprintln s!"{obj.name}  ({obj.path})"
   let some mainObj := lm.objects[0]?
     | throw (IO.userError "debug: empty link map")
 
-  IO.println "\n== Resolve =="
+  IO.eprintln "\n== Resolve =="
   let rt := Resolve.buildTable lm
   let providerName (r : Resolve.SymRef) : String := match lm.objects[r.objectIdx]? with
     | some obj => obj.name
@@ -93,7 +95,7 @@ def debug (path : String) : IO Unit := do
   for (u, ref?) in rt.resolved do
     if currentObj != some u.objectIdx then
       if let some obj := lm.objects[u.objectIdx]? then
-        IO.println s!"{obj.name}:"
+        IO.eprintln s!"{obj.name}:"
       currentObj := some u.objectIdx
     let suffix : String := match ref? with
       | none =>
@@ -107,29 +109,29 @@ def debug (path : String) : IO Unit := do
         match lm.objects[r.objectIdx]?.bind (fun obj => obj.elf.symtab[r.symIdx]?) with
         | some sym => s!"{p} [sym {r.symIdx} @0x{Nat.hex sym.st_value.toNat}]"
         | none     => s!"{p} [sym {r.symIdx}]"
-    IO.println s!"  {padR u.name nameW}  ←  {suffix}"
-  IO.println s!"strong missing: {rt.missing.size}, weak missing: {rt.weakMissing.size}"
+    IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
+  IO.eprintln s!"strong missing: {rt.missing.size}, weak missing: {rt.weakMissing.size}"
 
-  IO.println "\n== Plan =="
+  IO.eprintln "\n== Layout =="
   let plan := Layout.fromLinkMap lm (Layout.initOrder lm) (Layout.finiOrder lm)
   for lyt in plan.layouts do
     let some obj := lm.objects[lyt.objectIdx]? | continue
-    IO.println s!"[{lyt.objectIdx}] {obj.name} ({lyt.mappings.size} mappings)"
+    IO.eprintln s!"[{lyt.objectIdx}] {obj.name} ({lyt.mappings.size} mappings)"
     if let some e := lyt.entry then
-      IO.println s!"  entry: 0x{Nat.hex e.toNat}"
+      IO.eprintln s!"  entry: 0x{Nat.hex e.toNat}"
     for m in lyt.mappings do
-      IO.println s!"  vaddr=0x{Nat.hex m.vaddr.toNat} len=0x{Nat.hex m.length.toNat} prot={m.prot}"
-  IO.println s!"init order: {plan.initOrder}"
-  IO.println s!"fini order: {plan.finiOrder}"
+      IO.eprintln s!"  vaddr=0x{Nat.hex m.vaddr.toNat} len=0x{Nat.hex m.length.toNat} prot={m.prot}"
+  IO.eprintln s!"init order: {plan.initOrder}"
+  IO.eprintln s!"fini order: {plan.finiOrder}"
 
-  IO.println "\n== Map =="
+  IO.eprintln "\n== Map =="
   let (allRegions, bases) ← mapAll lm plan
   for i in [:bases.size] do
     let some obj := lm.objects[i]? | continue
     let some b := bases[i]? | continue
-    IO.println s!"[{i}] {obj.name} → 0x{Nat.hex b.toNat}"
+    IO.eprintln s!"[{i}] {obj.name} → 0x{Nat.hex b.toNat}"
 
-  IO.println "\n== Reloc =="
+  IO.eprintln "\n== Reloc =="
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
   -- Width of the "[i] objname" prefix. Fixed; column will be ragged
@@ -155,21 +157,21 @@ def debug (path : String) : IO Unit := do
           else (obj.elf.symtab[r.sym.toNat]?.bind fun s =>
                   Spec.StringTable.lookup obj.elf.strtab s.st_name.toNat).getD "?"
         let typeStr := padR (toString r.type) 2
-        IO.println s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size}B)  sym='{symName}'"
+        IO.eprintln s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size}B)  sym='{symName}'"
     for r in obj.elf.rela do printOne r
     for r in obj.elf.jmprel do printOne r
   let writes := Reloc.plan formula lm bases rt
-  IO.println s!"planned {writes.size} writes"
+  IO.eprintln s!"planned {writes.size} writes"
 
-  IO.println "\n== Apply =="
+  IO.eprintln "\n== Apply =="
   applyAllRelocs allRegions bases writes
-  IO.println s!"applied {writes.size} writes"
+  IO.eprintln s!"applied {writes.size} writes"
 
-  IO.println "\n== Init =="
+  IO.eprintln "\n== Init =="
   runInits lm bases plan
-  IO.println "done"
+  IO.eprintln "done"
 
-  IO.println "\n== Exec =="
+  IO.eprintln "\n== Exec =="
   transferControl mainObj plan bases path
 
 end LeanLoad.Load

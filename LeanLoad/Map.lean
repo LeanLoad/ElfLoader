@@ -32,12 +32,8 @@ def mapMapping (bytes : ByteArray) (m : Layout.Mapping) : IO Region.Region := do
   return region
 
 /-- The contiguous span an object's mappings need (relative). -/
-def objectSpan (lyt : Layout.ObjectLayout) : UInt64 := Id.run do
-  let mut maxEnd : UInt64 := 0
-  for m in lyt.mappings do
-    let endAddr := m.vaddr + m.length
-    if endAddr > maxEnd then maxEnd := endAddr
-  return maxEnd
+def objectSpan (lyt : Layout.ObjectLayout) : UInt64 :=
+  lyt.mappings.foldl (init := 0) fun m mapping => max m (mapping.vaddr + mapping.length)
 
 /-- Map one object, dispatching by `e_type`. Returns its
     region(s) and the chosen base address. -/

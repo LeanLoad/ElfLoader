@@ -17,11 +17,11 @@ from trusted IO (`Discover.discover` body, `Map.lean`, `Exec.lean`,
   order, reloc planner, per-machine dispatch).
 - `LeanLoad/Discover.lean` — IO file walk + `LinkMap`.
 - `LeanLoad/Map.lean` + `LeanLoad/Apply.lean` + `LeanLoad/Exec.lean` — IO orchestration over the Layout output.
-- `LeanLoad/Spec.lean` — catalogue/index of the spec surface.
+- `LeanLoad.lean` — package root, re-exports everything.
 - `LeanLoad/Thm.lean` — single audit surface for every proven property.
 
-A reader auditing correctness reads `Spec.lean`, `Thm.lean`, plus the
-cited gabi/abi sections.
+A reader auditing correctness reads `LeanLoad/Thm.lean` and walks
+into the cited `Spec/*` modules + gabi/abi sections from there.
 
 ## Reader's index of interfaces
 
@@ -47,7 +47,7 @@ See `LeanLoad.Thm` for the canonical list. As of writing:
   per-arch formula table is total.
 - `Thm.Aarch64.formula_size_valid` / `Thm.X86_64.formula_size_valid` —
   every result has size ∈ {4,8}; bridges the planner to
-  `Map.applyAllRelocs` (which panics on other widths).
+  `Apply.applyAllRelocs` (which panics on other widths).
 
 ## Project organization policy
 
@@ -74,7 +74,8 @@ one relocation type as the foothold.
 
 ### O1. Totality
 
-Every `def` in `Spec/`, `Parse/`, and `Plan/` is total — Lean's
+Every `def` in `Spec/`, `Parse/`, and the pure top-level modules
+(`Resolve`, `Layout`, `Reloc`) is total — Lean's
 elaborator certifies it at type-check time. `Layout.dfs` uses
 fuel-based recursion (caller passes `lm.objects.size`, recursion
 decrements). Remaining `partial def`s: `Discover.discover` (IO; the
@@ -108,7 +109,7 @@ formula in the per-arch ABI supplement.
 **Status: AArch64 and x86-64 covered.** For each, `formula_is_total`
 proves the table is defined on every input, and `formula_size_valid`
 proves every result has size ∈ {4,8} — the bridge to
-`Map.applyAllRelocs` which panics on other widths. Per-type spot
+`Apply.applyAllRelocs` which panics on other widths. Per-type spot
 checks live as `#guard` canaries next to each `formula` def
 (`Spec/Reloc/Aarch64.lean`, `Spec/Reloc/X86_64.lean`), one per row
 of the per-arch ABI table.

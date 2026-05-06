@@ -99,35 +99,24 @@ def resolveSymValue (lm : Discover.LinkMap) (bases : Bases)
 
 /-- Plan all relocations for one object's `.rela.dyn` + `.rela.plt`. -/
 def planObject (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Resolve.ResolutionTable) (objectIdx : Nat) : Array RelocWrite := Id.run do
-  let some obj := lm.objects[objectIdx]? | return #[]
-  let some base := bases[objectIdx]? | return #[]
-  let process (entries : Array Spec.Reloc.Rela64) (acc : Array RelocWrite) : Array RelocWrite := Id.run do
-    let mut out := acc
-    for r in entries do
+    (rt : Resolve.ResolutionTable) (objectIdx : Nat) : Array RelocWrite :=
+  match lm.objects[objectIdx]?, bases[objectIdx]? with
+  | some obj, some base =>
+    let one (r : Spec.Reloc.Rela64) : Option RelocWrite :=
       let symValue : UInt64 :=
         if r.sym == 0 then 0
         else resolveSymValue lm bases rt obj base objectIdx r.sym.toNat
       let inputs : FormulaInputs :=
         { symValue, addend := r.r_addend, base, place := base + r.r_offset }
-      match formula r.type inputs with
-      | none => pure ()
-      | some res =>
-        out := out.push
-          { objectIdx, targetVa := base + r.r_offset, value := res.value, size := res.size }
-    return out
-  let mut writes : Array RelocWrite := #[]
-  writes := process obj.elf.rela writes
-  writes := process obj.elf.jmprel writes
-  return writes
+      (formula r.type inputs).map fun res =>
+        { objectIdx, targetVa := base + r.r_offset, value := res.value, size := res.size }
+    obj.elf.rela.filterMap one ++ obj.elf.jmprel.filterMap one
+  | _, _ => #[]
 
 /-- Plan relocations for every object. -/
 def plan (formula : Formula) (lm : Discover.LinkMap) (bases : Bases)
-    (rt : Resolve.ResolutionTable) : Array RelocWrite := Id.run do
-  let mut all : Array RelocWrite := #[]
-  for i in [:lm.objects.size] do
-    all := all ++ planObject formula lm bases rt i
-  return all
+    (rt : Resolve.ResolutionTable) : Array RelocWrite :=
+  (Array.range lm.objects.size).flatMap (planObject formula lm bases rt)
 
 end LeanLoad.Reloc
 

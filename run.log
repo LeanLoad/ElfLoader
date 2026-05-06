@@ -42,7 +42,7 @@ libbaz.so:
   _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
 strong missing: 0, weak missing: 8
 
-== Plan ==
+== Layout ==
 [0] build/main (4 mappings)
   entry: 0x10e0
   vaddr=0x0 len=0x1000 prot=1
@@ -194,7 +194,50 @@ fini order: #[0, 2, 4, 1, 3]
 [3] libc.so       type=8   @0x7ffffec453c8 ← 0x7ffffec450c0 (8B)  sym=''
 [3] libc.so       type=8   @0x7ffffec453d0 ← 0x7ffffec451c0 (8B)  sym=''
 [3] libc.so       type=8   @0x7ffffec453d8 ← 0x7ffffec452c0 (8B)  sym=''
-[3] libc.so       type=8   @0x7ffffec453f0 ← 0x7ffffec475c0 ([libfoo] ctor
+[3] libc.so       type=8   @0x7ffffec453f0 ← 0x7ffffec475c0 (8B)  sym=''
+[3] libc.so       type=8   @0x7ffffec453f8 ← 0x7ffffec0afc6 (8B)  sym=''
+[3] libc.so       type=6   @0x7ffffec44f50 ← 0x7ffffec47a7c (8B)  sym='__daylight'
+[3] libc.so       type=6   @0x7ffffec44f58 ← 0x7ffffec47828 (8B)  sym='__stack_chk_guard'
+[3] libc.so       type=6   @0x7ffffec44f68 ← 0x7ffffec477e0 (8B)  sym='__tzname'
+[3] libc.so       type=6   @0x7ffffec44f70 ← 0x7ffffec478b0 (8B)  sym='optarg'
+[3] libc.so       type=6   @0x7ffffec44f78 ← 0x7ffffec45400 (8B)  sym='opterr'
+[3] libc.so       type=6   @0x7ffffec44f80 ← 0x7ffffec47a80 (8B)  sym='getdate_err'
+[3] libc.so       type=6   @0x7ffffec44f88 ← 0x7ffffec47820 (8B)  sym='__environ'
+[3] libc.so       type=6   @0x7ffffec44f90 ← 0x7ffffec477e0 (8B)  sym='tzname'
+[3] libc.so       type=6   @0x7ffffec44f98 ← 0x7ffffec47a3c (8B)  sym='h_errno'
+[3] libc.so       type=6   @0x7ffffec44fa0 ← 0x7ffffec45404 (8B)  sym='optind'
+[3] libc.so       type=6   @0x7ffffec44fa8 ← 0x7ffffec47860 (8B)  sym='__progname'
+[3] libc.so       type=6   @0x7ffffec44fb0 ← 0x7ffffec47a10 (8B)  sym='__optreset'
+[3] libc.so       type=6   @0x7ffffec44fb8 ← 0x7ffffec47a18 (8B)  sym='optopt'
+[3] libc.so       type=6   @0x7ffffec44fc0 ← 0x7ffffec47a0c (8B)  sym='__signgam'
+[3] libc.so       type=6   @0x7ffffec44fc8 ← 0x7ffffec479c0 (8B)  sym='__timezone'
+[3] libc.so       type=6   @0x7ffffec44fd0 ← 0x7ffffec47858 (8B)  sym='__progname_full'
+[3] libc.so       type=7   @0x7ffffec45000 ← 0x7ffffebe667a (8B)  sym='malloc'
+[3] libc.so       type=7   @0x7ffffec45008 ← 0x7ffffebba5c0 (8B)  sym='calloc'
+[3] libc.so       type=7   @0x7ffffec45010 ← 0x7ffffebe7483 (8B)  sym='realloc'
+[3] libc.so       type=7   @0x7ffffec45018 ← 0x7ffffebe7442 (8B)  sym='memalign'
+[3] libc.so       type=7   @0x7ffffec45020 ← 0x7ffffebe6683 (8B)  sym='aligned_alloc'
+[3] libc.so       type=7   @0x7ffffec45028 ← 0x7ffffebe6668 (8B)  sym='free'
+[4] libbaz.so     type=8   @0x7ffffeba2df8 ← 0x7ffffeba0110 (8B)  sym=''
+[4] libbaz.so     type=8   @0x7ffffeba2e00 ← 0x7ffffeba0159 (8B)  sym=''
+[4] libbaz.so     type=8   @0x7ffffeba2e08 ← 0x7ffffeba00d0 (8B)  sym=''
+[4] libbaz.so     type=8   @0x7ffffeba3018 ← 0x7ffffeba3018 (8B)  sym=''
+[4] libbaz.so     type=6   @0x7ffffeba2fd0 ← 0x7ffffebe2652 (8B)  sym='__cxa_finalize'
+[4] libbaz.so     type=6   @0x7ffffeba2fd8 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
+[4] libbaz.so     type=6   @0x7ffffeba2fe0 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
+[4] libbaz.so     type=7   @0x7ffffeba3000 ← 0x7ffffec0414d (8B)  sym='printf'
+[4] libbaz.so     type=7   @0x7ffffeba3008 ← 0x7ffffec04470 (8B)  sym='puts'
+[4] libbaz.so     type=7   @0x7ffffeba3010 ← 0x7ffffec49119 (8B)  sym='libbar_step'
+planned 148 writes
+
+== Apply ==
+applied 148 writes
+
+== Init ==
+[libfoo] ctor
+done
+
+== Exec ==
 [libbaz] ctor
 [libbar] ctor
 [main] ctor
