@@ -34,6 +34,19 @@ def maxBucket (buckets : Array UInt32) : Nat :=
 def findEndMarker (chain : Array UInt32) (start : Nat) : Option Nat :=
   ((chain.toList.drop start).findIdx? (fun w => w &&& 1 == 1)).map (· + start)
 
+section UnitTest
+-- chain[2] is the first end marker (low bit set); `start := 0` finds it.
+#guard findEndMarker #[0x10, 0x20, 0x31, 0x40] 0 = some 2
+-- Starting after the first marker keeps walking — but here there's no
+-- second marker, so `none`.
+#guard findEndMarker #[0x10, 0x20, 0x31, 0x40] 3 = none
+-- start past array end ⇒ none.
+#guard findEndMarker #[0x10, 0x20] 5 = none
+-- All entries marked: returns `start` itself.
+#guard findEndMarker #[0x1, 0x3, 0x5] 0 = some 0
+#guard findEndMarker #[0x1, 0x3, 0x5] 1 = some 1
+end UnitTest
+
 /-- Derive the dynsym count from a parsed GNU hash table.
 
     Assumes the gnu-gabi/binutils linker invariant (not stated in

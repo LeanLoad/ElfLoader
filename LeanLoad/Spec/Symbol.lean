@@ -64,4 +64,21 @@ def Symbol64.bind (s : Symbol64) : UInt8 := s.st_info >>> 4
 /-- Symbol type (low nibble of `st_info`). gabi 05 § Symbol Table. -/
 def Symbol64.type (s : Symbol64) : UInt8 := s.st_info &&& 0xf
 
+section UnitTest
+-- `st_info = bind << 4 | type`. Spot-check both halves on a few
+-- canonical encodings.
+private def mk (st_info : UInt8) : Symbol64 :=
+  { (default : Symbol64) with st_info }
+
+-- STB_GLOBAL (1) | STT_FUNC (2) → 0x12.
+#guard (mk 0x12).bind = STB_GLOBAL
+#guard (mk 0x12).type = STT_FUNC
+-- STB_WEAK (2) | STT_OBJECT (1) → 0x21.
+#guard (mk 0x21).bind = STB_WEAK
+#guard (mk 0x21).type = STT_OBJECT
+-- STB_LOCAL (0) | STT_NOTYPE (0) → 0x00.
+#guard (mk 0x00).bind = STB_LOCAL
+#guard (mk 0x00).type = STT_NOTYPE
+end UnitTest
+
 end LeanLoad.Spec.Symbol

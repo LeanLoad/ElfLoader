@@ -59,8 +59,8 @@ LeanLoad/
   Reloc.lean               formula → write list (pure post-bases)
   Map.lean                 mmap + memcpy + mprotect (IO)
   Apply.lean               poke reloc bytes into mmap'd memory (IO)
-  Region.lean              @[extern] for memory ops (runtime/region.c)
-  Exec.lean                @[extern] for control transfer + init/exec
+  Runtime.lean             @[extern] trust seam (runtime/*.c)
+  Exec.lean                init/fini calls + control transfer (IO)
   TestFixture.lean         shared synthObj/synthElf
   Thm.lean                 single audit surface for proven theorems
   Spec/                    gabi/abi transcriptions only
@@ -80,9 +80,9 @@ LeanLoad/
     StringTable.lean Symbol.lean Reloc.lean
     File.lean              ParsedElf aggregate + parse
 runtime/                   C shims (unverified)
-  region.{h,c}             mmap / mprotect / write
-  exec.{h,c}               ctor invocation + transfer of control
-  common.h                 shared lean-FFI helpers
+  runtime.h                shared header (decls + helpers)
+  region.c                 mmap / mprotect / write
+  exec.c                   ctor invocation + transfer of control
 docs/                      design.md · plan.md · verification.md
 examples/                  C sources for showcase binaries
 third_party/               submodules (musl, nolibc, gabi, …)

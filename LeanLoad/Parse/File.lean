@@ -43,6 +43,28 @@ def vaToOffset (phdrs : Array Spec.Program.Header64) (va : UInt64) : Option Nat 
     else
       none
 
+section UnitTest
+-- A two-segment ELF: [.text @va 0x1000, file 0x1000, len 0x1000]
+-- and [.data @va 0x3000, file 0x2000, len 0x500]. Soundness is
+-- proved by `Thm.vaToOffset_correct`; these spot-check the formula.
+private def phdrs : Array Spec.Program.Header64 := #[
+  { (default : Spec.Program.Header64) with
+    p_type := Spec.Program.PT_LOAD,
+    p_vaddr := 0x1000, p_memsz := 0x1000,
+    p_offset := 0x1000, p_filesz := 0x1000 },
+  { (default : Spec.Program.Header64) with
+    p_type := Spec.Program.PT_LOAD,
+    p_vaddr := 0x3000, p_memsz := 0x500,
+    p_offset := 0x2000, p_filesz := 0x500 } ]
+
+#guard vaToOffset phdrs 0x1000 = some 0x1000   -- start of .text
+#guard vaToOffset phdrs 0x1abc = some 0x1abc   -- mid .text
+#guard vaToOffset phdrs 0x3010 = some 0x2010   -- mid .data (different file offset)
+#guard vaToOffset phdrs 0x0fff = none           -- before .text
+#guard vaToOffset phdrs 0x2500 = none           -- gap between segments
+#guard vaToOffset phdrs 0x3500 = none           -- past .data
+end UnitTest
+
 -- ============================================================================
 -- Aggregated parse result (project-defined; not gabi)
 -- ============================================================================

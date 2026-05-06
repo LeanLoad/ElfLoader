@@ -97,4 +97,22 @@ def find? (tab : Array Dyn64) (tag : UInt64) : Option Dyn64 :=
 def findAll (tab : Array Dyn64) (tag : UInt64) : Array Dyn64 :=
   tab.filter (·.d_tag == tag)
 
+section UnitTest
+-- Synthetic .dynamic with three NEEDED entries plus singletons.
+private def tab : Array Dyn64 := #[
+  { d_tag := DT_NEEDED, d_un := 0x10 },
+  { d_tag := DT_RUNPATH, d_un := 0x20 },
+  { d_tag := DT_NEEDED, d_un := 0x30 },
+  { d_tag := DT_NEEDED, d_un := 0x40 },
+  { d_tag := DT_NULL,   d_un := 0 } ]
+
+#guard (find? tab DT_NEEDED).map (·.d_un)  = some 0x10   -- first match wins
+#guard (find? tab DT_RUNPATH).map (·.d_un) = some 0x20
+#guard  find? tab DT_HASH                  = none         -- absent
+
+-- All three NEEDED entries, in declared order.
+#guard (findAll tab DT_NEEDED).map (·.d_un) = #[0x10, 0x30, 0x40]
+#guard (findAll tab DT_HASH).size           = 0
+end UnitTest
+
 end LeanLoad.Spec.Dynamic

@@ -22,5 +22,5 @@ import LeanLoad.Discover
 import LeanLoad.Map
 import LeanLoad.Apply
 import LeanLoad.Exec
-import LeanLoad.Region
+import LeanLoad.Runtime
 import LeanLoad.Thm

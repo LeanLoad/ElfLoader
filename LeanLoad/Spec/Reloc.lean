@@ -38,4 +38,18 @@ def Rela64.type (r : Rela64) : UInt32 := (r.r_info &&& 0xffffffff).toUInt32
 
 #guard Rela64.entrySize = 24
 
+section UnitTest
+-- `r_info` packs sym (high 32) + type (low 32). Spot-check both halves.
+private def r : Rela64 := { r_offset := 0xdead, r_info := 0x0000007b00000403, r_addend := 0 }
+#guard r.sym  = 0x7b      -- decimal 123
+#guard r.type = 0x403     -- decimal 1027 (R_AARCH64_RELATIVE)
+
+-- Edges: sym=0 (no symbol, RELATIVE-style), type=0 (R_*_NONE).
+#guard ({ r_offset := 0, r_info := 0, r_addend := 0 } : Rela64).sym  = 0
+#guard ({ r_offset := 0, r_info := 0, r_addend := 0 } : Rela64).type = 0
+-- Pure type-only encoding (RELATIVE on AArch64): info = 1027.
+#guard ({ r_offset := 0, r_info := 1027, r_addend := 0 } : Rela64).sym  = 0
+#guard ({ r_offset := 0, r_info := 1027, r_addend := 0 } : Rela64).type = 1027
+end UnitTest
+
 end LeanLoad.Spec.Reloc

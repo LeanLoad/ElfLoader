@@ -27,9 +27,7 @@
  * AArch64 and x86-64 supported.
  */
 
-#include "exec.h"
-#include "region.h"
-#include "common.h"
+#include "runtime.h"
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>

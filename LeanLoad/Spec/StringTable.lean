@@ -26,4 +26,23 @@ def lookup (tab : StringTable) (offset : Nat) : Option String :=
     let endIdx := tab.findIdx? (· == 0) offset |>.getD tab.size
     String.fromUTF8? (tab.extract offset endIdx)
 
+section UnitTest
+-- Synthetic strtab: "\0printf\0puts\0".
+-- offsets:           0  1     7    12
+private def t : StringTable :=
+  ⟨#[0,
+     'p'.toNat.toUInt8, 'r'.toNat.toUInt8, 'i'.toNat.toUInt8,
+     'n'.toNat.toUInt8, 't'.toNat.toUInt8, 'f'.toNat.toUInt8, 0,
+     'p'.toNat.toUInt8, 'u'.toNat.toUInt8, 't'.toNat.toUInt8,
+     's'.toNat.toUInt8, 0]⟩
+
+#guard lookup t 0  = some ""           -- offset 0 reserved for empty
+#guard lookup t 1  = some "printf"
+#guard lookup t 8  = some "puts"
+#guard lookup t 13 = none               -- past the end
+#guard lookup t 99 = none               -- way past the end
+-- Reading mid-string yields the suffix from that offset to the next NUL.
+#guard lookup t 4  = some "ntf"
+end UnitTest
+
 end LeanLoad.Spec.StringTable

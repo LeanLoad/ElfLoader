@@ -8,7 +8,7 @@ unreachable for plans built from a supported per-arch formula.
 
 import LeanLoad.Discover
 import LeanLoad.Reloc
-import LeanLoad.Region
+import LeanLoad.Runtime
 
 namespace LeanLoad.Load
 
@@ -34,14 +34,24 @@ private def UInt64.toLEBytes32 (x : UInt64) : ByteArray :=
     ((x >>> 16) &&& 0xff).toUInt8,
     ((x >>> 24) &&& 0xff).toUInt8 ]
 
+section UnitTest
+-- Distinct-byte input: each byte appears exactly where you'd expect.
 #guard (UInt64.toLEBytes 0x1122334455667788).toList == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
 #guard (UInt64.toLEBytes32 0x12345678).toList == [0x78, 0x56, 0x34, 0x12]
+-- Zero serializes to all zeros at both widths.
+#guard (UInt64.toLEBytes 0).toList   == [0, 0, 0, 0, 0, 0, 0, 0]
+#guard (UInt64.toLEBytes32 0).toList == [0, 0, 0, 0]
+-- All-ones: every byte is 0xff.
+#guard (UInt64.toLEBytes 0xFFFFFFFFFFFFFFFF).toList == [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+-- 32-bit serializer truncates the high 32 bits silently.
+#guard (UInt64.toLEBytes32 0xCAFEBABE12345678).toList == [0x78, 0x56, 0x34, 0x12]
+end UnitTest
 
 /-- Apply one `RelocWrite` to the right region within the object.
     For ET_DYN we mmap'd one contiguous region per object, so the
     offset within is `targetVa - base`. ET_EXEC binaries normally
     have no relocations to apply. -/
-def applyReloc (allRegions : Array (Array Region.Region))
+def applyReloc (allRegions : Array (Array Runtime.Region))
     (bases : Reloc.Bases) (w : Reloc.RelocWrite) : IO Unit := do
   let some regions := allRegions[w.objectIdx]?
     | throw (IO.userError s!"applyReloc: missing object {w.objectIdx}")
@@ -54,9 +64,9 @@ def applyReloc (allRegions : Array (Array Region.Region))
   let some region := regions[0]?
     | throw (IO.userError s!"applyReloc: no regions for object {w.objectIdx}")
   let offset := (w.targetVa - base).toUSize
-  Region.write region offset bytes
+  Runtime.write region offset bytes
 
-def applyAllRelocs (allRegions : Array (Array Region.Region))
+def applyAllRelocs (allRegions : Array (Array Runtime.Region))
     (bases : Reloc.Bases) (writes : Array Reloc.RelocWrite) : IO Unit := do
   for w in writes do applyReloc allRegions bases w
 

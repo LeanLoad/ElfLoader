@@ -86,6 +86,12 @@ def alignUp (x align : UInt64) : UInt64 :=
 
 #guard alignDown 0x1234 0x1000 == 0x1000
 #guard alignUp 0x1234 0x1000 == 0x2000
+-- Already aligned: identity.
+#guard alignDown 0x1000 0x1000 == 0x1000
+#guard alignUp   0x1000 0x1000 == 0x1000
+-- align = 0 ⇒ identity (no rounding).
+#guard alignDown 0x1234 0 == 0x1234
+#guard alignUp   0x1234 0 == 0x1234
 
 -- ============================================================================
 -- Per-object layout (mappings + entry)
@@ -104,6 +110,36 @@ def mappingOfPhdr (ph : Program.Header64) : Mapping :=
     fileOff   := ph.p_offset
     fileLen   := ph.p_filesz
     pageInset := pageInset }
+
+-- Page-aligned vaddr at 0x1000, fits in one 0x1000 page → no inset.
+#guard
+  let m := mappingOfPhdr { (default : Program.Header64) with
+    p_vaddr := 0x1000, p_memsz := 0x800, p_filesz := 0x800,
+    p_align := 0x1000, p_flags := Program.PF_R ||| Program.PF_X,
+    p_offset := 0x1000 }
+  m.vaddr = 0x1000 ∧ m.length = 0x1000 ∧ m.pageInset = 0 ∧ m.prot = 5
+-- Unaligned vaddr 0x1234 with 0x1000 alignment: round-down to 0x1000,
+-- pageInset = 0x234, length covers up to next page boundary after end.
+#guard
+  let m := mappingOfPhdr { (default : Program.Header64) with
+    p_vaddr := 0x1234, p_memsz := 0x100, p_filesz := 0x100,
+    p_align := 0x1000, p_flags := Program.PF_R ||| Program.PF_W,
+    p_offset := 0x1234 }
+  m.vaddr = 0x1000 ∧ m.length = 0x1000 ∧ m.pageInset = 0x234 ∧ m.prot = 3
+-- p_align = 0 ⇒ treat as 1 (no alignment, identity).
+#guard
+  let m := mappingOfPhdr { (default : Program.Header64) with
+    p_vaddr := 0x42, p_memsz := 0x10, p_filesz := 0x10,
+    p_align := 0, p_flags := Program.PF_R }
+  m.vaddr = 0x42 ∧ m.length = 0x10 ∧ m.pageInset = 0
+-- p_memsz > p_filesz (BSS tail): length covers memsz, fileLen tracks
+-- only the file-backed portion.
+#guard
+  let m := mappingOfPhdr { (default : Program.Header64) with
+    p_vaddr := 0x2000, p_memsz := 0x800, p_filesz := 0x200,
+    p_align := 0x1000, p_flags := Program.PF_R ||| Program.PF_W,
+    p_offset := 0x2000 }
+  m.fileLen = 0x200 ∧ m.length = 0x1000
 
 /-- Layout for a single loaded object.
 

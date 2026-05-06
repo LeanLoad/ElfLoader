@@ -41,12 +41,11 @@ Two design rules:
   Pure Lean; no `IO`; no imports of `Region`, `Exec`'s extern block,
   or `runtime/`.
 - **Trusted**: `runtime/*` (audited C, ~150 lines), the
-  `@[extern]` declarations in `LeanLoad/Region.lean` and at the top
-  of `LeanLoad/Exec.lean`, plus the IO bodies of `Discover.lean`,
-  `Map.lean`, `Exec.lean`, and `Main.lean`.
+  `@[extern]` declarations in `LeanLoad/Runtime.lean`, plus the IO
+  bodies of `Discover.lean`, `Map.lean`, `Apply.lean`, `Exec.lean`,
+  and `Main.lean`.
 
-A grep for `@[extern]` outside `LeanLoad/Region.lean` and
-`LeanLoad/Exec.lean` is a smell.
+A grep for `@[extern]` outside `LeanLoad/Runtime.lean` is a smell.
 
 ## What's "spec" and what's "impl"
 
@@ -122,6 +121,29 @@ Three rules that pay off across the project:
 3. **Structured failure messages.** Errors carry the offending
    relocation type, file offset, symbol name, and computed value —
    not just `panic`.
+
+## Tests vs. theorems
+
+Both have a job, and adding one doesn't retire the other:
+
+- **`#guard` checks** colocated with each definition serve *readers*.
+  Concrete examples like
+  `formula R_X86_64_RELATIVE { B := 0x10000, A := 0xa90, … } = some { value := 0x10a90, size := 8 }`
+  make a function's contract scannable and fail at elaboration time
+  if the table moves under them. Use them anywhere a function does
+  nontrivial arithmetic, table lookups, formula evaluation, or
+  has interesting edge cases (empty inputs, alignment boundaries,
+  symbol-less relocations).
+- **Theorems in `LeanLoad.Thm`** prove the general invariants the
+  examples can't: totality (every input has a result), width-validity
+  (`r.size ∈ {4,8}`), refinement-seam structural integrity
+  (`fromLinkMap` produces one layout per object, deterministic),
+  VA→file-offset soundness, and so on. One theorem per `O*` proof
+  obligation in `verification.md`.
+
+A `#guard` shows *what the function does* on a concrete input; the
+theorem shows *what it always does*. The two are complementary
+audit surfaces.
 
 ## Verification
 

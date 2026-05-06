@@ -15,7 +15,7 @@ The IO writes that follow (relocation entries) live in `Apply.lean`.
 import LeanLoad.Discover
 import LeanLoad.Layout
 import LeanLoad.Reloc
-import LeanLoad.Region
+import LeanLoad.Runtime
 
 namespace LeanLoad.Load
 
@@ -23,12 +23,12 @@ open LeanLoad
 
 /-- mmap a planned mapping at its absolute `vaddr`, copy bytes, then
     mprotect. Used for `ET_EXEC` objects. -/
-def mapMapping (bytes : ByteArray) (m : Layout.Mapping) : IO Region.Region := do
-  let region ← Region.mmapAnonFixed m.vaddr m.length.toUSize
+def mapMapping (bytes : ByteArray) (m : Layout.Mapping) : IO Runtime.Region := do
+  let region ← Runtime.mmapAnonFixed m.vaddr m.length.toUSize
   if m.fileLen > 0 then
     let src := bytes.extract m.fileOff.toNat (m.fileOff.toNat + m.fileLen.toNat)
-    Region.write region m.pageInset.toUSize src
-  Region.mprotect region m.prot
+    Runtime.write region m.pageInset.toUSize src
+  Runtime.mprotect region m.prot
   return region
 
 /-- The contiguous span an object's mappings need (relative). -/
@@ -38,7 +38,7 @@ def objectSpan (lyt : Layout.ObjectLayout) : UInt64 :=
 /-- Map one object, dispatching by `e_type`. Returns its
     region(s) and the chosen base address. -/
 def mapObject (lm : Discover.LinkMap) (lyt : Layout.ObjectLayout)
-    : IO (Array Region.Region × UInt64) := do
+    : IO (Array Runtime.Region × UInt64) := do
   let some obj := lm.objects[lyt.objectIdx]?
     | throw (IO.userError s!"mapObject: missing {lyt.objectIdx}")
   let bytes := obj.elf.bytes
@@ -47,20 +47,20 @@ def mapObject (lm : Discover.LinkMap) (lyt : Layout.ObjectLayout)
     for m in lyt.mappings do
       regions := regions.push (← mapMapping bytes m)
     return (regions, 0)
-  let region ← Region.mmapAnon (objectSpan lyt).toUSize
+  let region ← Runtime.mmapAnon (objectSpan lyt).toUSize
   for m in lyt.mappings do
     if m.fileLen > 0 then
       let src := bytes.extract m.fileOff.toNat (m.fileOff.toNat + m.fileLen.toNat)
-      Region.write region (m.vaddr + m.pageInset).toUSize src
+      Runtime.write region (m.vaddr + m.pageInset).toUSize src
   for m in lyt.mappings do
-    Region.mprotectRange region m.vaddr.toUSize m.length.toUSize m.prot
-  return (#[region], Region.base region)
+    Runtime.mprotectRange region m.vaddr.toUSize m.length.toUSize m.prot
+  return (#[region], Runtime.base region)
 
 /-- Map every object in a link map. Returns one region array per
     object plus the chosen base addresses. -/
 def mapAll (lm : Discover.LinkMap) (plan : Layout.Layout)
-    : IO (Array (Array Region.Region) × Reloc.Bases) := do
-  let mut all : Array (Array Region.Region) := Array.mkEmpty plan.layouts.size
+    : IO (Array (Array Runtime.Region) × Reloc.Bases) := do
+  let mut all : Array (Array Runtime.Region) := Array.mkEmpty plan.layouts.size
   let mut bases : Reloc.Bases := Array.mkEmpty plan.layouts.size
   for lyt in plan.layouts do
     let (regions, base) ← mapObject lm lyt
