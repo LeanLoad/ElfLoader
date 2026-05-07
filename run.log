@@ -7,76 +7,76 @@ libbaz.so  (/home/szhong/LeanLoad/build/libbaz.so)
 
 == Parse ==
 [0] build/main
-  e_type     = ET_DYN
-  e_machine  = EM_X86_64
-  e_entry    = 0x10e0
-  e_phnum    = 10
+  elfType    = LeanLoad.Elaborate.ElfType.dyn
+  machine    = LeanLoad.Elaborate.Machine.x86_64
+  entry      = 0x10e0
+  phnum      = 10
   runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
   needed     = #[libfoo.so, libbar.so, libc.so]
   symtab     = 18 entries
   initArr    = 2 ctor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x820 memsz=0x820 prot=R--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x41d memsz=0x41d prot=R-X  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0x1c4 memsz=0x1c4 prot=R--  rela=0  jmprel=0
-    [3] vaddr=0x000000003d48 offset=0x2d48 filesz=0x2c0 memsz=0x2c8 prot=RW-  rela=8  jmprel=11
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x820 memsz=0x820 prot=r--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x41d memsz=0x41d prot=r-x  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0x1c4 memsz=0x1c4 prot=r--  rela=0  jmprel=0
+    [3] vaddr=0x000000003d48 offset=0x2d48 filesz=0x2c0 memsz=0x2c8 prot=rw-  rela=8  jmprel=11
 [1] libfoo.so
-  e_type     = ET_DYN
-  e_machine  = EM_X86_64
-  e_entry    = 0x0
-  e_phnum    = 7
+  elfType    = LeanLoad.Elaborate.ElfType.dyn
+  machine    = LeanLoad.Elaborate.Machine.x86_64
+  entry      = 0x0
+  phnum      = 7
   soname     = libfoo.so
   runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
   needed     = #[libc.so]
   symtab     = 8 entries
   initArr    = 2 ctor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x468 memsz=0x468 prot=R--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x130 memsz=0x130 prot=R-X  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=R--  rela=0  jmprel=0
-    [3] vaddr=0x000000003df8 offset=0x2df8 filesz=0x218 memsz=0x220 prot=RW-  rela=7  jmprel=1
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x468 memsz=0x468 prot=r--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x130 memsz=0x130 prot=r-x  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=r--  rela=0  jmprel=0
+    [3] vaddr=0x000000003df8 offset=0x2df8 filesz=0x218 memsz=0x220 prot=rw-  rela=7  jmprel=1
 [2] libbar.so
-  e_type     = ET_DYN
-  e_machine  = EM_X86_64
-  e_entry    = 0x0
-  e_phnum    = 7
+  elfType    = LeanLoad.Elaborate.ElfType.dyn
+  machine    = LeanLoad.Elaborate.Machine.x86_64
+  entry      = 0x0
+  phnum      = 7
   soname     = libbar.so
   runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
   needed     = #[libbaz.so, libc.so]
   symtab     = 10 entries
   initArr    = 2 ctor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=R--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=R-X  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=R--  rela=0  jmprel=0
-    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=RW-  rela=7  jmprel=3
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=r--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=r-x  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=r--  rela=0  jmprel=0
+    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=rw-  rela=7  jmprel=3
 [3] libc.so
-  e_type     = ET_DYN
-  e_machine  = EM_X86_64
-  e_entry    = 0x0
-  e_phnum    = 9
+  elfType    = LeanLoad.Elaborate.ElfType.dyn
+  machine    = LeanLoad.Elaborate.Machine.x86_64
+  entry      = 0x0
+  phnum      = 9
   symtab     = 1646 entries
   initArr    = 0 ctor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13d00 memsz=0x13d00 prot=R--  rela=0  jmprel=0
-    [1] vaddr=0x000000014000 offset=0x14000 filesz=0x554a7 memsz=0x554a7 prot=R-X  rela=0  jmprel=0
-    [2] vaddr=0x00000006a000 offset=0x6a000 filesz=0x3527c memsz=0x3527c prot=R--  rela=0  jmprel=0
-    [3] vaddr=0x0000000a0b20 offset=0x9fb20 filesz=0x90c memsz=0x2f90 prot=RW-  rela=96  jmprel=6
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13d00 memsz=0x13d00 prot=r--  rela=0  jmprel=0
+    [1] vaddr=0x000000014000 offset=0x14000 filesz=0x554a7 memsz=0x554a7 prot=r-x  rela=0  jmprel=0
+    [2] vaddr=0x00000006a000 offset=0x6a000 filesz=0x3527c memsz=0x3527c prot=r--  rela=0  jmprel=0
+    [3] vaddr=0x0000000a0b20 offset=0x9fb20 filesz=0x90c memsz=0x2f90 prot=rw-  rela=96  jmprel=6
 [4] libbaz.so
-  e_type     = ET_DYN
-  e_machine  = EM_X86_64
-  e_entry    = 0x0
-  e_phnum    = 7
+  elfType    = LeanLoad.Elaborate.ElfType.dyn
+  machine    = LeanLoad.Elaborate.Machine.x86_64
+  entry      = 0x0
+  phnum      = 7
   soname     = libbaz.so
   runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
   needed     = #[libbar.so, libc.so]
   symtab     = 10 entries
   initArr    = 2 ctor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=R--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=R-X  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=R--  rela=0  jmprel=0
-    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=RW-  rela=7  jmprel=3
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=r--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=r-x  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=r--  rela=0  jmprel=0
+    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=rw-  rela=7  jmprel=3
 
 == Resolve ==
 build/main:

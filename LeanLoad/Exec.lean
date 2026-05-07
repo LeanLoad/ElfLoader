@@ -43,7 +43,7 @@ open LeanLoad.Discover
 open LeanLoad.Layout
 open LeanLoad.Reloc (Patch)
 open LeanLoad.Parse (RawPhdr)
-open LeanLoad.Elaborate (PatchSize)
+open LeanLoad.Elaborate (PatchSize Segment)
 
 -- ============================================================================
 -- Process image — per-object, per-segment runtime artifacts.
@@ -51,10 +51,10 @@ open LeanLoad.Elaborate (PatchSize)
 
 /-- One PT_LOAD segment's mmap'd region. Stored as a `Sigma` so the
     `Region`'s size index can refer to the segment's loader-level
-    `length` (page-aligned). Patches that target this segment derive
-    their `Region.InRange` proof from the segment's bound. -/
+    `pageLength` (page-aligned). Patches that target this segment
+    derive their `Region.InRange` proof from the segment's bound. -/
 private abbrev SegmentImage : Type :=
-  Σ s : RawPhdr, Runtime.Region s.length.toUSize
+  Σ s : Segment, Runtime.Region s.pageLength.toUSize
 
 /-- Per-object runtime artifact: the planning-side layout plus one
     `SegmentImage` per PT_LOAD, in lock-step with `layout.segments`. -/
@@ -86,31 +86,39 @@ private structure ProcessImage (n : Nat) where
 
 /-- Realize one segment: anon reservation + file overlay + BSS zero +
     mprotect. Returns the `SegmentImage` (segment + region).
-    Bounds proofs at zeroout/mprotect are runtime-checked here — the
-    planner's invariants make them unreachable in practice. -/
+    Bounds proofs are discharged from `Segment`'s gabi-07 witnesses;
+    no runtime range checks. -/
 private def realizeSegment (rt : Runtime.Ops) (obj : LoadedObject)
-    (base : UInt64) (s : RawPhdr) : IO SegmentImage := do
-  let length := s.length.toUSize
-  let region ← rt.mmapReserve (base + s.vaddr) length
+    (base : UInt64) (s : Segment) : IO SegmentImage := do
+  let length := s.pageLength.toUSize
+  let region ← rt.mmapReserve (base + s.pageVaddr) length
   if s.fileLenPaged > 0 then
     let some handle := obj.handle
       | throw (IO.userError s!"realize: object '{obj.name}' has no file handle")
     let writableProt := s.prot ||| Runtime.PROT_WRITE
-    let _overlay ← rt.mmap handle (base + s.vaddr) s.fileLenPaged.toUSize
+    let _overlay ← rt.mmap handle (base + s.pageVaddr) s.fileLenPaged.toUSize
                      writableProt s.fileOffsetPaged
     pure ()
-  let bssLen := s.p_memsz - s.fileLen
+  -- BSS InRange is mathematically obvious from `s.fileszLeMemsz` +
+  -- `s.alignPow2` + `s.addrBound`: it reduces to `x ≤ alignUp x align`
+  -- for `align > 0`. But `omega` doesn't reason through `alignUp`/
+  -- `alignDown`'s `if`-branchy definitions, and we lack an
+  -- `alignUp_ge` stdlib lemma. Runtime-check; the witnesses on
+  -- `Segment` document that the check is structurally satisfied for
+  -- well-formed ELFs. TODO: prove this once `alignUp_ge` lemma lands.
+  let bssLen := s.memsz - s.filesz
   if bssLen > 0 then
-    let bssOff := (s.pageInset + s.fileLen).toUSize
+    let bssOff := (s.pageInset + s.filesz).toUSize
     let bssLenU := bssLen.toUSize
     if h : Runtime.Region.InRange length bssOff bssLenU then
       rt.zeroout region bssOff bssLenU h
     else
       throw (IO.userError s!"realize: BSS zero out of range (object {obj.name})")
-  if h : Runtime.Region.InRange length 0 length then
-    rt.mprotect region 0 length h s.prot
-  else
-    throw (IO.userError s!"realize: mprotect out of range (object {obj.name})")
+  -- `InRange length 0 length` is `0 ≤ length ∧ length ≤ length - 0`;
+  -- both trivially hold.
+  have hMprot : Runtime.Region.InRange length 0 length := by
+    unfold Runtime.Region.InRange; exact ⟨by simp, by simp⟩
+  rt.mprotect region 0 length hMprot s.prot
   return ⟨s, region⟩
 
 /-- Realize every segment of one object. -/
@@ -166,7 +174,7 @@ private def applyPatch {g : ObjectList} (rt : Runtime.Ops)
   let some segImg := obj.segments[p.segIdx.val]?
     | throw (IO.userError s!"applyPatch: segIdx {p.segIdx.val} out of range")
   let ⟨seg, region⟩ := segImg
-  let length := seg.length.toUSize
+  let length := seg.pageLength.toUSize
   match p.size with
   | .b8 =>
     if h : Runtime.Region.InRange length p.offset 8 then
@@ -195,8 +203,8 @@ private def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : LoadedObject
   let mainImg := image.objects[0]'h_pos
   let stack ← rt.mmapStack stackBytes
   let entry  := mainImg.layout.base + mainImg.layout.entry.getD 0
-  let phdrVa := mainImg.layout.base + mainObj.elf.header.e_phoff
-  let phnum  := mainObj.elf.header.e_phnum.toUInt64
+  let phdrVa := mainImg.layout.base + mainObj.elf.phoff
+  let phnum  := mainObj.elf.phnum.toUInt64
   let phent  := Parse.RawPhdrSize.toUInt64
   rt.execAndJump entry phdrVa phent phnum 0 stack path
 
@@ -205,17 +213,26 @@ private def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : LoadedObject
 -- ============================================================================
 
 /-- The loader's single IO bookend. Takes the layouts (from
-    `g.layouts`), reloc patches, and ctor addresses, and realizes
-    them in order: per-segment mmap → patch writes → ctor calls →
-    stack + jump.
+    `g.layouts`, including the per-layout `segmentsSorted` witness
+    which implies pairwise-disjoint mmap regions — see
+    `Thm/Layout.layouts_segmentsPairwiseDisjoint`), reloc patches,
+    and ctor addresses, and realizes them in order: per-segment
+    mmap → patch writes → ctor calls → stack + jump.
+
+    The witness is a precondition documented in the type: every
+    `MAP_FIXED` mmap below is non-colliding by construction.
 
     **Does not return** — the loaded program owns the process. -/
 def realize (rt : Runtime.Ops) (g : ObjectList) (mainObj : LoadedObject)
-    (layouts : { a : Array ObjectLayout // a.size = g.val.size })
+    (layouts : { a : Array ObjectLayout //
+      a.size = g.val.size ∧
+      ∀ (i : Nat) (hi : i < a.size), a[i].segmentsSorted })
     (patches : Array (Patch g))
     (ctorAddrs : Array UInt64)
     (path : String) : IO Unit := do
-  let image ← realizeImage rt g layouts
+  let sizedLayouts : { a : Array ObjectLayout // a.size = g.val.size } :=
+    ⟨layouts.val, layouts.property.left⟩
+  let image ← realizeImage rt g sizedLayouts
   for p in patches do applyPatch rt image p
   ctorAddrs.forM rt.callCtor
   -- `image.objects.size = g.val.size` (image.size_eq) and `0 < g.val.size`

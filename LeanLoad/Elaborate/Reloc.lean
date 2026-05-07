@@ -21,6 +21,7 @@ what width to write). Parse only sees `r_info` as bytes.
 -/
 
 import LeanLoad.Parse.Structs
+import LeanLoad.Elaborate.Header
 
 -- ============================================================================
 -- `r_info` bit-field accessors — unpack the packed `(sym, type)`
@@ -239,15 +240,10 @@ end LeanLoad.Elaborate.X86_64
 
 namespace LeanLoad.Elaborate
 
--- e_machine values (subset; full registry in gabi appendix `a-emachine.rst`).
-def EM_X86_64  : UInt16 := 62
-def EM_AARCH64 : UInt16 := 183
-
-/-- Pick the relocation formula for `machine` (an `e_machine` value).
-    `none` for any unsupported machine. -/
-def formulaFor (machine : UInt16) : Option Formula :=
-  if machine = EM_AARCH64 then some Aarch64.formula
-  else if machine = EM_X86_64 then some X86_64.formula
-  else none
+/-- Pick the relocation formula for `machine`. Total — `Machine` is
+    a closed enum of the architectures we support. -/
+def formulaFor : Machine → Formula
+  | .aarch64 => Aarch64.formula
+  | .x86_64  => X86_64.formula
 
 end LeanLoad.Elaborate

@@ -56,7 +56,19 @@ open LeanLoad.Parse (RawElf RawPhdr RawRela RawSym)
     `strtab` (consumed at elaboration time to pre-resolve symbol and
     DT_NEEDED names; no remaining downstream consumer). -/
 structure Elf where
-  header   : Parse.RawEhdr
+  /-- Typed `e_type` (gabi 02). Planner code matches on this. -/
+  elfType  : ElfType
+  /-- Typed `e_machine` — drives per-arch relocation formula
+      selection (`formulaFor`). Closed enum: only architectures
+      LeanLoad supports. -/
+  machine  : Machine
+  /-- `e_entry` — process entry point virtual address. -/
+  entry    : UInt64
+  /-- `e_phoff` — program-header table file offset (used by Exec to
+      synthesize `AT_PHDR` for the kernel auxv). -/
+  phoff    : UInt64
+  /-- `e_phnum` — number of program-header entries. -/
+  phnum    : UInt16
   symtab   : Array Symbol
   needed   : Array String
   soname   : Option String
@@ -73,18 +85,12 @@ structure Elf where
 
 instance : Inhabited Elf where
   default :=
-    { header := default, symtab := #[], needed := #[],
-      soname := none, runpath := none, initArr := #[],
+    { elfType := .none, machine := .x86_64,
+      entry := 0, phoff := 0, phnum := 0,
+      symtab := #[], needed := #[],
+      soname := Option.none, runpath := Option.none, initArr := #[],
       segments := #[], segmentsWf := WellFormed_nil }
 
-namespace Elf
-
-/-- The PT_LOAD phdrs, in order. Convenience for consumers that only
-    need the underlying `RawPhdr`s. -/
-def loadablePhdrs (e : Elf) : Array RawPhdr :=
-  e.segments.map (·.phdr)
-
-end Elf
 
 -- ============================================================================
 -- elaborate: RawElf → Except String Elf
@@ -135,38 +141,40 @@ def elaborate (raw : RawElf) : Except String Elf := do
       if h_eq : i = bucketIdx then some ⟨r, h_eq ▸ h_in⟩
       else none
   -- Each loadable phdr is PT_LOAD by construction (`fromPhdrs` filtered);
-  -- recover the witness per-segment.
-  let segments : Array Segment := Id.run do
-    let mut acc : Array Segment := #[]
-    for h : i in [:loadable.size] do
-      let bucketIdx : Fin loadable.size := ⟨i, h.upper⟩
-      let phdr := loadable[bucketIdx]
-      let isLoad : phdr.p_type = Parse.PT_LOAD := by
-        have h_mem : phdr ∈ loadable := Array.getElem_mem h.upper
-        have hf := Array.mem_filter.mp h_mem
-        exact (beq_iff_eq).mp hf.2
-      let rB := relaBuckets[i]?.getD #[]
-      let jB := jmprelBuckets[i]?.getD #[]
-      acc := acc.push
-        { phdr, isLoad,
-          rela   := buildBucket bucketIdx rB
-          jmprel := buildBucket bucketIdx jB }
-    return acc
-  let symtab : Array Symbol := raw.symtab.map fun sym =>
-    { sym, name := raw.strtab.lookup sym.st_name.toNat }
+  -- `Segment.ofPhdr` decidably checks each per-segment gabi-07
+  -- invariant and the 48-bit address bound, failing with a typed error.
+  let mut segmentsAcc : Array Segment := #[]
+  for h : i in [:loadable.size] do
+    let bucketIdx : Fin loadable.size := ⟨i, h.upper⟩
+    let phdr := loadable[bucketIdx]
+    let rB := relaBuckets[i]?.getD #[]
+    let jB := jmprelBuckets[i]?.getD #[]
+    match Segment.ofPhdr phdr (buildBucket bucketIdx rB) (buildBucket bucketIdx jB) with
+    | .ok seg  => segmentsAcc := segmentsAcc.push seg
+    | .error e => .error s!"elaborate: segment[{i}]: {e}"
+  let segments := segmentsAcc
+  let some elfType := ElfType.ofRaw raw.header.e_type
+    | .error s!"elaborate: unknown e_type={raw.header.e_type}"
+  let some machine := Machine.ofRaw raw.header.e_machine
+    | .error s!"elaborate: unsupported e_machine={raw.header.e_machine} \
+        (need 62=EM_X86_64 or 183=EM_AARCH64)"
+  let symtab : Array Symbol ← raw.symtab.mapM (Symbol.ofRaw raw.strtab)
   let needed  := raw.needed.filterMap (raw.strtab.lookup ·.toNat)
   let soname  := raw.soname.bind (raw.strtab.lookup ·.toNat)
   let runpath := raw.runpath.bind (raw.strtab.lookup ·.toNat)
   if h : WellFormed segments then
     return {
-      header := raw.header, symtab,
+      elfType, machine,
+      entry := raw.header.e_entry,
+      phoff := raw.header.e_phoff,
+      phnum := raw.header.e_phnum,
+      symtab,
       needed, soname, runpath,
       initArr := raw.initArr, segments,
       segmentsWf := h }
   else
-    .error "elaborate: malformed PT_LOAD segments \
-      (gabi-07 mandates: sort by p_vaddr, p_filesz ≤ p_memsz, p_align \
-      is a power of 2, p_vaddr ≡ p_offset mod p_align; non-overlap is \
+    .error "elaborate: PT_LOAD segments not sorted or overlap \
+      (gabi-07 § Program Loading: sort by p_vaddr; non-overlap is \
       de facto from linker)"
 
 end LeanLoad.Elaborate

@@ -41,6 +41,38 @@ structure RawIdent where
   _pad          : Pad 7
   deriving Repr, Inhabited, BytesDecode
 
+section Example
+-- Layout of the 16-byte `e_ident` from a typical x86-64 ELF:
+--
+--   0x7f 0x45 0x4c 0x46    magic (verified, not stored)
+--   0x02                   ei_class      = ELFCLASS64
+--   0x01                   ei_data       = ELFDATA2LSB
+--   0x01                   ei_version
+--   0x00                   ei_osabi      (System V)
+--   0x00                   ei_abiversion
+--   0x00 × 7               EI_PAD        (skipped, not stored)
+private def identBytes : ByteArray := ⟨#[
+  0x7f, 0x45, 0x4c, 0x46,
+  0x02, 0x01, 0x01, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ]⟩
+
+-- First check the parse succeeds, then field values via `.get!`.
+#guard (Parser.run identBytes (BytesDecode.decode : Parser RawIdent)).toOption.isSome
+
+private def parsedIdent : RawIdent :=
+  (Parser.run identBytes (BytesDecode.decode : Parser RawIdent)).toOption.get!
+
+#guard parsedIdent.ei_class      == 0x02
+#guard parsedIdent.ei_data       == 0x01
+#guard parsedIdent.ei_version    == 0x01
+#guard parsedIdent.ei_osabi      == 0x00
+#guard parsedIdent.ei_abiversion == 0x00
+
+-- Wrong magic → parse fails before reading any other field.
+#guard (Parser.run ⟨#[0x00, 0x45, 0x4c, 0x46]⟩
+          (BytesDecode.decode : Parser RawIdent)).toOption.isNone
+end Example
+
 /-- 64-bit ELF file header. Field layout matches `Elf64_Ehdr`. -/
 structure RawEhdr where
   ident       : RawIdent

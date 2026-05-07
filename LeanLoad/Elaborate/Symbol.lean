@@ -1,85 +1,130 @@
 /-
-Symbol-table elaboration: gabi-05 binding/type/section-index
-constants, `RawSym` classification predicates, and the per-symbol
-`Symbol` bundle (a `RawSym` paired with its pre-resolved name).
+Symbol-table elaboration: typed views over `st_info` (binding) and
+`st_shndx` (section index), and the per-symbol `Symbol` bundle that
+post-parse code consumes.
 
 Spec: gabi 05 (`third_party/gabi/docsrc/elf/05-symtab.rst`) § Symbol
 Table.
 
-The classification predicates (`isGlobalDef`, `isUndef`, `isWeak`) are
-defined in `Parse.RawSym`'s namespace for dot notation but live here
-because they're semantic interpretations of `st_info` and `st_shndx`
-— Parse only sees the bit-fields as bytes.
+Where `Parse.RawSym` carries the raw byte-fields, `Symbol` carries
+the *meaning*: `bind : SymBind`, `shndx : ShnIdx`, plus the resolved
+name and `value`. The closed `SymBind` enum rejects OS- or processor-
+specific extensions at elaboration; `ShnIdx.concrete` covers the open
+range of legitimate section indices.
+
+The low nibble of `st_info` (the symbol-type field) and `st_size` are
+not lifted — no consumer reads them.
 -/
 
 import LeanLoad.Parse.Structs
-
--- ============================================================================
--- gabi-05 constants.
--- ============================================================================
+import LeanLoad.Elaborate.Strtab
 
 namespace LeanLoad.Elaborate
 
--- st_info high nibble (binding)
-def STB_LOCAL  : UInt8 := 0
-def STB_GLOBAL : UInt8 := 1
-def STB_WEAK   : UInt8 := 2
-
--- st_info low nibble (type)
-def STT_NOTYPE  : UInt8 := 0
-def STT_OBJECT  : UInt8 := 1
-def STT_FUNC    : UInt8 := 2
-def STT_SECTION : UInt8 := 3
-def STT_FILE    : UInt8 := 4
-def STT_COMMON  : UInt8 := 5
-def STT_TLS     : UInt8 := 6
-
--- Reserved section indices
-def SHN_UNDEF  : UInt16 := 0
-def SHN_ABS    : UInt16 := 0xfff1
-def SHN_COMMON : UInt16 := 0xfff2
-
-end LeanLoad.Elaborate
-
 -- ============================================================================
--- RawSym predicates — semantic reading of `st_info` / `st_shndx`.
+-- Typed views: each enum paired with its `ofRaw` lift.
 -- ============================================================================
 
-namespace LeanLoad.Parse.RawSym
+/-- Symbol binding (gabi 05): the high nibble of `st_info`. -/
+inductive SymBind where
+  | local
+  | global
+  | weak
+  deriving Repr, BEq, Inhabited
 
-open LeanLoad.Elaborate (STB_LOCAL STB_WEAK SHN_UNDEF)
+/-- Lift the high nibble of `st_info`. `none` for OS- or processor-
+    specific bindings (`STB_LOOS`–`STB_HIPROC`); elaborate rejects. -/
+def SymBind.ofRaw : UInt8 → Option SymBind
+  | 0 => some .local
+  | 1 => some .global
+  | 2 => some .weak
+  | _ => Option.none
 
-/-- Symbol binding (high nibble of `st_info`). gabi 05 § Symbol Table. -/
-def bind (s : RawSym) : UInt8 := s.st_info >>> 4
+#guard SymBind.ofRaw 1 == some .global
+#guard SymBind.ofRaw 99 == none
 
-/-- True iff `sym` is an externally-visible definition. -/
-def isGlobalDef (s : RawSym) : Bool :=
-  s.st_shndx != SHN_UNDEF && s.bind != STB_LOCAL
+/-- Section-header index in a symbol entry (gabi 05). The reserved
+    indices (`SHN_UNDEF`, `SHN_ABS`, `SHN_COMMON`) get named cases;
+    a concrete in-file section is `concrete n`. -/
+inductive ShnIdx where
+  | undef
+  | abs
+  | common
+  | concrete (n : UInt16)
+  deriving Repr, BEq, Inhabited
 
-/-- True iff `sym` is an undefined reference. -/
-def isUndef (s : RawSym) : Bool :=
-  s.st_shndx == SHN_UNDEF
+/-- Lift `st_shndx`. Total: any non-reserved value is a `concrete`
+    section index. -/
+def ShnIdx.ofRaw : UInt16 → ShnIdx
+  | 0      => .undef
+  | 0xfff1 => .abs
+  | 0xfff2 => .common
+  | n      => .concrete n
 
-/-- True iff `sym` is weak (gabi 05): a weak undefined reference is
-    allowed to remain unresolved at link time. -/
-def isWeak (s : RawSym) : Bool :=
-  s.bind == STB_WEAK
-
-end LeanLoad.Parse.RawSym
+#guard ShnIdx.ofRaw 0 == .undef
+#guard ShnIdx.ofRaw 0xfff1 == .abs
+#guard ShnIdx.ofRaw 5 == .concrete 5
 
 -- ============================================================================
--- Per-symbol bundle: a `RawSym` paired with its pre-resolved name.
+-- Per-symbol bundle. Replaces the raw `RawSym` view post-elaboration.
 -- ============================================================================
 
-namespace LeanLoad.Elaborate
-
-open LeanLoad.Parse (RawSym)
-
-/-- A `RawSym` plus its pre-resolved name. `none` if the entry's
-    `st_name` offset doesn't point into the string table. -/
+/-- A symbol, post-elaboration. Raw `st_*` byte-fields lifted into
+    typed views; `name` pre-resolved against the dynamic string table
+    (`none` if `st_name` was out of range or didn't decode as UTF-8). -/
 structure Symbol where
-  sym  : RawSym
-  name : Option String
-  deriving Inhabited
+  name  : Option String
+  bind  : SymBind
+  shndx : ShnIdx
+  /-- `st_value` — for in-memory symbols, the section-relative VA. -/
+  value : UInt64
+  deriving Repr, Inhabited
+
+namespace Symbol
+
+/-- True iff `s` is an externally-visible definition: it lives in a
+    real section (`shndx ≠ undef`) and isn't local. LeanLoad-specific
+    composite — gabi names the constituent parts (gabi 05 § Symbol
+    Table: `st_shndx`, `STB_LOCAL`) but doesn't define this exact
+    predicate; it's the conventional shape used by ld/ld.so. -/
+def isGlobalDef (s : Symbol) : Bool :=
+  match s.shndx, s.bind with
+  | .undef, _ => false
+  | _, .local => false
+  | _, _      => true
+
+/-- True iff `s` is an undefined reference (`shndx = undef`). -/
+def isUndef (s : Symbol) : Bool :=
+  match s.shndx with
+  | .undef => true
+  | _      => false
+
+/-- True iff `s` is weak (gabi 05): a weak undefined reference is
+    allowed to remain unresolved at link time. -/
+def isWeak (s : Symbol) : Bool :=
+  match s.bind with
+  | .weak => true
+  | _     => false
+
+end Symbol
+
+-- ============================================================================
+-- Build a `Symbol` from a `RawSym` plus the dynamic string table.
+-- Fails with a typed error on unknown bind bits.
+-- ============================================================================
+
+open LeanLoad.Parse (RawSym RawStrtab)
+
+/-- Build a `Symbol` from a `RawSym` by lifting `st_info`'s binding
+    nibble to `SymBind` and resolving `st_name` against `strtab`.
+    Fails if the binding nibble is not in the gabi-05 named set. -/
+def Symbol.ofRaw (strtab : RawStrtab) (s : RawSym) : Except String Symbol := do
+  let bindRaw := s.st_info >>> 4
+  let some bind := SymBind.ofRaw bindRaw
+    | .error s!"unknown st_info binding={bindRaw}"
+  return { name  := strtab.lookup s.st_name.toNat
+           bind
+           shndx := ShnIdx.ofRaw s.st_shndx
+           value := s.st_value }
 
 end LeanLoad.Elaborate

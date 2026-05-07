@@ -38,12 +38,8 @@ private def check (cond : Bool) (msg : String) : Except String Unit :=
   if cond then .ok () else .error msg
 
 private def parseTest (elf : Elaborate.Elf) : Except String Unit := do
-  check (elf.header.e_type == Elaborate.ET_DYN)
-    s!"e_type: expected ET_DYN={Elaborate.ET_DYN}, got {elf.header.e_type}"
-  check (elf.header.e_ehsize == 64)
-    s!"e_ehsize: expected 64, got {elf.header.e_ehsize}"
-  check (elf.header.e_phentsize == 56)
-    s!"e_phentsize: expected 56, got {elf.header.e_phentsize}"
+  check (elf.elfType == .dyn)
+    s!"elfType: expected dyn, got {repr elf.elfType}"
   check (elf.segments.size > 0)
     s!"expected ≥ 1 PT_LOAD segment, got {elf.segments.size}"
   check (elf.needed.size ≥ 3)
@@ -130,8 +126,7 @@ def main : IO UInt32 := do
   unless ← runStage "Layout"  (layoutTest g)        do return 1
   unless ← runStage "Order"   (orderTest g)         do return 1
 
-  let some formula := Elaborate.formulaFor main.elf.header.e_machine
-    | do IO.eprintln s!"skip: unsupported e_machine={main.elf.header.e_machine}"; return 0
+  let formula := Elaborate.formulaFor main.elf.machine
   unless ← runStage "Reloc"   (relocTest g formula) do return 1
 
   -- Apply has no test stage — see comment above. The actual apply

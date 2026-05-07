@@ -52,15 +52,13 @@ def load (path : String) : IO Unit := do
   if let some u := resTable.missing[0]? then
     throw (IO.userError s!"load: {resTable.missing.size} unresolved strong symbol(s); first: {u.name}")
   let layouts ← IO.ofExcept g.layouts
-  -- realize takes only the size proof; the sortedness witness is
-  -- proof-only material that isn't consumed by the IO sweep.
-  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
-    ⟨layouts.val, layouts.property.left⟩
-  let some formula := Elaborate.formulaFor mainObj.elf.header.e_machine
-    | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
+  let formula := Elaborate.formulaFor mainObj.elf.machine
   let patches := Reloc.plan formula g layouts.val resTable
   let ctorAddrs := Init.plan g layouts.val (Init.order g)
-  Exec.realize rt g mainObj sizedLayouts patches ctorAddrs path
+  -- `layouts`'s subtype carries the per-layout `segmentsSorted`
+  -- witness — required by `realize` as a documented precondition
+  -- (no `MAP_FIXED` collisions; see `Thm/Layout.layouts_segmentsPairwiseDisjoint`).
+  Exec.realize rt g mainObj layouts patches ctorAddrs path
 
 /-- `--debug`: same as `load` but with a header and summary per stage,
     so a developer can see which stages succeeded if the loaded image
@@ -80,16 +78,11 @@ def debug (path : String) : IO Unit := do
   for h : i in [:g.val.size] do
     let obj := g.val[i]
     let elf := obj.elf
-    let etypeStr := match elf.header.e_type with
-      | 0 => "ET_NONE" | 1 => "ET_REL" | 2 => "ET_EXEC"
-      | 3 => "ET_DYN"  | 4 => "ET_CORE" | t => s!"ET_? ({t})"
-    let machStr := match elf.header.e_machine with
-      | 62  => "EM_X86_64" | 183 => "EM_AARCH64" | m => s!"EM_? ({m})"
     IO.eprintln s!"[{i}] {obj.name}"
-    IO.eprintln s!"  e_type     = {etypeStr}"
-    IO.eprintln s!"  e_machine  = {machStr}"
-    IO.eprintln s!"  e_entry    = 0x{Nat.hex elf.header.e_entry.toNat}"
-    IO.eprintln s!"  e_phnum    = {elf.header.e_phnum}"
+    IO.eprintln s!"  elfType    = {repr elf.elfType}"
+    IO.eprintln s!"  machine    = {repr elf.machine}"
+    IO.eprintln s!"  entry      = 0x{Nat.hex elf.entry.toNat}"
+    IO.eprintln s!"  phnum      = {elf.phnum}"
     if let some sn := elf.soname  then IO.eprintln s!"  soname     = {sn}"
     if let some rp := elf.runpath then IO.eprintln s!"  runpath    = {rp}"
     if !elf.needed.isEmpty then
@@ -99,14 +92,11 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"  segments   ({elf.segments.size}):"
     for h2 : segI in [:elf.segments.size] do
       let seg := elf.segments[segI]
-      let phdr := seg.phdr
-      let prot := s!"{if (phdr.p_flags &&& 4) != 0 then "R" else "-"}\
-                     {if (phdr.p_flags &&& 2) != 0 then "W" else "-"}\
-                     {if (phdr.p_flags &&& 1) != 0 then "X" else "-"}"
-      IO.eprintln s!"    [{segI}] vaddr=0x{Nat.hex12 phdr.p_vaddr.toNat} \
-        offset=0x{Nat.hex phdr.p_offset.toNat} \
-        filesz=0x{Nat.hex phdr.p_filesz.toNat} \
-        memsz=0x{Nat.hex phdr.p_memsz.toNat} \
+      let prot := toString seg.perm
+      IO.eprintln s!"    [{segI}] vaddr=0x{Nat.hex12 seg.vaddr.toNat} \
+        offset=0x{Nat.hex seg.offset.toNat} \
+        filesz=0x{Nat.hex seg.filesz.toNat} \
+        memsz=0x{Nat.hex seg.memsz.toNat} \
         prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
 
   IO.eprintln "\n== Resolve =="
@@ -127,13 +117,13 @@ def debug (path : String) : IO Unit := do
       | none =>
         let weakTag :=
           match g.val[u.objectIdx]?.bind (fun obj => obj.elf.symtab[u.symIdx]?) with
-          | some entry => if entry.sym.isWeak then "  (weak)" else ""
+          | some entry => if entry.isWeak then "  (weak)" else ""
           | none       => ""
         s!"{padR "<unresolved>" providerW}{weakTag}"
       | some r =>
         let p := padR (providerName r) providerW
         match g.val[r.objectIdx]?.bind (fun obj => obj.elf.symtab[r.symIdx]?) with
-        | some entry => s!"{p} [sym {r.symIdx} @0x{Nat.hex entry.sym.st_value.toNat}]"
+        | some entry => s!"{p} [sym {r.symIdx} @0x{Nat.hex entry.value.toNat}]"
         | none       => s!"{p} [sym {r.symIdx}]"
     IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
   IO.eprintln s!"strong missing: {resTable.missing.size}, weak missing: {resTable.weakMissing.size}"
@@ -148,14 +138,13 @@ def debug (path : String) : IO Unit := do
     if let some e := lyt.entry then
       IO.eprintln s!"  entry: 0x{Nat.hex e.toNat}"
     for s in lyt.segments do
-      IO.eprintln s!"  vaddr=0x{Nat.hex s.vaddr.toNat} len=0x{Nat.hex s.length.toNat} prot={s.prot}"
+      IO.eprintln s!"  vaddr=0x{Nat.hex s.pageVaddr.toNat} len=0x{Nat.hex s.pageLength.toNat} prot={s.prot}"
   let initOrder := Init.order g
   IO.eprintln s!"init order: {initOrder}"
   IO.eprintln s!"fini order: {initOrder.reverse}"
 
   IO.eprintln "\n== Reloc =="
-  let some formula := Elaborate.formulaFor mainObj.elf.header.e_machine
-    | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
+  let formula := Elaborate.formulaFor mainObj.elf.machine
   let labelW := 16
   let bases := layouts.val.map (·.base)
   -- Re-walk each object's per-segment relas to enrich each patch with
@@ -191,9 +180,7 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"planned {ctorAddrs.size} constructor(s)"
 
   IO.eprintln "\n== Realize =="
-  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
-    ⟨layouts.val, layouts.property.left⟩
-  Exec.realize rt g mainObj sizedLayouts patches ctorAddrs path
+  Exec.realize rt g mainObj layouts patches ctorAddrs path
 
 end LeanLoad.Main
 

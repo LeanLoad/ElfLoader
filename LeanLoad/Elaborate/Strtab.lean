@@ -1,11 +1,18 @@
 /-
 Dynamic string-table lookup.
 
-`RawStrtab` is `Parse.RawStrtab` (an alias for `ByteArray`); reading a
-null-terminated UTF-8 string out of it can fail (offset out of range,
-or bytes that don't decode), which makes it interpretive — hence
-`Elaborate`, not `Parse`. The function lives in `Parse.RawStrtab`'s
-own namespace so dot notation (`tab.lookup off`) resolves.
+Spec: gabi 04 (`third_party/gabi/docsrc/elf/04-strtab.rst`) § String
+Table — null-terminated bytes addressed by an offset into the table;
+offset 0 always denotes either the empty string or "no name".
+
+UTF-8 decode is *not* in gabi (which says "byte sequence"); LeanLoad
+treats the bytes as UTF-8 and returns `none` on decode failure, which
+is consistent with how every Linux toolchain emits names.
+
+`RawStrtab` is `Parse.RawStrtab` (an alias for `ByteArray`). Lookup
+is interpretive — hence `Elaborate`, not `Parse`. The function lives
+in `Parse.RawStrtab`'s own namespace so dot notation
+(`tab.lookup off`) resolves.
 -/
 
 import LeanLoad.Parse.Structs

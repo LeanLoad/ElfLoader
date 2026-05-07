@@ -58,7 +58,7 @@ def absoluteSymbolValue (g : ObjectList) (bases : Array UInt64)
   let provider := g.val[ref.objectIdx]
   let entry ← provider.elf.symtab[ref.symIdx]?
   let base  ← bases[ref.objectIdx.val]?
-  return base + entry.sym.st_value
+  return base + entry.value
 
 /-- Find the resolution for `(objectIdx, symIdx)` in a built table. -/
 def lookupResolved (g : ObjectList) (rt : Resolve.Table g.val.size)
@@ -81,8 +81,8 @@ def resolveSymValue (g : ObjectList) (bases : Array UInt64)
     let obj   ← g.val[objectIdx]?
     let base  ← bases[objectIdx]?
     let entry ← obj.elf.symtab[symIdx]?
-    if entry.sym.st_shndx != Elaborate.SHN_UNDEF then
-      return base + entry.sym.st_value
+    if !entry.isUndef then
+      return base + entry.value
     else
       lookupResolved g rt bases objectIdx symIdx
   result.getD 0
@@ -101,13 +101,13 @@ private def planRela (formula : Formula) (g : ObjectList)
   match formula r.type inputs with
   | none     => none
   | some res =>
-    let seg := g.val[objectIdx].elf.segments[segIdx].phdr
+    let seg := g.val[objectIdx].elf.segments[segIdx]
     -- Segment-relative offset from the mmap'd region base. The mmap'd
-    -- region starts at `seg.vaddr` (page-aligned `alignDown` of the
-    -- raw `p_vaddr`); the rela's `r_offset` lies inside the raw
-    -- `[p_vaddr, p_vaddr + p_memsz)` range by validation's witness,
-    -- hence inside the larger page-aligned region.
-    let offset : USize := (r.r_offset - seg.vaddr).toUSize
+    -- region starts at `seg.pageVaddr` (page-aligned `alignDown` of
+    -- the raw `vaddr`); the rela's `r_offset` lies inside the raw
+    -- `[vaddr, vaddr + memsz)` range by validation's witness, hence
+    -- inside the larger page-aligned region.
+    let offset : USize := (r.r_offset - seg.pageVaddr).toUSize
     some { objectIdx, segIdx, offset, value := res.value, size := res.size }
 
 /-- Plan all relocations for one object's segments. -/

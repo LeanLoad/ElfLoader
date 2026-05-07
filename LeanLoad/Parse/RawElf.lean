@@ -32,13 +32,35 @@ namespace LeanLoad.Parse
 -- (link-time) virtual addresses stored in `.dynamic`.
 -- ============================================================================
 
+/-- Per-phdr offset translation: `some off` if `ph` is a PT_LOAD
+    that covers `va`, `none` otherwise. -/
+private def offsetIn (va : UInt64) (ph : RawPhdr) : Option Nat :=
+  if ph.p_type == PT_LOAD ∧ ph.p_vaddr ≤ va ∧ va < ph.p_vaddr + ph.p_memsz then
+    some ((va - ph.p_vaddr).toNat + ph.p_offset.toNat)
+  else none
+
 /-- Translate a virtual address to a file offset by walking the
     `PT_LOAD` segments. Returns `none` if no `PT_LOAD` covers `va`. -/
-def vaToOffset (phdrs : Array RawPhdr) (va : UInt64) : Option Nat := Id.run do
-  for ph in phdrs do
-    if ph.p_type == PT_LOAD && ph.p_vaddr ≤ va && va < ph.p_vaddr + ph.p_memsz then
-      return some ((va - ph.p_vaddr).toNat + ph.p_offset.toNat)
-  return none
+def vaToOffset (phdrs : Array RawPhdr) (va : UInt64) : Option Nat :=
+  phdrs.findSome? (offsetIn va)
+
+/-- Correctness witness: a successful `vaToOffset` returns an offset
+    derived from a covering PT_LOAD phdr in `phdrs`. -/
+theorem vaToOffset_eq_some
+    {phdrs : Array RawPhdr} {va : UInt64} {off : Nat}
+    (h : vaToOffset phdrs va = some off) :
+    ∃ ph ∈ phdrs, ph.p_type = PT_LOAD ∧
+                  ph.p_vaddr ≤ va ∧ va < ph.p_vaddr + ph.p_memsz ∧
+                  off = (va - ph.p_vaddr).toNat + ph.p_offset.toNat := by
+  unfold vaToOffset at h
+  obtain ⟨ph, h_mem, h_some⟩ := Array.exists_of_findSome?_eq_some h
+  unfold offsetIn at h_some
+  split at h_some
+  · rename_i hcond
+    obtain ⟨h_load, h_lo, h_hi⟩ := hcond
+    refine ⟨ph, h_mem, beq_iff_eq.mp h_load, h_lo, h_hi, ?_⟩
+    exact (Option.some_inj.mp h_some).symm
+  · contradiction
 
 section Example
 private def phdrs : Array RawPhdr := #[

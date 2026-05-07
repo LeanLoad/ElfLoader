@@ -1,15 +1,19 @@
 /-
-ELF header constants — `ELFCLASS*`, `ELFDATA*`, `ET_*`.
+ELF header — `ELFCLASS*` / `ELFDATA*` constants used to validate
+e_ident at elaboration, plus the `ElfType` and `Machine` enum lifts
+over `e_type` / `e_machine`.
 
 Spec: gabi 02 (`third_party/gabi/docsrc/elf/02-eheader.rst`) § ELF
-Identification and § Object File Types.
+Identification, § Object File Types, § Machine.
 
-These live in `Elaborate` (not `Parse`) because they are *meanings*
-attached to bytes the parser already read into `RawIdent` and
-`RawEhdr`. `elaborate` uses `ELFCLASS64` / `ELFDATA2LSB` to gate ELF
-class / endianness; planner code uses `ET_EXEC` / `ET_DYN` to decide
-whether an object's mmap base is fixed or assigned.
+`ELFCLASS64` / `ELFDATA2LSB` are kept as plain `UInt8` constants
+because `elaborate` compares raw `e_ident` bytes against them and
+rejects mismatches. `ElfType` and `Machine`, by contrast, are the
+*post-elaboration* views: planner/exec code matches `elf.elfType`
+or `elf.machine` against named cases, not raw codes.
 -/
+
+import LeanLoad.Parse.Structs
 
 namespace LeanLoad.Elaborate
 
@@ -17,11 +21,47 @@ namespace LeanLoad.Elaborate
 def ELFCLASS64  : UInt8 := 2
 def ELFDATA2LSB : UInt8 := 1
 
--- e_type (gabi 02 Table: Object File Types)
-def ET_NONE : UInt16 := 0
-def ET_REL  : UInt16 := 1
-def ET_EXEC : UInt16 := 2
-def ET_DYN  : UInt16 := 3
-def ET_CORE : UInt16 := 4
+/-- gabi 02 Table: Object File Types — typed view of `e_type`. -/
+inductive ElfType where
+  | none
+  | rel
+  | exec
+  | dyn
+  | core
+  deriving Repr, BEq, Inhabited
+
+/-- Lift `e_type` from raw bytes. `none` for OS- or processor-
+    specific codes outside the five gabi-named values; `elaborate`
+    rejects those at the parse boundary. -/
+def ElfType.ofRaw : UInt16 → Option ElfType
+  | 0 => some .none
+  | 1 => some .rel
+  | 2 => some .exec
+  | 3 => some .dyn
+  | 4 => some .core
+  | _ => Option.none
+
+#guard ElfType.ofRaw 0 == some .none
+#guard ElfType.ofRaw 2 == some .exec
+#guard ElfType.ofRaw 3 == some .dyn
+#guard ElfType.ofRaw 0xff00 == none
+
+/-- gabi 02 § ELF Identification — `e_machine` typed view. We support
+    only the two psABIs LeanLoad targets; everything else is rejected
+    at elaboration. -/
+inductive Machine where
+  | x86_64
+  | aarch64
+  deriving Repr, BEq, Inhabited
+
+/-- Lift `e_machine`. `none` for unsupported machines. -/
+def Machine.ofRaw : UInt16 → Option Machine
+  | 62  => some .x86_64
+  | 183 => some .aarch64
+  | _   => Option.none
+
+#guard Machine.ofRaw 62  == some .x86_64
+#guard Machine.ofRaw 183 == some .aarch64
+#guard Machine.ofRaw 40  == none
 
 end LeanLoad.Elaborate

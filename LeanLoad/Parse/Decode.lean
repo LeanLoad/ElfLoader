@@ -115,7 +115,6 @@ def decodeArray (offset count : Nat) [BytesDecode α] : Parser (Array α) := do
   return entries
 
 section Example
--- Round-trip primitives over hand-crafted inputs.
 #guard (Parser.run (ByteArray.mk #[0x12]) u8).toOption == some 0x12
 #guard (Parser.run (ByteArray.mk #[0x34, 0x12]) u16le).toOption == some 0x1234
 #guard (Parser.run (ByteArray.mk #[0x78, 0x56, 0x34, 0x12]) u32le).toOption == some 0x12345678

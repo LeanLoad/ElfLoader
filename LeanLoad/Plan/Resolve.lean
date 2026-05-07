@@ -44,7 +44,7 @@ structure SymRef (n : Nat) where
 def findInObject (obj : Discover.LoadedObject) (name : String) :
     Option (Fin obj.elf.symtab.size) :=
   match h : obj.elf.symtab.findIdx? (fun entry =>
-      entry.sym.isGlobalDef && entry.name == some name) with
+      entry.isGlobalDef && entry.name == some name) with
   | none   => none
   | some i => some ⟨i, (Array.findIdx?_eq_some_iff_findIdx_eq.mp h).1⟩
 
@@ -91,7 +91,7 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
     let obj := g.val[objectIdx]
     let mut symIdx := 0
     for symEntry in obj.elf.symtab do
-      if symEntry.sym.isUndef then
+      if symEntry.isUndef then
         match symEntry.name with
         | none    => pure ()
         | some "" => pure ()
@@ -101,7 +101,7 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
           let r := resolveByName g n
           resolved := resolved.push (entry, r)
           if r.isNone then
-            if symEntry.sym.isWeak then weakMissing := weakMissing.push entry
+            if symEntry.isWeak then weakMissing := weakMissing.push entry
             else missing := missing.push entry
       symIdx := symIdx + 1
   return { resolved, missing, weakMissing }
@@ -115,16 +115,10 @@ section Example
 open LeanLoad.Fixtures
 
 private def defSym (name : String) (value : UInt64) : Elaborate.Symbol :=
-  { sym := { (default : Parse.RawSym) with
-              st_info := (1 : UInt8) <<< 4
-              st_shndx := 1, st_value := value }
-    name := some name }
+  { name := some name, bind := .global, shndx := .concrete 1, value }
 
 private def undefSym (name : String) : Elaborate.Symbol :=
-  { sym := { (default : Parse.RawSym) with
-              st_info := (1 : UInt8) <<< 4
-              st_shndx := Elaborate.SHN_UNDEF }
-    name := some name }
+  { name := some name, bind := .global, shndx := .undef, value := 0 }
 
 /-- main's undef `printf`, libc's def `printf`. -/
 private def resolveG : ObjectList :=
