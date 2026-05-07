@@ -1,81 +1,20 @@
 /-
-The `.dynamic` array — bytes only.
+The `.dynamic` array — variable-length parser.
 
 Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`) § Dynamic
 Section.
 
-Each entry is a (`d_tag`, `d_un`) pair. `d_tag` selects the
-interpretation of `d_un` (either `d_val` — an integer — or `d_ptr` —
-a virtual address); the array is terminated by a `DT_NULL` entry.
-
-DT_* tag constants stay here because the `parse` stage uses them
-*navigationally* (find DT_STRTAB / DT_SYMTAB / DT_RELA / … to know
-where to read next). The semantic interpretation as a tagged-union
-(d_un's meaning depends on d_tag) is `Elaborate`'s job.
+The array is `DT_NULL`-terminated, so it can't use the generic
+`Bytes.decodeArray` (fixed-count). Hence this dedicated file. The
+`RawDyn` type and `DT_*` tag constants live in `Parse/Structs.lean`.
 -/
 
-import LeanLoad.Parse.Bytes
-
-namespace LeanLoad.Parse
-
--- ============================================================================
--- Navigational d_tag constants (used by `Parse.parse` to find sections).
--- Interpretive constants (DT_FLAGS, DF_*, the not-needed-for-parsing
--- subset of DT_*) live in `Elaborate`.
--- ============================================================================
-
-def DT_NULL            : UInt64 := 0
-def DT_NEEDED          : UInt64 := 1
-def DT_PLTRELSZ        : UInt64 := 2
-def DT_HASH            : UInt64 := 4
-def DT_STRTAB          : UInt64 := 5
-def DT_SYMTAB          : UInt64 := 6
-def DT_RELA            : UInt64 := 7
-def DT_RELASZ          : UInt64 := 8
-def DT_STRSZ           : UInt64 := 10
-def DT_SONAME          : UInt64 := 14
-def DT_RPATH           : UInt64 := 15
-def DT_JMPREL          : UInt64 := 23
-def DT_INIT_ARRAY      : UInt64 := 25
-def DT_INIT_ARRAYSZ    : UInt64 := 27
-def DT_RUNPATH         : UInt64 := 29
-
--- GNU extension (gnu-gabi `program-loading-and-dynamic-linking.txt`
--- § Hashes). Faster hash format than `DT_HASH`. Modern GNU/Linux
--- toolchains often emit this instead of `DT_HASH`.
-def DT_GNU_HASH        : UInt64 := 0x6ffffef5
-
-/-- Raw `.dynamic` entry — gabi 08 § Dynamic Section (Elf64_Dyn).
-    `d_un` holds either `d_val` or `d_ptr`; interpretation is
-    `Elaborate`'s job. -/
-structure RawDyn where
-  d_tag : UInt64
-  d_un  : UInt64
-  deriving Repr, Inhabited
-
-namespace RawDyn
-
-/-- Size of one entry on disk: two 8-byte fields. -/
-def entrySize : Nat := 16
-
-end RawDyn
-
-end LeanLoad.Parse
-
--- ============================================================================
--- Byte-level parser + lookup helpers.
--- ============================================================================
+import LeanLoad.Parse.Structs
 
 namespace LeanLoad.Parse.Dynamic
 
 open LeanLoad.Parse
 open LeanLoad.Parse.Bytes
-
-/-- Parse a single `Elf64_Dyn` at the current cursor. -/
-def parseEntry : Parser RawDyn := do
-  let d_tag ← u64le
-  let d_un  ← u64le
-  return { d_tag, d_un }
 
 /-- Read entries up to and including `DT_NULL`, or until `limit` bytes
     have been consumed. -/
@@ -87,7 +26,7 @@ private def collect (fuel : Nat) (limit : Nat) (acc : Array RawDyn) :
     let cur ← pos
     if cur >= limit then
       return acc
-    let e ← parseEntry
+    let e ← BytesDecode.decode
     let acc := acc.push e
     if e.d_tag == DT_NULL then
       return acc

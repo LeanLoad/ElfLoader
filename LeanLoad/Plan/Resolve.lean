@@ -17,7 +17,7 @@ order: main first, then NEEDED entries in their declared order).
 -/
 
 import LeanLoad.Plan.Discover
-import LeanLoad.Parse.Symbol
+import LeanLoad.Parse.Structs
 import LeanLoad.Elaborate.File
 import LeanLoad.Fixtures
 

@@ -34,7 +34,7 @@ import LeanLoad.Plan.Init
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Reloc
 import LeanLoad.Runtime
-import LeanLoad.Parse.Program
+import LeanLoad.Parse.Structs
 
 namespace LeanLoad.Exec
 
@@ -197,7 +197,7 @@ private def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : LoadedObject
   let entry  := mainImg.layout.base + mainImg.layout.entry.getD 0
   let phdrVa := mainImg.layout.base + mainObj.elf.header.e_phoff
   let phnum  := mainObj.elf.header.e_phnum.toUInt64
-  let phent  := RawPhdr.entrySize.toUInt64
+  let phent  := Parse.RawPhdrSize.toUInt64
   rt.execAndJump entry phdrVa phent phnum 0 stack path
 
 -- ============================================================================

@@ -10,12 +10,8 @@ bookend that realizes plans against the runtime.
 Each `Parse.*` module cites its gabi/abi section next to the type
 definitions. Theorems live in `Thm/` and adjacent to their subjects.
 -/
-import LeanLoad.Parse.Header
-import LeanLoad.Parse.Program
+import LeanLoad.Parse.Structs
 import LeanLoad.Parse.Dynamic
-import LeanLoad.Parse.StringTable
-import LeanLoad.Parse.Symbol
-import LeanLoad.Parse.Reloc
 import LeanLoad.Parse.GnuHash
 import LeanLoad.Parse.File
 

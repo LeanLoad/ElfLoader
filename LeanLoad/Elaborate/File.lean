@@ -68,6 +68,64 @@ def SHN_COMMON : UInt16 := 0xfff2
 end LeanLoad.Elaborate
 
 -- ============================================================================
+-- String-table lookup. Reads NUL-terminated UTF-8 from a `RawStrtab`
+-- — interpretive (UTF-8 decode can fail), so it lives in Elaborate.
+-- Defined in `Parse.RawStrtab`'s namespace so dot notation works.
+-- ============================================================================
+
+namespace LeanLoad.Parse.RawStrtab
+
+/-- Read the null-terminated string at `offset` in `tab`. Returns
+    `none` if `offset` is past the end or if the bytes don't decode
+    as UTF-8. The result excludes the null. -/
+def lookup (tab : RawStrtab) (offset : Nat) : Option String :=
+  if offset >= tab.size then
+    none
+  else
+    let endIdx := tab.findIdx? (· == 0) offset |>.getD tab.size
+    String.fromUTF8? (tab.extract offset endIdx)
+
+section Example
+private def t : RawStrtab := "\x00printf\x00puts\x00".toUTF8
+
+#guard lookup t 0  = some ""
+#guard lookup t 1  = some "printf"
+#guard lookup t 8  = some "puts"
+#guard lookup t 13 = none
+#guard lookup t 99 = none
+#guard lookup t 4  = some "ntf"
+end Example
+
+end LeanLoad.Parse.RawStrtab
+
+-- ============================================================================
+-- Relocation `r_info` bit-field accessors. Unpacking the packed
+-- `(sym, type)` is interpretive — lives in Elaborate. Defined in
+-- `Parse.RawRela`'s namespace for dot notation.
+-- ============================================================================
+
+namespace LeanLoad.Parse.RawRela
+
+/-- Symbol index packed into the high 32 bits of `r_info`. -/
+def sym (r : RawRela) : UInt32 := (r.r_info >>> 32).toUInt32
+
+/-- Relocation type packed into the low 32 bits of `r_info`. -/
+def type (r : RawRela) : UInt32 := (r.r_info &&& 0xffffffff).toUInt32
+
+section Example
+private def r : RawRela := { r_offset := 0xdead, r_info := 0x0000007b00000403, r_addend := 0 }
+#guard r.sym  = 0x7b
+#guard r.type = 0x403
+
+#guard ({ r_offset := 0, r_info := 0,    r_addend := 0 } : RawRela).sym  = 0
+#guard ({ r_offset := 0, r_info := 0,    r_addend := 0 } : RawRela).type = 0
+#guard ({ r_offset := 0, r_info := 1027, r_addend := 0 } : RawRela).sym  = 0
+#guard ({ r_offset := 0, r_info := 1027, r_addend := 0 } : RawRela).type = 1027
+end Example
+
+end LeanLoad.Parse.RawRela
+
+-- ============================================================================
 -- Symbol classification predicates. Defined in `Parse.RawSym`'s
 -- namespace so dot notation (`sym.isGlobalDef`) resolves; the logic
 -- is morally Elaborate (semantic interpretation of bit fields).
@@ -76,6 +134,9 @@ end LeanLoad.Elaborate
 namespace LeanLoad.Parse.RawSym
 
 open LeanLoad.Elaborate (STB_LOCAL STB_WEAK SHN_UNDEF)
+
+/-- Symbol binding (high nibble of `st_info`). gabi 05 § Symbol Table. -/
+def bind (s : RawSym) : UInt8 := s.st_info >>> 4
 
 /-- True iff `sym` is an externally-visible definition. -/
 def isGlobalDef (s : RawSym) : Bool :=
@@ -216,10 +277,13 @@ def elaborate (raw : RawElf) : Except String Elf := do
           jmprel := buildBucket bucketIdx jB }
     return acc
   let symtab : Array Symbol := raw.symtab.map fun sym =>
-    { sym, name := Parse.RawStrtab.lookup raw.strtab sym.st_name.toNat }
+    { sym, name := raw.strtab.lookup sym.st_name.toNat }
+  let needed  := raw.needed.filterMap (raw.strtab.lookup ·.toNat)
+  let soname  := raw.soname.bind (raw.strtab.lookup ·.toNat)
+  let runpath := raw.runpath.bind (raw.strtab.lookup ·.toNat)
   return {
     header := raw.header, symtab,
-    needed := raw.needed, soname := raw.soname, runpath := raw.runpath,
+    needed, soname, runpath,
     initArr := raw.initArr, segments
   }
 

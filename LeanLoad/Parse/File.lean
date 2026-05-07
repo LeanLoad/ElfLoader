@@ -15,17 +15,13 @@ field (gabi 08 § Hash Table) when present, falling back to walking
 (gnu-gabi `program-loading-and-dynamic-linking.txt` § Hashes). Modern
 Linux toolchains default to gnu-only.
 
-Per-section types and parsers live in `LeanLoad.Parse.{Header,Program,
-Dynamic,Symbol,Reloc,StringTable,GnuHash}`.
+Raw types live in `Parse.Raw`. Variable-length parsers (`.dynamic`,
+GNU hash) live in `Parse.Dynamic` and `Parse.GnuHash`.
 -/
 
 import LeanLoad.Parse.Bytes
-import LeanLoad.Parse.Header
-import LeanLoad.Parse.Program
+import LeanLoad.Parse.Structs
 import LeanLoad.Parse.Dynamic
-import LeanLoad.Parse.StringTable
-import LeanLoad.Parse.Symbol
-import LeanLoad.Parse.Reloc
 import LeanLoad.Parse.GnuHash
 import LeanLoad.Runtime
 
@@ -99,12 +95,12 @@ structure RawElf where
   /-- Dynamic symbol table (`DT_SYMTAB`), sized via `DT_HASH`'s
       `nchain`. Empty if neither is present. -/
   symtab  : Array RawSym
-  /-- Resolved `DT_NEEDED` strings, in dynamic-array order. -/
-  needed  : Array String
-  /-- `DT_SONAME` if present (the canonical name of this object). -/
-  soname  : Option String
-  /-- `DT_RUNPATH` (gabi 08; deprecated `DT_RPATH` falls back to this). -/
-  runpath : Option String
+  /-- `DT_NEEDED` offsets into `strtab`, in dynamic-array order. -/
+  needed  : Array UInt64
+  /-- `DT_SONAME` offset into `strtab`, if present. -/
+  soname  : Option UInt64
+  /-- `DT_RUNPATH` offset into `strtab`, falling back to `DT_RPATH`. -/
+  runpath : Option UInt64
   /-- General `Rela` relocations from `DT_RELA`, ungrouped. -/
   rela    : Array RawRela
   /-- PLT relocations from `DT_JMPREL`, ungrouped. -/
@@ -165,11 +161,11 @@ private def vaToOffsetIO (phdrs : Array RawPhdr) (label : String)
     grouping, and the gabi-07 well-formedness check happen
     downstream in `Elaborate.elaborate`. -/
 def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawElf := do
-  let header ← parseSection rt h "header" 0 64 Parse.Header.parse
+  let header ← parseSection rt h "header" 0 64 (BytesDecode.decode : Parser RawEhdr)
 
-  let phdrTableSize := (header.e_phnum.toNat * RawPhdr.entrySize).toUSize
+  let phdrTableSize := (header.e_phnum.toNat * RawPhdrSize).toUSize
   let phdrs ← parseSection rt h "phdrs" header.e_phoff phdrTableSize
-                (Parse.Program.parseTable 0 header.e_phnum.toNat)
+                (Bytes.decodeArray (α := RawPhdr) 0 header.e_phnum.toNat)
 
   let dyn ← match phdrs.find? (·.p_type == PT_DYNAMIC) with
     | none    => pure #[]
@@ -177,12 +173,11 @@ def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawElf := do
       parseSection rt h "dynamic" ph.p_offset ph.p_filesz.toNat.toUSize
         (Parse.Dynamic.parseTable 0 ph.p_filesz.toNat)
 
-  let strtab ← match dynPair? dyn DT_STRTAB DT_STRSZ with
+  let strtab : RawStrtab ← match dynPair? dyn DT_STRTAB DT_STRSZ with
     | none             => pure (ByteArray.mk #[])
     | some (vaddr, sz) =>
       let off ← vaToOffsetIO phdrs "DT_STRTAB" vaddr
-      parseSection rt h "DT_STRTAB" off.toUInt64 sz.toNat.toUSize
-        (Parse.StringTable.parse 0 sz.toNat)
+      rt.pread h off.toUInt64 sz.toNat.toUSize
 
   let symCount : Nat ←
     match dynVal? dyn DT_HASH, dynVal? dyn DT_GNU_HASH with
@@ -206,26 +201,22 @@ def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawElf := do
       | none       => pure #[]
       | some vaddr =>
         let off := ← vaToOffsetIO phdrs "DT_SYMTAB" vaddr
-        let symSize := (symCount * RawSym.entrySize).toUSize
+        let symSize := (symCount * RawSymSize).toUSize
         parseSection rt h "DT_SYMTAB" off.toUInt64 symSize
-          (Parse.Symbol.parseTable 0 symCount)
+          (Bytes.decodeArray (α := RawSym) 0 symCount)
 
-  let neededOffsets := (Parse.Dynamic.findAll dyn DT_NEEDED).map (·.d_un)
-  let needed := neededOffsets.filterMap (fun off => RawStrtab.lookup strtab off.toNat)
-
-  let lookupStr (tag : UInt64) : Option String :=
-    (dynVal? dyn tag).bind (fun off => RawStrtab.lookup strtab off.toNat)
-  let soname  := lookupStr DT_SONAME
-  let runpath := lookupStr DT_RUNPATH <|> lookupStr DT_RPATH
+  let needed  := (Parse.Dynamic.findAll dyn DT_NEEDED).map (·.d_un)
+  let soname  := dynVal? dyn DT_SONAME
+  let runpath := dynVal? dyn DT_RUNPATH <|> dynVal? dyn DT_RPATH
 
   let parseRelaPair (tagAddr tagSz : UInt64) (label : String) : IO (Array RawRela) := do
     match dynPair? dyn tagAddr tagSz with
     | none             => pure #[]
     | some (vaddr, sz) =>
       let off ← vaToOffsetIO phdrs label vaddr
-      let count := sz.toNat / RawRela.entrySize
+      let count := sz.toNat / RawRelaSize
       parseSection rt h label off.toUInt64 sz.toNat.toUSize
-        (Parse.Reloc.parseRelaTable 0 count)
+        (Bytes.decodeArray (α := RawRela) 0 count)
   let rela   ← parseRelaPair DT_RELA   DT_RELASZ   "DT_RELA"
   let jmprel ← parseRelaPair DT_JMPREL DT_PLTRELSZ "DT_JMPREL"
 
@@ -235,7 +226,7 @@ def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawElf := do
       let off ← vaToOffsetIO phdrs "DT_INIT_ARRAY" vaddr
       let count := sz.toNat / 8
       parseSection rt h "DT_INIT_ARRAY" off.toUInt64 sz.toNat.toUSize
-        (Bytes.parseArray 0 count Bytes.u64le)
+        (Bytes.decodeArray (α := UInt64) 0 count)
 
   return {
     header, phdrs, dyn, strtab, symtab, needed, soname, runpath,

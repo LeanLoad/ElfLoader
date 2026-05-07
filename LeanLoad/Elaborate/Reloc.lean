@@ -12,7 +12,7 @@ they say what a relocation type code *means* (which formula to
 apply, what width to write). Parse only sees `r_info` as bytes.
 -/
 
-import LeanLoad.Parse.Reloc
+import LeanLoad.Parse.Structs
 
 namespace LeanLoad.Elaborate
 

@@ -18,12 +18,13 @@ file is purely gabi-07.
 import LeanLoad.Elaborate.Segment
 import LeanLoad.Elaborate.File
 import LeanLoad.Plan.Discover
-import LeanLoad.Parse.Program
+import LeanLoad.Parse.Structs
 
 namespace LeanLoad.Layout
 
 open LeanLoad
 open LeanLoad.Parse
+open LeanLoad.Elaborate (PF_R PF_W PF_X)
 open LeanLoad.Discover
 
 -- ============================================================================
@@ -120,6 +121,7 @@ namespace LeanLoad.Layout
 
 open LeanLoad
 open LeanLoad.Parse
+open LeanLoad.Elaborate (PF_R PF_W PF_X)
 open LeanLoad.Discover
 
 -- Page-aligned vaddr at 0x1000, fits in one 0x1000 page → no inset.
@@ -239,17 +241,15 @@ theorem ObjectLayout.segmentsSorted_of_segmentsSortedB
 /-- Assign an mmap base to each object in BFS order. `ET_EXEC`
     objects keep `0`; `ET_DYN` objects start at `dynAnchor` and
     stack by `alignUp objectSpan 0x1000`. -/
-def assignBases (g : ObjectList) : Array UInt64 := Id.run do
-  let mut bases : Array UInt64 := Array.mkEmpty g.val.size
-  let mut cursor : UInt64 := dynAnchor
-  for h : i in [:g.val.size] do
-    let obj := g.val[i]
-    let isExec := obj.elf.header.e_type = Elaborate.ET_EXEC
-    let base := if isExec then 0 else cursor
-    bases := bases.push base
-    if !isExec then
-      cursor := cursor + alignUp (objectSpan obj.elf.loadablePhdrs) 0x1000
-  return bases
+def assignBases (g : ObjectList) : Array UInt64 :=
+  let f : (Array UInt64 × UInt64) → LoadedObject → (Array UInt64 × UInt64) :=
+    fun (bases, cursor) obj =>
+      if obj.elf.header.e_type = Elaborate.ET_EXEC then
+        (bases.push 0, cursor)
+      else
+        let advance := alignUp (objectSpan obj.elf.loadablePhdrs) 0x1000
+        (bases.push cursor, cursor + advance)
+  (g.val.foldl (init := (Array.mkEmpty g.val.size, dynAnchor)) f).fst
 
 section Example
 open LeanLoad.Elaborate (ET_EXEC ET_DYN)

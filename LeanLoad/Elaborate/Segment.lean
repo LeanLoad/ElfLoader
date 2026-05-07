@@ -21,8 +21,7 @@ page-align addresses for `mmap(2)` and translate `PF_*` to POSIX
 makes, not properties the spec dictates.
 -/
 
-import LeanLoad.Parse.Program
-import LeanLoad.Parse.Reloc
+import LeanLoad.Parse.Structs
 
 -- ============================================================================
 -- Per-rela containment predicate. Defined in `Parse.RawPhdr`'s
@@ -55,6 +54,11 @@ end LeanLoad.Parse.RawPhdr
 namespace LeanLoad.Elaborate
 
 open LeanLoad.Parse (RawPhdr RawRela)
+
+-- p_flags (gabi 07 Table: Segment Flag Bits)
+def PF_X : UInt32 := 0x1
+def PF_W : UInt32 := 0x2
+def PF_R : UInt32 := 0x4
 
 -- ============================================================================
 -- gabi-07 Prop-level invariants on PT_LOAD-filtered phdrs.
@@ -146,7 +150,7 @@ def fromPhdrs (phdrs : Array RawPhdr) : Array RawPhdr :=
 -- ============================================================================
 
 section Example
-open LeanLoad.Parse (PT_LOAD PF_R PF_W)
+open LeanLoad.Parse (PT_LOAD)
 
 private def mkSeg (vaddr memsz filesz align offset : UInt64) : RawPhdr :=
   { (default : RawPhdr) with
