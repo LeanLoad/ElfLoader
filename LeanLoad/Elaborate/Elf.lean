@@ -78,10 +78,10 @@ structure Elf where
       the segment they target. -/
   segments : Array Segment
   /-- gabi-07 well-formedness witness, established by `elaborate`.
-      Downstream consumers read `segmentsWf.sorted`,
-      `segmentsWf.alignCong`, … via field projections without
-      re-checking. -/
-  segmentsWf : WellFormed segments
+      Phrased on the spec-level `RawSegment` view (since `WellFormed`
+      lives at that layer) — `Segment extends RawSegment`, so each
+      loader-stage segment projects via `.toRawSegment`. -/
+  segmentsWf : WellFormed (segments.map (·.toRawSegment))
 
 instance : Inhabited Elf where
   default :=
@@ -89,7 +89,8 @@ instance : Inhabited Elf where
       entry := 0, phoff := 0, phnum := 0,
       symtab := #[], needed := #[],
       soname := Option.none, runpath := Option.none, initArr := #[],
-      segments := #[], segmentsWf := WellFormed_nil }
+      segments := #[],
+      segmentsWf := by simpa using WellFormed_nil }
 
 
 -- ============================================================================
@@ -162,7 +163,7 @@ def elaborate (raw : RawElf) : Except String Elf := do
   let needed  := raw.needed.filterMap (raw.strtab.lookup ·.toNat)
   let soname  := raw.soname.bind (raw.strtab.lookup ·.toNat)
   let runpath := raw.runpath.bind (raw.strtab.lookup ·.toNat)
-  if h : WellFormed segments then
+  if h : WellFormed (segments.map (·.toRawSegment)) then
     return {
       elfType, machine,
       entry := raw.header.e_entry,

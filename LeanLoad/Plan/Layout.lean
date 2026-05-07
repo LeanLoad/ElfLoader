@@ -165,15 +165,18 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
   (Elaborate.Segment.ofPhdr phdr #[] #[]).toOption
 
 /-- Vacuous well-formedness for a singleton segments array: the
-    quantifiers are over `i < j` with both `< 1`, which is unsatisfiable. -/
+    quantifiers are over `i < j` with both `< 1`, which is unsatisfiable.
+    Phrased on the spec view (`segments.map (·.toRawSegment)`) since
+    `Elaborate.WellFormed` takes `Array RawSegment`. -/
 private theorem WellFormed_singleton (s : Elaborate.Segment) :
-    Elaborate.WellFormed #[s] := by
+    Elaborate.WellFormed (#[s].map (·.toRawSegment)) := by
   refine ⟨?_, ?_⟩
   all_goals intro i hi j hj hij; simp at hi hj; omega
 
 private def synthEt (name : String) (et : Elaborate.ElfType)
     (segments : Array Elaborate.Segment := #[])
-    (segmentsWf : Elaborate.WellFormed segments := by exact Elaborate.WellFormed_nil) :
+    (segmentsWf : Elaborate.WellFormed (segments.map (·.toRawSegment)) := by
+       simpa using Elaborate.WellFormed_nil) :
     Discover.LoadedObject :=
   let elf : Elaborate.Elf :=
     { (default : Elaborate.Elf) with elfType := et, segments, segmentsWf }

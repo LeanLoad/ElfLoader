@@ -102,4 +102,40 @@ structure RawSegment where
   /-- PLT relocations. -/
   jmprel : Array { r : RawRela // coversRela vaddr memsz r }
 
+/-- Lift a decidable proposition into `Except` (with `PLift` to bridge
+    `Prop` through `Except`'s `Type` parameter). -/
+private def assertProp (p : Prop) [Decidable p] (msg : String) :
+    Except String (PLift p) :=
+  if h : p then .ok ⟨h⟩ else .error msg
+
+/-- Smart constructor: build a `RawSegment` from a `RawPhdr` (assumed
+    PT_LOAD by the caller — `Elaborate.elaborate` filters its input
+    array by `p_type`) and pre-located rela arrays. Decidably checks
+    the gabi-07 per-segment invariants and LeanLoad's 48-bit address
+    bound. No loader concerns. -/
+def RawSegment.ofPhdr (phdr : RawPhdr)
+    (rela jmprel : Array { r : RawRela // coversRela phdr.p_vaddr phdr.p_memsz r }) :
+    Except String RawSegment := do
+  let ⟨fileszLeMemsz⟩ ← assertProp (phdr.p_filesz ≤ phdr.p_memsz)
+    s!"p_filesz=0x{phdr.p_filesz.toNat} > p_memsz=0x{phdr.p_memsz.toNat} \
+       (gabi-07 § Program Header)"
+  let ⟨alignPow2⟩ ← assertProp
+    (phdr.p_align = 0 ∨ (phdr.p_align &&& (phdr.p_align - 1)) = 0)
+    s!"p_align=0x{phdr.p_align.toNat} is not a power of 2 \
+       (gabi-07 § Program Header)"
+  let ⟨alignCong⟩ ← assertProp
+    (phdr.p_align = 0 ∨ phdr.p_vaddr % phdr.p_align = phdr.p_offset % phdr.p_align)
+    "alignment congruence violated (gabi-07: p_vaddr ≡ p_offset mod p_align)"
+  let ⟨addrBound⟩ ← assertProp
+    (phdr.p_vaddr.toNat + phdr.p_memsz.toNat + phdr.p_align.toNat < 2 ^ 48)
+    s!"p_vaddr+p_memsz+p_align \
+       (0x{phdr.p_vaddr.toNat}+0x{phdr.p_memsz.toNat}+0x{phdr.p_align.toNat}) \
+       exceeds 48-bit bound"
+  return {
+    vaddr := phdr.p_vaddr, memsz := phdr.p_memsz,
+    filesz := phdr.p_filesz, offset := phdr.p_offset,
+    perm := Prot.ofFlags phdr.p_flags, align := phdr.p_align,
+    fileszLeMemsz, alignPow2, alignCong, addrBound, rela, jmprel
+  }
+
 end LeanLoad.Elaborate

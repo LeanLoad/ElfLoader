@@ -114,12 +114,6 @@ structure Segment extends RawSegment where
       mmap region. -/
   insetMemszLePageLength : pageInset.toNat + memsz.toNat ≤ pageLength.toNat
 
-/-- Lift a decidable proposition into `Except` (with `PLift` to bridge
-    `Prop` through `Except`'s `Type` parameter). -/
-private def assertProp (p : Prop) [Decidable p] (msg : String) :
-    Except String (PLift p) :=
-  if h : p then .ok ⟨h⟩ else .error msg
-
 private def effectiveAlign (align : UInt64) : UInt64 :=
   if align == 0 then 1 else align
 
@@ -141,87 +135,69 @@ private theorem ea_no_wrap (vaddr memsz align : UInt64)
     rw [h_one]; omega
   · omega
 
-/-- Smart constructor: build a `Segment` from a `RawPhdr` (assumed
-    PT_LOAD by the caller — `Elaborate.elaborate` filters its input
-    array by `p_type`) and pre-located rela arrays, decidably checking
-    gabi-07 per-segment invariants and discharging the loader-stage
-    page-arithmetic facts. -/
-def Segment.ofPhdr (phdr : RawPhdr)
-    (rela jmprel : Array { r : RawRela // coversRela phdr.p_vaddr phdr.p_memsz r }) :
-    Except String Segment := do
-  let ⟨fileszLeMemsz⟩ ← assertProp (phdr.p_filesz ≤ phdr.p_memsz)
-    s!"p_filesz=0x{phdr.p_filesz.toNat} > p_memsz=0x{phdr.p_memsz.toNat} \
-       (gabi-07 § Program Header)"
-  let ⟨alignPow2⟩ ← assertProp
-    (phdr.p_align = 0 ∨ (phdr.p_align &&& (phdr.p_align - 1)) = 0)
-    s!"p_align=0x{phdr.p_align.toNat} is not a power of 2 \
-       (gabi-07 § Program Header)"
-  let ⟨alignCong⟩ ← assertProp
-    (phdr.p_align = 0 ∨ phdr.p_vaddr % phdr.p_align = phdr.p_offset % phdr.p_align)
-    "alignment congruence violated (gabi-07: p_vaddr ≡ p_offset mod p_align)"
-  let ⟨addrBound⟩ ← assertProp
-    (phdr.p_vaddr.toNat + phdr.p_memsz.toNat + phdr.p_align.toNat < 2 ^ 48)
-    s!"p_vaddr+p_memsz+p_align \
-       (0x{phdr.p_vaddr.toNat}+0x{phdr.p_memsz.toNat}+0x{phdr.p_align.toNat}) \
-       exceeds 48-bit bound"
-  let ea          := effectiveAlign phdr.p_align
-  let pageVaddr   := alignDown phdr.p_vaddr ea
-  let pageLength  := alignUp (phdr.p_vaddr + phdr.p_memsz) ea - pageVaddr
-  let pageInset   := phdr.p_vaddr - pageVaddr
+/-- Lift a `RawSegment` (gabi-validated) to a `Segment` (page-aligned
+    loader view). Total — no validation, just compute the page math
+    and discharge the alignment invariants from `RawSegment`'s
+    gabi-07 fields. -/
+def Segment.ofRawSegment (raw : RawSegment) : Segment :=
+  let ea          := effectiveAlign raw.align
+  let pageVaddr   := alignDown raw.vaddr ea
+  let pageLength  := alignUp (raw.vaddr + raw.memsz) ea - pageVaddr
+  let pageInset   := raw.vaddr - pageVaddr
   let pageEndAddr := pageVaddr + pageLength
-  -- Discharge the two arithmetic invariants once.
-  have h_ea_ne : ea ≠ 0 := effectiveAlign_ne_zero phdr.p_align
-  have h_pv_le_v : pageVaddr ≤ phdr.p_vaddr := alignDown_le _ _
-  have h_pv_le_v_nat : pageVaddr.toNat ≤ phdr.p_vaddr.toNat :=
+  have h_ea_ne : ea ≠ 0 := effectiveAlign_ne_zero raw.align
+  have h_pv_le_v : pageVaddr ≤ raw.vaddr := alignDown_le _ _
+  have h_pv_le_v_nat : pageVaddr.toNat ≤ raw.vaddr.toNat :=
     UInt64.le_iff_toNat_le.mp h_pv_le_v
-  have h_vmea : (phdr.p_vaddr + phdr.p_memsz).toNat + ea.toNat < 2^64 := by
-    have h_vm_no_wrap : phdr.p_vaddr.toNat + phdr.p_memsz.toNat < 2^64 := by
-      have := ea_no_wrap phdr.p_vaddr phdr.p_memsz phdr.p_align addrBound; omega
-    have h_vm_eq : (phdr.p_vaddr + phdr.p_memsz).toNat
-        = phdr.p_vaddr.toNat + phdr.p_memsz.toNat := by
+  have h_vmea : (raw.vaddr + raw.memsz).toNat + ea.toNat < 2^64 := by
+    have h_vm_no_wrap : raw.vaddr.toNat + raw.memsz.toNat < 2^64 := by
+      have := ea_no_wrap raw.vaddr raw.memsz raw.align raw.addrBound; omega
+    have h_vm_eq : (raw.vaddr + raw.memsz).toNat
+        = raw.vaddr.toNat + raw.memsz.toNat := by
       rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_vm_no_wrap
-    rw [h_vm_eq]; exact ea_no_wrap _ _ _ addrBound
-  have h_au_ge : phdr.p_vaddr + phdr.p_memsz ≤ alignUp (phdr.p_vaddr + phdr.p_memsz) ea :=
+    rw [h_vm_eq]; exact ea_no_wrap _ _ _ raw.addrBound
+  have h_au_ge : raw.vaddr + raw.memsz ≤ alignUp (raw.vaddr + raw.memsz) ea :=
     alignUp_ge _ _ h_ea_ne h_vmea
   have h_au_ge_nat :
-      phdr.p_vaddr.toNat + phdr.p_memsz.toNat ≤
-        (alignUp (phdr.p_vaddr + phdr.p_memsz) ea).toNat := by
-    have h_vm_eq : (phdr.p_vaddr + phdr.p_memsz).toNat
-        = phdr.p_vaddr.toNat + phdr.p_memsz.toNat := by
-      have h_vm_no_wrap : phdr.p_vaddr.toNat + phdr.p_memsz.toNat < 2^64 := by
-        have := ea_no_wrap phdr.p_vaddr phdr.p_memsz phdr.p_align addrBound; omega
+      raw.vaddr.toNat + raw.memsz.toNat ≤
+        (alignUp (raw.vaddr + raw.memsz) ea).toNat := by
+    have h_vm_eq : (raw.vaddr + raw.memsz).toNat
+        = raw.vaddr.toNat + raw.memsz.toNat := by
+      have h_vm_no_wrap : raw.vaddr.toNat + raw.memsz.toNat < 2^64 := by
+        have := ea_no_wrap raw.vaddr raw.memsz raw.align raw.addrBound; omega
       rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_vm_no_wrap
     have := UInt64.le_iff_toNat_le.mp h_au_ge; rw [h_vm_eq] at this; exact this
   have h_au_le_pv :
-      pageVaddr ≤ alignUp (phdr.p_vaddr + phdr.p_memsz) ea := by
+      pageVaddr ≤ alignUp (raw.vaddr + raw.memsz) ea := by
     apply UInt64.le_iff_toNat_le.mpr; omega
   have h_pl_nat : pageLength.toNat =
-      (alignUp (phdr.p_vaddr + phdr.p_memsz) ea).toNat - pageVaddr.toNat := by
+      (alignUp (raw.vaddr + raw.memsz) ea).toNat - pageVaddr.toNat := by
     show (alignUp _ _ - pageVaddr).toNat = _
     rw [UInt64.toNat_sub_of_le _ _ h_au_le_pv]
-  have h_pi_nat : pageInset.toNat = phdr.p_vaddr.toNat - pageVaddr.toNat := by
-    show (phdr.p_vaddr - pageVaddr).toNat = _
+  have h_pi_nat : pageInset.toNat = raw.vaddr.toNat - pageVaddr.toNat := by
+    show (raw.vaddr - pageVaddr).toNat = _
     rw [UInt64.toNat_sub_of_le _ _ h_pv_le_v]
   have h_inset_memsz_le_pl :
-      pageInset.toNat + phdr.p_memsz.toNat ≤ pageLength.toNat := by
+      pageInset.toNat + raw.memsz.toNat ≤ pageLength.toNat := by
     rw [h_pi_nat, h_pl_nat]; omega
-  return {
-    vaddr := phdr.p_vaddr, memsz := phdr.p_memsz,
-    filesz := phdr.p_filesz, offset := phdr.p_offset,
-    perm := Prot.ofFlags phdr.p_flags, align := phdr.p_align,
-    fileszLeMemsz, alignPow2, alignCong, addrBound,
+  { toRawSegment := raw,
     pageVaddr, pageLength, pageEndAddr, pageInset,
-    fileLenPaged    := alignUp (pageInset + phdr.p_filesz) ea,
-    fileOffsetPaged := alignDown phdr.p_offset ea,
-    prot := (if (phdr.p_flags &&& PF_R) != 0 then (1 : UInt32) else 0) |||
-            (if (phdr.p_flags &&& PF_W) != 0 then (2 : UInt32) else 0) |||
-            (if (phdr.p_flags &&& PF_X) != 0 then (4 : UInt32) else 0),
+    fileLenPaged    := alignUp (pageInset + raw.filesz) ea,
+    fileOffsetPaged := alignDown raw.offset ea,
+    prot := (if raw.perm.read  then (1 : UInt32) else 0) |||
+            (if raw.perm.write then (2 : UInt32) else 0) |||
+            (if raw.perm.exec  then (4 : UInt32) else 0),
     pageVaddr_eq := rfl, pageLength_eq := rfl, pageEndAddr_eq := rfl,
     pageInset_eq := rfl, fileLenPaged_eq := rfl, fileOffsetPaged_eq := rfl,
     pageVaddr_le_vaddr := h_pv_le_v,
-    insetMemszLePageLength := h_inset_memsz_le_pl,
-    rela, jmprel
-  }
+    insetMemszLePageLength := h_inset_memsz_le_pl }
+
+/-- One-shot smart constructor: validate gabi → `RawSegment`, then
+    promote to the loader-stage `Segment`. -/
+def Segment.ofPhdr (phdr : RawPhdr)
+    (rela jmprel : Array { r : RawRela // coversRela phdr.p_vaddr phdr.p_memsz r }) :
+    Except String Segment :=
+  Segment.ofRawSegment <$> RawSegment.ofPhdr phdr rela jmprel
 
 /-- Two segments are disjoint when their `[pageVaddr, pageEndAddr)`
     ranges don't overlap. -/

@@ -76,8 +76,12 @@ LeanLoad/
     Strtab.lean            NUL-terminated UTF-8 lookup by offset
     Symbol.lean            SymBind / ShnIdx enums + `Symbol` (name pre-resolved)
     Reloc.lean             PatchSize (b4/b8); per-arch formula tables; `formulaFor` dispatch
-    Segment.lean           validated `Segment` with gabi-07 invariants + page-arithmetic
-                           views (pageVaddr, pageLength, …) + pre-discharged InRange facts
+    RawSegment.lean        gabi-07 spec-level segment: byte-fields + per-segment invariants
+                           (fileszLeMemsz / alignPow2 / alignCong) + 48-bit addrBound +
+                           per-segment rela arrays
+    Segment.lean           extends `RawSegment` with loader-stage page-aligned views
+                           (pageVaddr / pageLength / fileLenPaged / …) + pre-discharged
+                           arithmetic invariants (`pageVaddr_le_vaddr`, `insetMemszLePageLength`)
     WellFormed.lean        multi-segment Sorted + NonOverlap, decidable
     Elf.lean               `Elf` aggregate + `elaborate : RawElf → Except String Elf`
   Plan/                    pure middle — every stage that produces abstract data
