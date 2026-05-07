@@ -17,7 +17,7 @@ that don't fit the deriving pattern live in their own files
 (`Parse/Dynamic.lean`, `Parse/GnuHash.lean`).
 -/
 
-import LeanLoad.Parse.Bytes
+import LeanLoad.Parse.Decode
 import LeanLoad.Parse.Deriving
 
 namespace LeanLoad.Parse
@@ -111,7 +111,7 @@ def RawRelaSize : Nat := 24
 -- ============================================================================
 -- gabi 07 § Program Header (Elf64_Phdr)
 --
--- Only the two `p_type` values that `Parse.File.parse` uses
+-- Only the two `p_type` values that `Parse.RawElf.parse` uses
 -- navigationally (find the dynamic section, find the PT_LOAD
 -- covering an offset) are defined here. The full enumeration of
 -- `p_type` and `p_flags` lives in `Elaborate`.
@@ -138,7 +138,7 @@ def RawPhdrSize : Nat := 56
 -- ============================================================================
 -- gabi 08 § Dynamic Section (Elf64_Dyn)
 --
--- `d_tag` constants kept here are only those `Parse.File.parse`
+-- `d_tag` constants kept here are only those `Parse.RawElf.parse`
 -- uses navigationally (find each section in the .dynamic array).
 -- Interpretive constants (DT_FLAGS, DF_*, etc.) live in `Elaborate`.
 -- ============================================================================
@@ -158,11 +158,6 @@ def DT_JMPREL        : UInt64 := 23
 def DT_INIT_ARRAY    : UInt64 := 25
 def DT_INIT_ARRAYSZ  : UInt64 := 27
 def DT_RUNPATH       : UInt64 := 29
-
--- gnu-gabi `program-loading-and-dynamic-linking.txt` § Hashes — a
--- faster hash format than `DT_HASH`, emitted by default on modern
--- GNU/Linux toolchains.
-def DT_GNU_HASH      : UInt64 := 0x6ffffef5
 
 /-- One entry of the `.dynamic` array. `d_un` holds either `d_val`
     (an integer) or `d_ptr` (a virtual address); the interpretation

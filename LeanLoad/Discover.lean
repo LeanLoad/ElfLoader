@@ -14,8 +14,8 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
 -/
 
 import LeanLoad.Plan.Discover
-import LeanLoad.Parse.File
-import LeanLoad.Elaborate.File
+import LeanLoad.Parse.RawElf
+import LeanLoad.Elaborate.Elf
 import LeanLoad.Runtime
 
 
@@ -42,7 +42,7 @@ open LeanLoad
 def readAndParse (rt : Runtime.Ops) (path : String) :
     IO (Runtime.FileHandle × Elaborate.Elf) := do
   let handle ← rt.open path
-  let raw    ← Parse.File.parse rt handle
+  let raw    ← Parse.RawElf.parse rt handle
   let elf    ← IO.ofExcept (Elaborate.elaborate raw)
   pure (handle, elf)
 

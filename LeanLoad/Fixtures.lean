@@ -11,7 +11,7 @@ copes with musl-gcc's actual output".
 -/
 
 import LeanLoad.Plan.Discover
-import LeanLoad.Elaborate.File
+import LeanLoad.Elaborate.Elf
 
 namespace LeanLoad.Fixtures
 

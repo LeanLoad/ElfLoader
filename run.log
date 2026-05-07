@@ -5,6 +5,79 @@ libbar.so  (/home/szhong/LeanLoad/build/libbar.so)
 libc.so  (/home/szhong/LeanLoad/build/lib/libc.so)
 libbaz.so  (/home/szhong/LeanLoad/build/libbaz.so)
 
+== Parse ==
+[0] build/main
+  e_type     = ET_DYN
+  e_machine  = EM_X86_64
+  e_entry    = 0x10e0
+  e_phnum    = 10
+  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  needed     = #[libfoo.so, libbar.so, libc.so]
+  symtab     = 18 entries
+  initArr    = 2 ctor(s)
+  segments   (4):
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x820 memsz=0x820 prot=R--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x41d memsz=0x41d prot=R-X  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0x1c4 memsz=0x1c4 prot=R--  rela=0  jmprel=0
+    [3] vaddr=0x000000003d48 offset=0x2d48 filesz=0x2c0 memsz=0x2c8 prot=RW-  rela=8  jmprel=11
+[1] libfoo.so
+  e_type     = ET_DYN
+  e_machine  = EM_X86_64
+  e_entry    = 0x0
+  e_phnum    = 7
+  soname     = libfoo.so
+  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  needed     = #[libc.so]
+  symtab     = 8 entries
+  initArr    = 2 ctor(s)
+  segments   (4):
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x468 memsz=0x468 prot=R--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x130 memsz=0x130 prot=R-X  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=R--  rela=0  jmprel=0
+    [3] vaddr=0x000000003df8 offset=0x2df8 filesz=0x218 memsz=0x220 prot=RW-  rela=7  jmprel=1
+[2] libbar.so
+  e_type     = ET_DYN
+  e_machine  = EM_X86_64
+  e_entry    = 0x0
+  e_phnum    = 7
+  soname     = libbar.so
+  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  needed     = #[libbaz.so, libc.so]
+  symtab     = 10 entries
+  initArr    = 2 ctor(s)
+  segments   (4):
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=R--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=R-X  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=R--  rela=0  jmprel=0
+    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=RW-  rela=7  jmprel=3
+[3] libc.so
+  e_type     = ET_DYN
+  e_machine  = EM_X86_64
+  e_entry    = 0x0
+  e_phnum    = 9
+  symtab     = 1646 entries
+  initArr    = 0 ctor(s)
+  segments   (4):
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13d00 memsz=0x13d00 prot=R--  rela=0  jmprel=0
+    [1] vaddr=0x000000014000 offset=0x14000 filesz=0x554a7 memsz=0x554a7 prot=R-X  rela=0  jmprel=0
+    [2] vaddr=0x00000006a000 offset=0x6a000 filesz=0x3527c memsz=0x3527c prot=R--  rela=0  jmprel=0
+    [3] vaddr=0x0000000a0b20 offset=0x9fb20 filesz=0x90c memsz=0x2f90 prot=RW-  rela=96  jmprel=6
+[4] libbaz.so
+  e_type     = ET_DYN
+  e_machine  = EM_X86_64
+  e_entry    = 0x0
+  e_phnum    = 7
+  soname     = libbaz.so
+  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  needed     = #[libbar.so, libc.so]
+  symtab     = 10 entries
+  initArr    = 2 ctor(s)
+  segments   (4):
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=R--  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=R-X  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=R--  rela=0  jmprel=0
+    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=RW-  rela=7  jmprel=3
+
 == Resolve ==
 build/main:
   printf                       ←  libc.so      [sym 555 @0x6014d]
@@ -73,35 +146,35 @@ init order: #[3, 1, 4, 2, 0]
 fini order: #[0, 2, 4, 1, 3]
 
 == Reloc ==
-[0] build/main    type=8   seg=3  @0x000080003d68 ← 0x0000800011d0 (8B)  sym=''
-[0] build/main    type=8   seg=3  @0x000080003d70 ← 0x0000800011d9 (8B)  sym=''
-[0] build/main    type=8   seg=3  @0x000080003d78 ← 0x000080001190 (8B)  sym=''
+[0] build/main    type=8   seg=3  @0x000080003d48 ← 0x0000800011d0 (8B)  sym=''
+[0] build/main    type=8   seg=3  @0x000080003d50 ← 0x0000800011d9 (8B)  sym=''
+[0] build/main    type=8   seg=3  @0x000080003d58 ← 0x000080001190 (8B)  sym=''
 [0] build/main    type=8   seg=3  @0x000080004000 ← 0x000080004000 (8B)  sym=''
-[0] build/main    type=6   seg=3  @0x000080003fe8 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
-[0] build/main    type=6   seg=3  @0x000080003ff0 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
-[0] build/main    type=6   seg=3  @0x000080003ff8 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
-[0] build/main    type=7   seg=3  @0x000080003f90 ← 0x00008006f14d (8B)  sym='printf'
-[0] build/main    type=7   seg=3  @0x000080003f98 ← 0x0000800431a0 (8B)  sym='pthread_create'
-[0] build/main    type=7   seg=3  @0x000080003fa0 ← 0x00008004d415 (8B)  sym='strerror'
-[0] build/main    type=7   seg=3  @0x000080003fa8 ← 0x00008006f470 (8B)  sym='puts'
-[0] build/main    type=7   seg=3  @0x000080003fb0 ← 0x00008000b119 (8B)  sym='libbar_step'
-[0] build/main    type=7   seg=3  @0x000080003fb8 ← 0x00008006c778 (8B)  sym='fflush'
-[0] build/main    type=7   seg=3  @0x000080003fc0 ← 0x00008004cfdc (8B)  sym='__stack_chk_fail'
-[0] build/main    type=7   seg=3  @0x000080003fc8 ← 0x0000800060f9 (8B)  sym='libfoo_print'
-[0] build/main    type=7   seg=3  @0x000080003fd0 ← 0x00008002308c (8B)  sym='exit'
-[0] build/main    type=7   seg=3  @0x000080003fd8 ← 0x00008004ced0 (8B)  sym='__libc_start_main'
-[0] build/main    type=7   seg=3  @0x000080003fe0 ← 0x0000800742b0 (8B)  sym='pthread_join'
-[1] libfoo.so     type=8   seg=3  @0x000080008e08 ← 0x0000800060f0 (8B)  sym=''
-[1] libfoo.so     type=8   seg=3  @0x000080008e10 ← 0x000080006113 (8B)  sym=''
-[1] libfoo.so     type=8   seg=3  @0x000080008e18 ← 0x0000800060b0 (8B)  sym=''
+[0] build/main    type=6   seg=3  @0x000080003fd8 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
+[0] build/main    type=6   seg=3  @0x000080003fe0 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
+[0] build/main    type=6   seg=3  @0x000080003fe8 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
+[0] build/main    type=7   seg=3  @0x000080003f80 ← 0x00008006f14d (8B)  sym='printf'
+[0] build/main    type=7   seg=3  @0x000080003f88 ← 0x0000800431a0 (8B)  sym='pthread_create'
+[0] build/main    type=7   seg=3  @0x000080003f90 ← 0x00008004d415 (8B)  sym='strerror'
+[0] build/main    type=7   seg=3  @0x000080003f98 ← 0x00008006f470 (8B)  sym='puts'
+[0] build/main    type=7   seg=3  @0x000080003fa0 ← 0x00008000b119 (8B)  sym='libbar_step'
+[0] build/main    type=7   seg=3  @0x000080003fa8 ← 0x00008006c778 (8B)  sym='fflush'
+[0] build/main    type=7   seg=3  @0x000080003fb0 ← 0x00008004cfdc (8B)  sym='__stack_chk_fail'
+[0] build/main    type=7   seg=3  @0x000080003fb8 ← 0x0000800060f9 (8B)  sym='libfoo_print'
+[0] build/main    type=7   seg=3  @0x000080003fc0 ← 0x00008002308c (8B)  sym='exit'
+[0] build/main    type=7   seg=3  @0x000080003fc8 ← 0x00008004ced0 (8B)  sym='__libc_start_main'
+[0] build/main    type=7   seg=3  @0x000080003fd0 ← 0x0000800742b0 (8B)  sym='pthread_join'
+[1] libfoo.so     type=8   seg=3  @0x000080008df8 ← 0x0000800060f0 (8B)  sym=''
+[1] libfoo.so     type=8   seg=3  @0x000080008e00 ← 0x000080006113 (8B)  sym=''
+[1] libfoo.so     type=8   seg=3  @0x000080008e08 ← 0x0000800060b0 (8B)  sym=''
 [1] libfoo.so     type=8   seg=3  @0x000080009008 ← 0x000080009008 (8B)  sym=''
 [1] libfoo.so     type=6   seg=3  @0x000080008fd0 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
 [1] libfoo.so     type=6   seg=3  @0x000080008fd8 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
 [1] libfoo.so     type=6   seg=3  @0x000080008fe0 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
 [1] libfoo.so     type=7   seg=3  @0x000080009000 ← 0x00008006f470 (8B)  sym='puts'
-[2] libbar.so     type=8   seg=3  @0x00008000ddf8 ← 0x00008000b110 (8B)  sym=''
-[2] libbar.so     type=8   seg=3  @0x00008000de00 ← 0x00008000b159 (8B)  sym=''
-[2] libbar.so     type=8   seg=3  @0x00008000de08 ← 0x00008000b0d0 (8B)  sym=''
+[2] libbar.so     type=8   seg=3  @0x00008000dde8 ← 0x00008000b110 (8B)  sym=''
+[2] libbar.so     type=8   seg=3  @0x00008000ddf0 ← 0x00008000b159 (8B)  sym=''
+[2] libbar.so     type=8   seg=3  @0x00008000ddf8 ← 0x00008000b0d0 (8B)  sym=''
 [2] libbar.so     type=8   seg=3  @0x00008000e018 ← 0x00008000e018 (8B)  sym=''
 [2] libbar.so     type=6   seg=3  @0x00008000dfd0 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
 [2] libbar.so     type=6   seg=3  @0x00008000dfd8 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
@@ -211,9 +284,9 @@ fini order: #[0, 2, 4, 1, 3]
 [3] libc.so       type=7   seg=3  @0x0000800b0018 ← 0x000080052442 (8B)  sym='memalign'
 [3] libc.so       type=7   seg=3  @0x0000800b0020 ← 0x000080051683 (8B)  sym='aligned_alloc'
 [3] libc.so       type=7   seg=3  @0x0000800b0028 ← 0x000080051668 (8B)  sym='free'
-[4] libbaz.so     type=8   seg=3  @0x0000800b6df8 ← 0x0000800b4110 (8B)  sym=''
-[4] libbaz.so     type=8   seg=3  @0x0000800b6e00 ← 0x0000800b4159 (8B)  sym=''
-[4] libbaz.so     type=8   seg=3  @0x0000800b6e08 ← 0x0000800b40d0 (8B)  sym=''
+[4] libbaz.so     type=8   seg=3  @0x0000800b6de8 ← 0x0000800b4110 (8B)  sym=''
+[4] libbaz.so     type=8   seg=3  @0x0000800b6df0 ← 0x0000800b4159 (8B)  sym=''
+[4] libbaz.so     type=8   seg=3  @0x0000800b6df8 ← 0x0000800b40d0 (8B)  sym=''
 [4] libbaz.so     type=8   seg=3  @0x0000800b7018 ← 0x0000800b7018 (8B)  sym=''
 [4] libbaz.so     type=6   seg=3  @0x0000800b6fd0 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
 [4] libbaz.so     type=6   seg=3  @0x0000800b6fd8 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'

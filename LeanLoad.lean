@@ -12,15 +12,15 @@ definitions. Theorems live in `Thm/` and adjacent to their subjects.
 -/
 import LeanLoad.Parse.Structs
 import LeanLoad.Parse.Dynamic
-import LeanLoad.Parse.GnuHash
-import LeanLoad.Parse.File
+import LeanLoad.Parse.RawElf
 
+import LeanLoad.Elaborate.Header
+import LeanLoad.Elaborate.Strtab
+import LeanLoad.Elaborate.Symbol
 import LeanLoad.Elaborate.Segment
+import LeanLoad.Elaborate.WellFormed
 import LeanLoad.Elaborate.Reloc
-import LeanLoad.Elaborate.Reloc.Aarch64
-import LeanLoad.Elaborate.Reloc.X86_64
-import LeanLoad.Elaborate.Reloc.Formula
-import LeanLoad.Elaborate.File
+import LeanLoad.Elaborate.Elf
 
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Discover

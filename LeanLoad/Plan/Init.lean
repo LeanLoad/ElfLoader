@@ -25,7 +25,7 @@ stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
 
 import LeanLoad.Plan.Discover
 import LeanLoad.Plan.Layout
-import LeanLoad.Elaborate.File
+import LeanLoad.Elaborate.Elf
 import Std.Data.HashMap
 
 namespace LeanLoad.Init

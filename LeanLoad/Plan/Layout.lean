@@ -16,7 +16,7 @@ file is purely gabi-07.
 -/
 
 import LeanLoad.Elaborate.Segment
-import LeanLoad.Elaborate.File
+import LeanLoad.Elaborate.Elf
 import LeanLoad.Plan.Discover
 import LeanLoad.Parse.Structs
 

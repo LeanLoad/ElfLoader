@@ -9,7 +9,7 @@ instance, generates:
                             f₂ := ← BytesDecode.decode, … }
 
 Each `← BytesDecode.decode` is dispatched by the field's declared
-type. For primitive widths we provide instances in `Parse.Bytes`
+type. For primitive widths we provide instances in `Parse.Decode`
 (`UInt8/16/32/64`); composite fields work as long as their type
 has its own `BytesDecode` instance (typically also derived).
 
@@ -19,7 +19,7 @@ need pre/post checks (e.g. `RawIdent`'s magic-byte prefix) write
 their instance manually.
 -/
 
-import LeanLoad.Parse.Bytes
+import LeanLoad.Parse.Decode
 import Lean
 
 open Lean Elab Command

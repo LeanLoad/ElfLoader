@@ -43,7 +43,8 @@ $(MUSL_CC): | $(BUILD_DIR)
 #                     system search path.
 EX_DIR := examples
 LDFLAGS := -Wl,-rpath,$(abspath $(BUILD_DIR))/lib \
-           -Wl,-rpath,$(abspath $(BUILD_DIR))
+           -Wl,-rpath,$(abspath $(BUILD_DIR)) \
+           -Wl,--hash-style=both
 
 .PHONY: examples
 examples: $(BUILD_DIR)/main $(BUILD_DIR)/static

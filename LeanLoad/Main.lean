@@ -76,6 +76,39 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"{obj.name}  ({obj.path})"
   let mainObj := g.main
 
+  IO.eprintln "\n== Parse =="
+  for h : i in [:g.val.size] do
+    let obj := g.val[i]
+    let elf := obj.elf
+    let etypeStr := match elf.header.e_type with
+      | 0 => "ET_NONE" | 1 => "ET_REL" | 2 => "ET_EXEC"
+      | 3 => "ET_DYN"  | 4 => "ET_CORE" | t => s!"ET_? ({t})"
+    let machStr := match elf.header.e_machine with
+      | 62  => "EM_X86_64" | 183 => "EM_AARCH64" | m => s!"EM_? ({m})"
+    IO.eprintln s!"[{i}] {obj.name}"
+    IO.eprintln s!"  e_type     = {etypeStr}"
+    IO.eprintln s!"  e_machine  = {machStr}"
+    IO.eprintln s!"  e_entry    = 0x{Nat.hex elf.header.e_entry.toNat}"
+    IO.eprintln s!"  e_phnum    = {elf.header.e_phnum}"
+    if let some sn := elf.soname  then IO.eprintln s!"  soname     = {sn}"
+    if let some rp := elf.runpath then IO.eprintln s!"  runpath    = {rp}"
+    if !elf.needed.isEmpty then
+      IO.eprintln s!"  needed     = {elf.needed}"
+    IO.eprintln s!"  symtab     = {elf.symtab.size} entries"
+    IO.eprintln s!"  initArr    = {elf.initArr.size} ctor(s)"
+    IO.eprintln s!"  segments   ({elf.segments.size}):"
+    for h2 : segI in [:elf.segments.size] do
+      let seg := elf.segments[segI]
+      let phdr := seg.phdr
+      let prot := s!"{if (phdr.p_flags &&& 4) != 0 then "R" else "-"}\
+                     {if (phdr.p_flags &&& 2) != 0 then "W" else "-"}\
+                     {if (phdr.p_flags &&& 1) != 0 then "X" else "-"}"
+      IO.eprintln s!"    [{segI}] vaddr=0x{Nat.hex12 phdr.p_vaddr.toNat} \
+        offset=0x{Nat.hex phdr.p_offset.toNat} \
+        filesz=0x{Nat.hex phdr.p_filesz.toNat} \
+        memsz=0x{Nat.hex phdr.p_memsz.toNat} \
+        prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
+
   IO.eprintln "\n== Resolve =="
   let resTable := Resolve.buildTable g
   let providerName (r : Resolve.SymRef g.val.size) : String := g.val[r.objectIdx].name

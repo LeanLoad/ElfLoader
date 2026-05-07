@@ -18,7 +18,7 @@ order: main first, then NEEDED entries in their declared order).
 
 import LeanLoad.Plan.Discover
 import LeanLoad.Parse.Structs
-import LeanLoad.Elaborate.File
+import LeanLoad.Elaborate.Elf
 import LeanLoad.Fixtures
 
 namespace LeanLoad.Resolve

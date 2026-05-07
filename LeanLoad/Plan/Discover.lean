@@ -19,8 +19,8 @@ Search rules:
   `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.Parse.File
-import LeanLoad.Elaborate.File
+import LeanLoad.Parse.RawElf
+import LeanLoad.Elaborate.Elf
 import LeanLoad.Runtime
 
 namespace LeanLoad.Discover
