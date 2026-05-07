@@ -35,6 +35,7 @@ import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Reloc
 import LeanLoad.Runtime
 import LeanLoad.Parse.Structs
+import LeanLoad.Thm.Layout
 
 namespace LeanLoad.Exec
 
@@ -54,7 +55,7 @@ open LeanLoad.Elaborate (PatchSize Segment)
     `pageLength` (page-aligned). Patches that target this segment
     derive their `Region.InRange` proof from the segment's bound. -/
 private abbrev SegmentImage : Type :=
-  Σ s : Segment, Runtime.Region s.pageLength.toUSize
+  Σ s : Segment, Runtime.Region s.pageLength
 
 /-- Per-object runtime artifact: the planning-side layout plus one
     `SegmentImage` per PT_LOAD, in lock-step with `layout.segments`. -/
@@ -90,30 +91,20 @@ private structure ProcessImage (n : Nat) where
     no runtime range checks. -/
 private def realizeSegment (rt : Runtime.Ops) (obj : LoadedObject)
     (base : UInt64) (s : Segment) : IO SegmentImage := do
-  let length := s.pageLength.toUSize
+  let length := s.pageLength
   let region ← rt.mmapReserve (base + s.pageVaddr) length
   if s.fileLenPaged > 0 then
     let some handle := obj.handle
       | throw (IO.userError s!"realize: object '{obj.name}' has no file handle")
     let writableProt := s.prot ||| Runtime.PROT_WRITE
-    let _overlay ← rt.mmap handle (base + s.pageVaddr) s.fileLenPaged.toUSize
+    let _overlay ← rt.mmap handle (base + s.pageVaddr) s.fileLenPaged
                      writableProt s.fileOffsetPaged
     pure ()
-  -- BSS InRange is mathematically obvious from `s.fileszLeMemsz` +
-  -- `s.alignPow2` + `s.addrBound`: it reduces to `x ≤ alignUp x align`
-  -- for `align > 0`. But `omega` doesn't reason through `alignUp`/
-  -- `alignDown`'s `if`-branchy definitions, and we lack an
-  -- `alignUp_ge` stdlib lemma. Runtime-check; the witnesses on
-  -- `Segment` document that the check is structurally satisfied for
-  -- well-formed ELFs. TODO: prove this once `alignUp_ge` lemma lands.
+  -- BSS InRange is discharged from `Segment`'s gabi-07 witnesses by
+  -- `Thm.bss_inRange`; no runtime check needed.
   let bssLen := s.memsz - s.filesz
   if bssLen > 0 then
-    let bssOff := (s.pageInset + s.filesz).toUSize
-    let bssLenU := bssLen.toUSize
-    if h : Runtime.Region.InRange length bssOff bssLenU then
-      rt.zeroout region bssOff bssLenU h
-    else
-      throw (IO.userError s!"realize: BSS zero out of range (object {obj.name})")
+    rt.zeroout region (s.pageInset + s.filesz) bssLen (Thm.bss_inRange s)
   -- `InRange length 0 length` is `0 ≤ length ∧ length ≤ length - 0`;
   -- both trivially hold.
   have hMprot : Runtime.Region.InRange length 0 length := by
@@ -162,9 +153,9 @@ private def realizeImage (rt : Runtime.Ops) (g : ObjectList)
 /-- Apply one `Patch g`. Totally typed: `objectIdx : Fin g.val.size`
     is in bounds via `image.size_eq`, `segIdx` is a `Fin` into the
     object's segment array. The reservation-relative bound proof
-    `Region.InRange (seg.length.toUSize) p.offset 8/4` is checked
+    `Region.InRange (seg.length) p.offset 8/4` is checked
     at runtime — the planner's `LocatedRela` witness guarantees the
-    bound holds, but the witness's UInt64↔USize translation isn't
+    bound holds, but the witness's UInt64↔UInt64 translation isn't
     threaded through `Patch`'s type yet; the runtime check produces
     the witness the typed op signature requires. -/
 private def applyPatch {g : ObjectList} (rt : Runtime.Ops)
@@ -174,7 +165,7 @@ private def applyPatch {g : ObjectList} (rt : Runtime.Ops)
   let some segImg := obj.segments[p.segIdx.val]?
     | throw (IO.userError s!"applyPatch: segIdx {p.segIdx.val} out of range")
   let ⟨seg, region⟩ := segImg
-  let length := seg.pageLength.toUSize
+  let length := seg.pageLength
   match p.size with
   | .b8 =>
     if h : Runtime.Region.InRange length p.offset 8 then
@@ -192,7 +183,7 @@ private def applyPatch {g : ObjectList} (rt : Runtime.Ops)
 -- ============================================================================
 
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
-def stackBytes : USize := 8 * 1024 * 1024
+def stackBytes : UInt64 := 8 * 1024 * 1024
 
 /-- Allocate kernel-style stack and jump to entry. **Does not return.**
     Non-emptiness of `image.objects` is structurally derivable from

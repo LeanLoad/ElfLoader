@@ -124,7 +124,7 @@ open LeanLoad.Parse
 
 /-- `pread` `len` bytes at `offset` and run `parser` from the start. -/
 private def parseSection {α} (rt : Runtime.Ops) (h : Runtime.FileHandle)
-    (label : String) (offset : UInt64) (len : USize) (parser : Parser α) : IO α := do
+    (label : String) (offset : UInt64) (len : UInt64) (parser : Parser α) : IO α := do
   let bytes ← rt.pread h offset len
   match Parser.run bytes parser with
   | .ok v    => pure v
@@ -148,7 +148,7 @@ private def parseEhdr (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawEhdr :
 
 private def parsePhdrs (rt : Runtime.Ops) (h : Runtime.FileHandle)
     (header : RawEhdr) : IO (Array RawPhdr) :=
-  let nbytes := (header.e_phnum.toNat * RawPhdrSize).toUSize
+  let nbytes := (header.e_phnum.toNat * RawPhdrSize).toUInt64
   parseSection rt h "phdrs" header.e_phoff nbytes
     (decodeArray (α := RawPhdr) 0 header.e_phnum.toNat)
 
@@ -157,7 +157,7 @@ private def parseDynamic (rt : Runtime.Ops) (h : Runtime.FileHandle)
   match phdrs.find? (·.p_type == PT_DYNAMIC) with
   | none    => pure #[]
   | some ph =>
-    parseSection rt h "dynamic" ph.p_offset ph.p_filesz.toNat.toUSize
+    parseSection rt h "dynamic" ph.p_offset ph.p_filesz
       (Parse.Dynamic.parseTable 0 ph.p_filesz.toNat)
 
 private def parseStrtab (rt : Runtime.Ops) (h : Runtime.FileHandle)
@@ -166,7 +166,7 @@ private def parseStrtab (rt : Runtime.Ops) (h : Runtime.FileHandle)
   | none             => pure (ByteArray.mk #[])
   | some (vaddr, sz) => do
     let off ← vaToOffsetIO phdrs "DT_STRTAB" vaddr
-    rt.pread h off.toUInt64 sz.toNat.toUSize
+    rt.pread h off.toUInt64 sz
 
 /-- Read `nchain` from `DT_HASH` to derive the dynsym count. The
     build's `--hash-style=both` guarantees `DT_HASH` is present;
@@ -187,7 +187,7 @@ private def parseSymtab (rt : Runtime.Ops) (h : Runtime.FileHandle)
     | none       => pure #[]
     | some vaddr => do
       let off ← vaToOffsetIO phdrs "DT_SYMTAB" vaddr
-      parseSection rt h "DT_SYMTAB" off.toUInt64 (symCount * RawSymSize).toUSize
+      parseSection rt h "DT_SYMTAB" off.toUInt64 (symCount * RawSymSize).toUInt64
         (decodeArray (α := RawSym) 0 symCount)
 
 /-- Read a fixed-size sized table from a `(addrTag, sizeTag)` pair in
@@ -201,7 +201,7 @@ private def parseSizedTable {α} [BytesDecode α] (entrySize : Nat)
   | none             => pure #[]
   | some (vaddr, sz) =>
     let off ← vaToOffsetIO phdrs label vaddr
-    parseSection rt h label off.toUInt64 sz.toNat.toUSize
+    parseSection rt h label off.toUInt64 sz
       (decodeArray (α := α) 0 (sz.toNat / entrySize))
 
 -- ============================================================================

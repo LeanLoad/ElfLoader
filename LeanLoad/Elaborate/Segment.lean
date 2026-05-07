@@ -128,9 +128,9 @@ private def assertProp (p : Prop) [Decidable p] (msg : String) :
   if h : p then .ok ⟨h⟩ else .error msg
 
 /-- Smart constructor: build a `Segment` from a `RawPhdr` (assumed
-    PT_LOAD by the caller — `Elaborate.elaborate` filters via
-    `fromPhdrs`) and pre-located rela arrays, decidably checking the
-    gabi-07 per-segment invariants and the 48-bit address bound. -/
+    PT_LOAD by the caller — `Elaborate.elaborate` filters its input
+    array by `p_type`) and pre-located rela arrays, decidably checking
+    the gabi-07 per-segment invariants and the 48-bit address bound. -/
 def Segment.ofPhdr (phdr : RawPhdr)
     (rela jmprel : Array { r : RawRela // coversRela phdr.p_vaddr phdr.p_memsz r }) :
     Except String Segment := do

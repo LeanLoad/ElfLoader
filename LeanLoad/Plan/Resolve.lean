@@ -41,12 +41,8 @@ structure SymRef (n : Nat) where
     Names are pre-resolved at validation time (see `Elaborate.Symbol`),
     so no string-table lookup happens here. The per-symbol `isGlobalDef`
     predicate lives on `Symbol64` directly (`Parse.Symbol`). -/
-def findInObject (obj : Discover.LoadedObject) (name : String) :
-    Option (Fin obj.elf.symtab.size) :=
-  match h : obj.elf.symtab.findIdx? (fun entry =>
-      entry.isGlobalDef && entry.name == some name) with
-  | none   => none
-  | some i => some ⟨i, (Array.findIdx?_eq_some_iff_findIdx_eq.mp h).1⟩
+def findInObject (obj : Discover.LoadedObject) (name : String) : Option Nat :=
+  obj.elf.symtab.findIdx? (fun entry => entry.isGlobalDef && entry.name == some name)
 
 /-- Resolve `name` against `g` via breadth-first search over its
     objects. Returns the providing `SymRef`, or `none` if no object
@@ -54,7 +50,7 @@ def findInObject (obj : Discover.LoadedObject) (name : String) :
 def resolveByName (g : ObjectList) (name : String) : Option (SymRef g.val.size) := Id.run do
   for h : objectIdx in [:g.val.size] do
     if let some symIdx := findInObject g.val[objectIdx] name then
-      return some { objectIdx := ⟨objectIdx, h.upper⟩, symIdx := symIdx.val }
+      return some { objectIdx := ⟨objectIdx, h.upper⟩, symIdx }
   return none
 
 /-- A failed-to-resolve undefined symbol; useful for diagnostics.

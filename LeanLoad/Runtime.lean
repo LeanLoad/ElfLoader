@@ -57,25 +57,25 @@ instance : Nonempty RealRegion := RealRegionPointed.property
 @[extern "leanload_filehandle_open"]
 private opaque realOpen (path : @& String) : IO RealFileHandle
 @[extern "leanload_filehandle_pread"]
-private opaque realPread (h : @& RealFileHandle) (offset : UInt64) (len : USize) : IO ByteArray
+private opaque realPread (h : @& RealFileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 @[extern "leanload_filehandle_mmap"]
-private opaque realMmap (h : @& RealFileHandle) (vaddr : UInt64) (len : USize)
+private opaque realMmap (h : @& RealFileHandle) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO RealRegion
 
 @[extern "leanload_region_mmap_reserve"]
-private opaque realMmapReserve (vaddr : UInt64) (len : USize) : IO RealRegion
+private opaque realMmapReserve (vaddr : UInt64) (len : UInt64) : IO RealRegion
 @[extern "leanload_region_mmap_stack"]
-private opaque realMmapStack (len : USize) : IO RealRegion
+private opaque realMmapStack (len : UInt64) : IO RealRegion
 
 @[extern "leanload_region_mprotect"]
-private opaque realMprotect (r : @& RealRegion) (offset length : USize)
+private opaque realMprotect (r : @& RealRegion) (offset length : UInt64)
     (prot : UInt32) : IO Unit
 @[extern "leanload_region_patch64"]
-private opaque realPatch64 (region : @& RealRegion) (offset : USize) (value : UInt64) : IO Unit
+private opaque realPatch64 (region : @& RealRegion) (offset : UInt64) (value : UInt64) : IO Unit
 @[extern "leanload_region_patch32"]
-private opaque realPatch32 (region : @& RealRegion) (offset : USize) (value : UInt64) : IO Unit
+private opaque realPatch32 (region : @& RealRegion) (offset : UInt64) (value : UInt64) : IO Unit
 @[extern "leanload_region_zeroout"]
-private opaque realZeroout (region : @& RealRegion) (offset len : USize) : IO Unit
+private opaque realZeroout (region : @& RealRegion) (offset len : UInt64) : IO Unit
 
 @[extern "leanload_exec_run"]
 private opaque realExecAndJump
@@ -114,18 +114,18 @@ inductive FileHandle where
     Either a real kernel mapping or an in-memory mutable byte buffer
     for tests. Mock regions carry a `vaddr` for diagnostics and a
     mutable `IO.Ref ByteArray` so writes can update in place. -/
-inductive Region (size : USize) where
+inductive Region (size : UInt64) where
   | real (r : RealRegion)
   | mock (vaddr : UInt64) (bytes : IO.Ref ByteArray)
 
 /-- Bounds predicate for write/protect operations on a `Region size`.
-    Uses USize comparisons (saturating subtraction) to sidestep
+    Uses UInt64 comparisons (saturating subtraction) to sidestep
     UInt64 overflow concerns — `length ≤ size - offset` is
     well-defined regardless of arithmetic wrap. -/
-def Region.InRange (size offset length : USize) : Prop :=
+def Region.InRange (size offset length : UInt64) : Prop :=
   offset ≤ size ∧ length ≤ size - offset
 
-instance (size offset length : USize) : Decidable (Region.InRange size offset length) :=
+instance (size offset length : UInt64) : Decidable (Region.InRange size offset length) :=
   inferInstanceAs (Decidable (_ ∧ _))
 
 /-- `PROT_WRITE` bit, used by Map to widen a file-backed segment's
@@ -145,26 +145,26 @@ def PROT_WRITE : UInt32 := 2
     `inMemory` (simulated, for tests). -/
 structure Ops where
   «open»        : String → IO FileHandle
-  pread         : FileHandle → UInt64 → USize → IO ByteArray
+  pread         : FileHandle → UInt64 → UInt64 → IO ByteArray
   /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay; size index of
       the returned `Region` matches the `len` argument. -/
-  mmap          : FileHandle → UInt64 → (len : USize) → UInt32 → UInt64 → IO (Region len)
+  mmap          : FileHandle → UInt64 → (len : UInt64) → UInt32 → UInt64 → IO (Region len)
   /-- Anonymous `MAP_FIXED` reservation; size index matches `len`. -/
-  mmapReserve   : UInt64 → (len : USize) → IO (Region len)
+  mmapReserve   : UInt64 → (len : UInt64) → IO (Region len)
   /-- Anonymous `MAP_STACK`; size index matches `len`. -/
-  mmapStack     : (len : USize) → IO (Region len)
+  mmapStack     : (len : UInt64) → IO (Region len)
   /-- `mprotect` a sub-range. The bound proof `Region.InRange size
       offset length` discharges the kernel-level OOB check at the
       type level — no C-side bounds check needed. -/
-  mprotect      : ∀ {size : USize}, Region size → (offset length : USize) →
+  mprotect      : ∀ {size : UInt64}, Region size → (offset length : UInt64) →
                   (h : Region.InRange size offset length) → UInt32 → IO Unit
-  patch64       : ∀ {size : USize}, Region size → (offset : USize) →
+  patch64       : ∀ {size : UInt64}, Region size → (offset : UInt64) →
                   (h : Region.InRange size offset 8) → UInt64 → IO Unit
-  patch32       : ∀ {size : USize}, Region size → (offset : USize) →
+  patch32       : ∀ {size : UInt64}, Region size → (offset : UInt64) →
                   (h : Region.InRange size offset 4) → UInt64 → IO Unit
-  zeroout       : ∀ {size : USize}, Region size → (offset length : USize) →
+  zeroout       : ∀ {size : UInt64}, Region size → (offset length : UInt64) →
                   (h : Region.InRange size offset length) → IO Unit
-  execAndJump   : ∀ {size : USize}, UInt64 → UInt64 → UInt64 → UInt64 → UInt64 →
+  execAndJump   : ∀ {size : UInt64}, UInt64 → UInt64 → UInt64 → UInt64 → UInt64 →
                   Region size → String → IO Unit
   callCtor      : UInt64 → IO Unit
 
@@ -178,58 +178,58 @@ structure Ops where
 private def realOpenOp : String → IO FileHandle :=
   fun p => .real <$> realOpen p
 
-private def realPreadOp : FileHandle → UInt64 → USize → IO ByteArray
+private def realPreadOp : FileHandle → UInt64 → UInt64 → IO ByteArray
   | .real h, off, len => realPread h off len
   | .mock _ b, off, len =>
     pure (b.extract off.toNat (off.toNat + len.toNat))
 
 private def realMmapOp :
-    FileHandle → UInt64 → (len : USize) → UInt32 → UInt64 → IO (Region len)
+    FileHandle → UInt64 → (len : UInt64) → UInt32 → UInt64 → IO (Region len)
   | .real h, va, len, prot, off => .real <$> realMmap h va len prot off
   | .mock _ _, _, _, _, _ =>
     throw (IO.userError "Ops.real.mmap: mock files cannot be mapped into real memory")
 
-private def realMmapReserveOp (va : UInt64) (len : USize) : IO (Region len) :=
+private def realMmapReserveOp (va : UInt64) (len : UInt64) : IO (Region len) :=
   .real <$> realMmapReserve va len
 
-private def realMmapStackOp (len : USize) : IO (Region len) :=
+private def realMmapStackOp (len : UInt64) : IO (Region len) :=
   .real <$> realMmapStack len
 
-private def realMprotectOp {size : USize} :
-    Region size → (offset length : USize) → Region.InRange size offset length →
+private def realMprotectOp {size : UInt64} :
+    Region size → (offset length : UInt64) → Region.InRange size offset length →
     UInt32 → IO Unit
   | .real r, off, len, _h, prot => realMprotect r off len prot
   | .mock _ _, _, _, _, _ => pure ()  -- mock has no protection bits to toggle
 
-private def mockWriteLE (ref : IO.Ref ByteArray) (off : USize) (width : Nat)
+private def mockWriteLE (ref : IO.Ref ByteArray) (off : UInt64) (width : Nat)
     (v : UInt64) : IO Unit := do
   let mut b ← ref.get
   for i in [:width] do
     b := b.set! (off.toNat + i) ((v >>> (i * 8).toUInt64).toUInt8)
   ref.set b
 
-private def mockZeroout (ref : IO.Ref ByteArray) (off len : USize) : IO Unit := do
+private def mockZeroout (ref : IO.Ref ByteArray) (off len : UInt64) : IO Unit := do
   let mut b ← ref.get
   for i in [:len.toNat] do
     b := b.set! (off.toNat + i) 0
   ref.set b
 
-private def realPatch64Op {size : USize} :
-    Region size → (offset : USize) → Region.InRange size offset 8 → UInt64 → IO Unit
+private def realPatch64Op {size : UInt64} :
+    Region size → (offset : UInt64) → Region.InRange size offset 8 → UInt64 → IO Unit
   | .real r, off, _h, v => realPatch64 r off v
   | .mock _ ref, off, _h, v => mockWriteLE ref off 8 v
 
-private def realPatch32Op {size : USize} :
-    Region size → (offset : USize) → Region.InRange size offset 4 → UInt64 → IO Unit
+private def realPatch32Op {size : UInt64} :
+    Region size → (offset : UInt64) → Region.InRange size offset 4 → UInt64 → IO Unit
   | .real r, off, _h, v => realPatch32 r off v
   | .mock _ ref, off, _h, v => mockWriteLE ref off 4 v
 
-private def realZerooutOp {size : USize} :
-    Region size → (offset length : USize) → Region.InRange size offset length → IO Unit
+private def realZerooutOp {size : UInt64} :
+    Region size → (offset length : UInt64) → Region.InRange size offset length → IO Unit
   | .real r, off, len, _h => realZeroout r off len
   | .mock _ ref, off, len, _h => mockZeroout ref off len
 
-private def realExecAndJumpOp {size : USize}
+private def realExecAndJumpOp {size : UInt64}
     (entry phdrVa phent phnum baseVa : UInt64) (stack : Region size) (argv0 : String) :
     IO Unit :=
   match stack with
@@ -287,7 +287,7 @@ private def inMemoryOpenOp (files : Std.HashMap String ByteArray) :
     | some b => pure (.mock p b)
     | none   => throw (IO.userError s!"inMemory.open: no such file '{p}'")
 
-private def inMemoryPreadOp : FileHandle → UInt64 → USize → IO ByteArray
+private def inMemoryPreadOp : FileHandle → UInt64 → UInt64 → IO ByteArray
   | .mock _ b, off, len =>
     pure (b.extract off.toNat (off.toNat + len.toNat))
   | .real _, _, _ =>
@@ -297,7 +297,7 @@ private def inMemoryPreadOp : FileHandle → UInt64 → USize → IO ByteArray
     fresh mutable buffer at `vaddr`. Page-alignment matters for the
     real kernel; the mock just keeps the bytes. -/
 private def inMemoryMmapOp :
-    FileHandle → UInt64 → (len : USize) → UInt32 → UInt64 → IO (Region len)
+    FileHandle → UInt64 → (len : UInt64) → UInt32 → UInt64 → IO (Region len)
   | .mock _ b, va, len, _prot, off => do
     let slice := b.extract off.toNat (off.toNat + len.toNat)
     let ref ← IO.mkRef slice
@@ -305,11 +305,11 @@ private def inMemoryMmapOp :
   | .real _, _, _, _, _ =>
     throw (IO.userError "inMemory.mmap: real handle leaked")
 
-private def inMemoryMmapReserveOp (va : UInt64) (len : USize) : IO (Region len) := do
+private def inMemoryMmapReserveOp (va : UInt64) (len : UInt64) : IO (Region len) := do
   let ref ← IO.mkRef (ByteArray.mk (Array.replicate len.toNat 0))
   pure (.mock va ref)
 
-private def inMemoryMmapStackOp (len : USize) : IO (Region len) := do
+private def inMemoryMmapStackOp (len : UInt64) : IO (Region len) := do
   let ref ← IO.mkRef (ByteArray.mk (Array.replicate len.toNat 0))
   pure (.mock 0 ref)
 
@@ -328,7 +328,7 @@ def Ops.inMemory
     (files    : Std.HashMap String ByteArray)
     (execLog  : Option (IO.Ref (Array ExecRecord)) := none)
     (ctorLog  : Option (IO.Ref (Array CtorRecord)) := none) : Ops :=
-  let execOp : ∀ {size : USize}, UInt64 → UInt64 → UInt64 → UInt64 → UInt64 →
+  let execOp : ∀ {size : UInt64}, UInt64 → UInt64 → UInt64 → UInt64 → UInt64 →
                Region size → String → IO Unit :=
     fun entry phdrVa phent phnum baseVa stack argv0 => do
       let stackVa := match stack with | .mock va _ => va | .real _ => 0

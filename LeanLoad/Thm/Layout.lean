@@ -107,6 +107,79 @@ theorem alignUp_ge (x align : UInt64)
     Nat.mod_lt _ h_align_pos
   omega
 
+-- ============================================================================
+-- BSS InRange — `Exec.realizeSegment`'s zeroout bound, derived from
+-- `Segment`'s gabi-07 witnesses (`fileszLeMemsz`, `addrBound`) plus
+-- the alignment lemmas above.
+-- ============================================================================
+
+private theorem ea_ne_zero (s : Segment) : s.effectiveAlign ≠ 0 := by
+  unfold Segment.effectiveAlign
+  split
+  · decide
+  · intro h; rename_i hne; apply hne; simp [h]
+
+private theorem ea_no_wrap (s : Segment) :
+    s.vaddr.toNat + s.memsz.toNat + s.effectiveAlign.toNat < 2^64 := by
+  have h_addr := s.addrBound
+  have h_2_48 : (2:Nat)^48 + 1 < 2^64 := by decide
+  unfold Segment.effectiveAlign
+  split <;> rename_i h
+  · have : s.align.toNat = 0 := by simp at h; rw [h]; rfl
+    have h_one : (1 : UInt64).toNat = 1 := rfl
+    rw [h_one]; omega
+  · omega
+
+/-- Writing `(memsz - filesz)` bytes at `(pageInset + filesz)` fits
+    inside `pageLength`. Discharged from `Segment`'s gabi-07 witnesses
+    via `alignUp_ge` / `alignDown_le`. Consumed by
+    `Exec.realizeSegment` to skip the BSS-zero runtime check. -/
+theorem bss_inRange (s : Segment) :
+    Runtime.Region.InRange s.pageLength
+      (s.pageInset + s.filesz) (s.memsz - s.filesz) := by
+  have h_fm := s.fileszLeMemsz
+  have h_addr := s.addrBound
+  have h_ea_ne := ea_ne_zero s
+  have h_pv_le_v : s.pageVaddr ≤ s.vaddr := alignDown_le _ _
+  have h_pv_le_v_nat : s.pageVaddr.toNat ≤ s.vaddr.toNat :=
+    UInt64.le_iff_toNat_le.mp h_pv_le_v
+  have h_vm_no_wrap : s.vaddr.toNat + s.memsz.toNat < 2^64 := by
+    have := ea_no_wrap s; omega
+  have h_vm_eq : (s.vaddr + s.memsz).toNat = s.vaddr.toNat + s.memsz.toNat := by
+    rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_vm_no_wrap
+  have h_vmea : (s.vaddr + s.memsz).toNat + s.effectiveAlign.toNat < 2^64 := by
+    rw [h_vm_eq]; exact ea_no_wrap s
+  have h_au_ge : s.vaddr + s.memsz ≤ alignUp (s.vaddr + s.memsz) s.effectiveAlign :=
+    alignUp_ge _ _ h_ea_ne h_vmea
+  have h_au_ge_nat :
+      s.vaddr.toNat + s.memsz.toNat ≤
+        (alignUp (s.vaddr + s.memsz) s.effectiveAlign).toNat := by
+    have := UInt64.le_iff_toNat_le.mp h_au_ge; rw [h_vm_eq] at this; exact this
+  have h_au_le_pv :
+      s.pageVaddr ≤ alignUp (s.vaddr + s.memsz) s.effectiveAlign := by
+    apply UInt64.le_iff_toNat_le.mpr; omega
+  have h_pl_nat : s.pageLength.toNat =
+      (alignUp (s.vaddr + s.memsz) s.effectiveAlign).toNat - s.pageVaddr.toNat := by
+    unfold Segment.pageLength
+    rw [UInt64.toNat_sub_of_le _ _ h_au_le_pv]
+  have h_pi_nat : s.pageInset.toNat = s.vaddr.toNat - s.pageVaddr.toNat := by
+    unfold Segment.pageInset
+    rw [UInt64.toNat_sub_of_le _ _ h_pv_le_v]
+  have h_fm_nat : s.filesz.toNat ≤ s.memsz.toNat := UInt64.le_iff_toNat_le.mp h_fm
+  have h_pif_no_wrap : s.pageInset.toNat + s.filesz.toNat < 2^64 := by
+    rw [h_pi_nat]; omega
+  have h_pif_nat : (s.pageInset + s.filesz).toNat = s.pageInset.toNat + s.filesz.toNat := by
+    rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_pif_no_wrap
+  have h_mf_nat : (s.memsz - s.filesz).toNat = s.memsz.toNat - s.filesz.toNat := by
+    rw [UInt64.toNat_sub_of_le _ _ h_fm]
+  refine ⟨?_, ?_⟩
+  · rw [UInt64.le_iff_toNat_le, h_pif_nat, h_pl_nat]; omega
+  · have h_le1 : s.pageInset + s.filesz ≤ s.pageLength := by
+      rw [UInt64.le_iff_toNat_le, h_pif_nat, h_pl_nat]; omega
+    rw [UInt64.le_iff_toNat_le, h_mf_nat,
+        UInt64.toNat_sub_of_le _ _ h_le1, h_pl_nat, h_pif_nat]
+    omega
+
 /-- Sorted segments ⇒ pairwise disjoint. With `endAddr[i] ≤ vaddr[j]`
     for `i < j`, every distinct pair satisfies `Segment.disjoint`. -/
 theorem segmentsPairwiseDisjoint_of_segmentsSorted

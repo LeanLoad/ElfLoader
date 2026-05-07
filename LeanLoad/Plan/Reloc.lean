@@ -34,14 +34,14 @@ open LeanLoad.Elaborate (PatchSize FormulaInputs FormulaResult Formula)
 
 /-- One memory write, keyed by `(objectIdx, segIdx)` so the runtime
     knows exactly which mmap'd region to write into. The offset is
-    segment-relative (in USize, ready for `Region.patchN`). -/
+    segment-relative (in UInt64, ready for `Region.patchN`). -/
 structure Patch (g : ObjectList) where
   /-- Index into `g.val`. -/
   objectIdx : Fin g.val.size
   /-- Index into `g.val[objectIdx].elf.segments`. -/
   segIdx    : Fin g.val[objectIdx].elf.segments.size
   /-- Offset from the segment's mmap'd region base, in bytes. -/
-  offset    : USize
+  offset    : UInt64
   /-- Value to write. -/
   value     : UInt64
   /-- Width of the write (4 or 8 bytes). -/
@@ -107,7 +107,7 @@ private def planRela (formula : Formula) (g : ObjectList)
     -- the raw `vaddr`); the rela's `r_offset` lies inside the raw
     -- `[vaddr, vaddr + memsz)` range by validation's witness, hence
     -- inside the larger page-aligned region.
-    let offset : USize := (r.r_offset - seg.pageVaddr).toUSize
+    let offset : UInt64 := r.r_offset - seg.pageVaddr
     some { objectIdx, segIdx, offset, value := res.value, size := res.size }
 
 /-- Plan all relocations for one object's segments. -/
@@ -119,13 +119,18 @@ def planObject (formula : Formula) (g : ObjectList) (bases : Array UInt64)
   for h : segI in [:obj.elf.segments.size] do
     let segIdx : Fin obj.elf.segments.size := ⟨segI, h.upper⟩
     let seg := obj.elf.segments[segIdx]
-    for entry in seg.rela ++ seg.jmprel do
+    let planEntry (acc : Array (Patch g))
+        (entry : { r : Parse.RawRela // Elaborate.coversRela seg.vaddr seg.memsz r }) :
+        Array (Patch g) :=
       let r := entry.val
       let symValue : UInt64 :=
         if r.sym == 0 then 0
         else resolveSymValue g bases rt objectIdx.val r.sym.toNat
-      if let some p := planRela formula g objectIdx segIdx base symValue r then
-        acc := acc.push p
+      match planRela formula g objectIdx segIdx base symValue r with
+      | none   => acc
+      | some p => acc.push p
+    acc := seg.rela.foldl planEntry acc
+    acc := seg.jmprel.foldl planEntry acc
   return acc
 
 /-- Plan relocations for every object. Pure (no `Except`): every

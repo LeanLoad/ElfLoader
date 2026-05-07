@@ -57,16 +57,4 @@ instance (segs : Array Segment) : Decidable (WellFormed segs) :=
 
 theorem WellFormed_nil : WellFormed (#[] : Array Segment) := by decide
 
--- ============================================================================
--- PT_LOAD filter.
--- ============================================================================
-
-open LeanLoad.Parse (RawPhdr)
-
-/-- Extract loadable phdrs from the raw phdr table. Each element is
-    a phdr with `p_type = PT_LOAD`; per-segment invariants are
-    re-derived later when constructing `Segment` bundles. -/
-def fromPhdrs (phdrs : Array RawPhdr) : Array RawPhdr :=
-  phdrs.filter (·.p_type == Parse.PT_LOAD)
-
 end LeanLoad.Elaborate

@@ -118,7 +118,7 @@ def elaborate (raw : RawElf) : Except String Elf := do
   if raw.header.ident.ei_data != ELFDATA2LSB then
     .error s!"elaborate: only little-endian supported \
       (got ei_data={raw.header.ident.ei_data})"
-  let loadable := fromPhdrs raw.phdrs
+  let loadable := raw.phdrs.filter (·.p_type == Parse.PT_LOAD)
   -- Per-rela "tagged with its segment index" (Sigma — destructurable).
   let GEntry := Σ i : Fin loadable.size, { r : RawRela // loadable[i].containsRela r }
   let groupOne (label : String) (rs : Array RawRela) :
@@ -140,7 +140,7 @@ def elaborate (raw : RawElf) : Except String Elf := do
     bucket.filterMap fun ⟨i, ⟨r, h_in⟩⟩ =>
       if h_eq : i = bucketIdx then some ⟨r, h_eq ▸ h_in⟩
       else none
-  -- Each loadable phdr is PT_LOAD by construction (`fromPhdrs` filtered);
+  -- Each loadable phdr is PT_LOAD by construction (filtered above);
   -- `Segment.ofPhdr` decidably checks each per-segment gabi-07
   -- invariant and the 48-bit address bound, failing with a typed error.
   let mut segmentsAcc : Array Segment := #[]
