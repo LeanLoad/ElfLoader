@@ -17,19 +17,17 @@ TLS, no `IFUNC`):
 Note: `GLOB_DAT` and `JUMP_SLOT` are documented as `S + A` for
 completeness; in practice the linker emits them with `A = 0`.
 
-The `Formula` type lives in `LeanLoad.Reloc` (the planner that
-applies it); this file is the per-arch table + per-type compile-time
-canaries.
+The `Formula` type lives alongside the gabi-06 spec
+(`LeanLoad.Spec.Reloc`); this file is the per-arch table + per-type
+compile-time canaries. No dependency on the planner — the
+planner-formula integration is exercised E2E via test fixtures.
 -/
 
-import LeanLoad.RelocPlan
-import LeanLoad.Layout
+import LeanLoad.Spec.Reloc
 
 namespace LeanLoad.Spec.Reloc.Aarch64
 
-open LeanLoad
-open LeanLoad.Discover
-open LeanLoad.Reloc
+open LeanLoad.Spec.Reloc
 
 def R_AARCH64_NONE      : UInt32 := 0
 def R_AARCH64_ABS64     : UInt32 := 257
@@ -53,7 +51,7 @@ def formula : Formula := fun ty inp =>
   else none
 
 -- Compile-time unit tests. Evaluated at elaboration; a wrong table
--- fails to build. Totality is proved in `LeanLoad.Thm.RelocPlan`.
+-- fails to build.
 
 -- A skipped reloc is not a zero write — "no operation" is structural.
 #guard (formula R_AARCH64_NONE      { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
@@ -86,13 +84,5 @@ def formula : Formula := fun ty inp =>
 -- the top of the address space).
 #guard (formula R_AARCH64_ABS64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := .b8 }
-
--- Planner-on-this-formula canary: one R_AARCH64_RELATIVE rela → one patch.
-private def aarch64Rela : LeanLoad.Spec.Reloc.Rela64 :=
-  { r_offset := 0x1000, r_info := 1027, r_addend := 0xa90 }
-
-#guard match planRela (n := 1) formula 0x10000 0x100000 ⟨0, by decide⟩ (r := aarch64Rela) with
-       | .ok (some p) => p.size == .b8
-       | _            => false
 
 end LeanLoad.Spec.Reloc.Aarch64

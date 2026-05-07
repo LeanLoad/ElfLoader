@@ -18,7 +18,7 @@ that they are. gabi 07 mandates the sort; non-overlap is de facto
 for correctness). The runtime check enforces both.
 -/
 
-import LeanLoad.Layout
+import LeanLoad.Plan.Layout
 
 namespace LeanLoad.Thm
 

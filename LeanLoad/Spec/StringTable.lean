@@ -26,7 +26,7 @@ def lookup (tab : StringTable) (offset : Nat) : Option String :=
     let endIdx := tab.findIdx? (· == 0) offset |>.getD tab.size
     String.fromUTF8? (tab.extract offset endIdx)
 
-section UnitTest
+section Example
 -- Synthetic strtab: "\0printf\0puts\0".
 -- offsets:           0  1     7    12
 private def t : StringTable :=
@@ -43,6 +43,6 @@ private def t : StringTable :=
 #guard lookup t 99 = none               -- way past the end
 -- Reading mid-string yields the suffix from that offset to the next NUL.
 #guard lookup t 4  = some "ntf"
-end UnitTest
+end Example
 
 end LeanLoad.Spec.StringTable

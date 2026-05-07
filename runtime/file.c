@@ -108,7 +108,7 @@ LEAN_EXPORT lean_object * leanload_filehandle_pread(b_lean_obj_arg hobj,
 
 /* File-backed `MAP_PRIVATE | MAP_FIXED` at `vaddr` from this handle.
  * Returns a `Region` for the freshly mapped range (one mmap = one
- * Region — uniform with `mmap_anon_fixed` and `mmap_stack` so the
+ * Region — uniform with `mmap_reserve` and `mmap_stack` so the
  * abstract memory model can treat all kernel mappings the same).
  * `prot` is the final permissions; the caller owns the address
  * range (typically a sub-range of an anon reservation that this

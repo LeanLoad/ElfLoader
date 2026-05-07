@@ -6,8 +6,8 @@ separated from the IO loop. Given the current `(objs, work)` state,
 decides what to do next; given a just-parsed dep, integrates it. No
 file IO, no parsing — those live in `DiscoverApply`.
 
-Mirrors the `Reloc.plan` / `Apply.applyPatches` and `Map.plan` /
-`Map.apply` pattern: pure decision + state update, IO orchestrator.
+Mirrors the `Reloc.plan` / `Init.plan` / `Exec.realize` pattern:
+pure decision + state update, IO bookend orchestrator.
 
 Spec: gabi 08 § Shared Object Dependencies (BFS dedup + search rules).
 

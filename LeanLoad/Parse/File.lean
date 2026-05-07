@@ -33,22 +33,40 @@ open LeanLoad.Parse.Bytes
 -- Virtual-address ↔ file-offset translation
 -- ============================================================================
 
+/-- Witness packaged with `vaToOffset`'s `some` branch: there is a
+    `PT_LOAD` `ph ∈ phdrs` whose virtual range covers `va` and `off`
+    is its file-offset translation. The witness used to live as a
+    separate theorem (`Thm.vaToOffset_correct`); now it's in the
+    return type and consumers that need the proof get it for free. -/
+abbrev VaToOffsetSpec (phdrs : Array Spec.Program.Header64) (va : UInt64) (off : Nat) : Prop :=
+  ∃ ph ∈ phdrs,
+    ph.p_type = Spec.Program.PT_LOAD ∧
+    ph.p_vaddr ≤ va ∧
+    va < ph.p_vaddr + ph.p_memsz ∧
+    off = (va - ph.p_vaddr).toNat + ph.p_offset.toNat
+
 /-- Translate a virtual address to a file offset by walking the
     `PT_LOAD` segments. Returns `none` if no `PT_LOAD` covers the
-    address. -/
-def vaToOffset (phdrs : Array Spec.Program.Header64) (va : UInt64) : Option Nat :=
-  phdrs.findSome? fun ph =>
-    if ph.p_type == Spec.Program.PT_LOAD
-       && ph.p_vaddr ≤ va
-       && va < ph.p_vaddr + ph.p_memsz then
-      some ((va - ph.p_vaddr).toNat + ph.p_offset.toNat)
-    else
-      none
+    address; the `some` branch carries `VaToOffsetSpec` as a
+    structural witness. -/
+def vaToOffset (phdrs : Array Spec.Program.Header64) (va : UInt64) :
+    Option { off : Nat // VaToOffsetSpec phdrs va off } := Id.run do
+  for h : i in [:phdrs.size] do
+    let ph := phdrs[i]
+    if h_load : ph.p_type = Spec.Program.PT_LOAD then
+      if h_lo : ph.p_vaddr ≤ va then
+        if h_hi : va < ph.p_vaddr + ph.p_memsz then
+          let off := (va - ph.p_vaddr).toNat + ph.p_offset.toNat
+          have h_mem : ph ∈ phdrs := phdrs.getElem_mem h.upper
+          return some ⟨off, ⟨ph, h_mem, h_load, h_lo, h_hi, rfl⟩⟩
+  return none
 
-section UnitTest
+section Example
 -- A two-segment ELF: [.text @va 0x1000, file 0x1000, len 0x1000]
--- and [.data @va 0x3000, file 0x2000, len 0x500]. Soundness is
--- proved by `Thm.vaToOffset_correct`; these spot-check the formula.
+-- and [.data @va 0x3000, file 0x2000, len 0x500]. The witness in
+-- `vaToOffset`'s return type is structural — these `#guard`s are
+-- input→output examples for the reader, so we elide the witness via
+-- a private wrapper to keep each line a single equation.
 private def phdrs : Array Spec.Program.Header64 := #[
   { (default : Spec.Program.Header64) with
     p_type := Spec.Program.PT_LOAD,
@@ -59,13 +77,18 @@ private def phdrs : Array Spec.Program.Header64 := #[
     p_vaddr := 0x3000, p_memsz := 0x500,
     p_offset := 0x2000, p_filesz := 0x500 } ]
 
-#guard vaToOffset phdrs 0x1000 = some 0x1000   -- start of .text
-#guard vaToOffset phdrs 0x1abc = some 0x1abc   -- mid .text
-#guard vaToOffset phdrs 0x3010 = some 0x2010   -- mid .data (different file offset)
-#guard vaToOffset phdrs 0x0fff = none           -- before .text
-#guard vaToOffset phdrs 0x2500 = none           -- gap between segments
-#guard vaToOffset phdrs 0x3500 = none           -- past .data
-end UnitTest
+/-- Just the offset, witness elided. Used only by the `#guard`
+    examples below so they read as a clean input→output table. -/
+private def vaToOffsetNat (phdrs : Array Spec.Program.Header64) (va : UInt64) : Option Nat :=
+  (vaToOffset phdrs va).map (·.val)
+
+#guard vaToOffsetNat phdrs 0x1000 = some 0x1000   -- start of .text
+#guard vaToOffsetNat phdrs 0x1abc = some 0x1abc   -- mid .text
+#guard vaToOffsetNat phdrs 0x3010 = some 0x2010   -- mid .data (different file offset)
+#guard vaToOffsetNat phdrs 0x0fff = none           -- before .text
+#guard vaToOffsetNat phdrs 0x2500 = none           -- gap between segments
+#guard vaToOffsetNat phdrs 0x3500 = none           -- past .data
+end Example
 
 -- ============================================================================
 -- Aggregated parse result (project-defined; not gabi)
@@ -132,12 +155,14 @@ private def parseSection {α} (rt : Runtime.Ops) (h : Runtime.FileHandle)
   | .ok v    => pure v
   | .error e => throw (IO.userError s!"parse {label}: {e}")
 
-/-- Resolve `vaddr` to a file offset; throw if no `PT_LOAD` covers it. -/
+/-- Resolve `vaddr` to a file offset; throw if no `PT_LOAD` covers it.
+    Discards the witness (callers downstream don't need it; it stays
+    available via `vaToOffset` directly when proofs do). -/
 private def vaToOffsetIO (phdrs : Array Spec.Program.Header64) (label : String)
     (vaddr : UInt64) : IO Nat :=
   match vaToOffset phdrs vaddr with
-  | some off => pure off
-  | none     => throw (IO.userError s!"parse {label}: va 0x{vaddr.toNat} not in any PT_LOAD")
+  | some ⟨off, _⟩ => pure off
+  | none          => throw (IO.userError s!"parse {label}: va 0x{vaddr.toNat} not in any PT_LOAD")
 
 -- ============================================================================
 -- Top-level parser — `pread`-driven, one section per syscall.
@@ -244,7 +269,7 @@ def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO ParsedElf := do
   }
 
 /-- Convenience: extract loadable segments from a parsed ELF. -/
-def segmentsOf (elf : ParsedElf) : Array Parse.Segment.Segment :=
+def segmentsOf (elf : ParsedElf) : Array Spec.Program.Segment :=
   Parse.Segment.fromPhdrs elf.phdrs
 
 /-- Pure parse-time validation: check the PT_LOAD well-formedness

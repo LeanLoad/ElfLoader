@@ -13,7 +13,7 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
   `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.DiscoverPlan
+import LeanLoad.Plan.Discover
 import LeanLoad.Parse.File
 import LeanLoad.Runtime
 

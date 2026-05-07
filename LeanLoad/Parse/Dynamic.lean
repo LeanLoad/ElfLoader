@@ -56,7 +56,7 @@ def find? (tab : Array Dyn64) (tag : UInt64) : Option Dyn64 :=
 def findAll (tab : Array Dyn64) (tag : UInt64) : Array Dyn64 :=
   tab.filter (·.d_tag == tag)
 
-section UnitTest
+section Example
 -- Synthetic .dynamic with three NEEDED entries plus singletons.
 private def tab : Array Dyn64 := #[
   { d_tag := DT_NEEDED, d_un := 0x10 },
@@ -72,6 +72,6 @@ private def tab : Array Dyn64 := #[
 -- All three NEEDED entries, in declared order.
 #guard (findAll tab DT_NEEDED).map (·.d_un) = #[0x10, 0x30, 0x40]
 #guard (findAll tab DT_HASH).size           = 0
-end UnitTest
+end Example
 
 end LeanLoad.Parse.Dynamic

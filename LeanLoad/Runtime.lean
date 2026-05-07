@@ -64,13 +64,13 @@ private opaque realPread (h : @& RealFileHandle) (offset : UInt64) (len : USize)
 private opaque realMmapAt (h : @& RealFileHandle) (vaddr : UInt64) (len : USize)
     (prot : UInt32) (offset : UInt64) : IO RealRegion
 
-@[extern "leanload_region_mmap_anon_fixed"]
-private opaque realMmapAnonFixed (vaddr : UInt64) (len : USize) : IO RealRegion
+@[extern "leanload_region_mmap_reserve"]
+private opaque realMmapReserve (vaddr : UInt64) (len : USize) : IO RealRegion
 @[extern "leanload_region_mmap_stack"]
 private opaque realMmapStack (len : USize) : IO RealRegion
 
-@[extern "leanload_region_mprotect_range"]
-private opaque realMprotectRange (r : @& RealRegion) (offset length : USize)
+@[extern "leanload_region_mprotect"]
+private opaque realMprotect (r : @& RealRegion) (offset length : USize)
     (prot : UInt32) : IO Unit
 @[extern "leanload_region_patch64"]
 private opaque realPatch64 (region : @& RealRegion) (offset : USize) (value : UInt64) : IO Unit
@@ -108,14 +108,14 @@ inductive FileHandle where
 /-- mmap'd memory region. Either a real kernel mapping or an
     in-memory mutable byte buffer for tests. Mock regions carry a
     `vaddr` for diagnostics and a mutable `IO.Ref ByteArray` so
-    `mprotectRange` / `patch64` / `zeroout` can update in place. -/
+    `mprotect` / `patch64` / `zeroout` can update in place. -/
 inductive Region where
   | real (r : RealRegion)
   | mock (vaddr : UInt64) (bytes : IO.Ref ByteArray)
 
 /-- `PROT_WRITE` bit, used by Map to widen a file-backed segment's
     initial protection so partial-last-page BSS can be zeroed before
-    `mprotectRange` drops the bit for read-only segments. The
+    `mprotect` drops the bit for read-only segments. The
     planner-side `Layout.protOfFlags` produces the *final* per-segment
     `PROT_*` value (PF_R/W/X mapped to PROT_READ/WRITE/EXEC). -/
 def PROT_WRITE : UInt32 := 2
@@ -133,9 +133,9 @@ structure Ops where
   size          : FileHandle → IO UInt64
   pread         : FileHandle → UInt64 → USize → IO ByteArray
   mmapAt        : FileHandle → UInt64 → USize → UInt32 → UInt64 → IO Region
-  mmapAnonFixed : UInt64 → USize → IO Region
+  mmapReserve : UInt64 → USize → IO Region
   mmapStack     : USize → IO Region
-  mprotectRange : Region → USize → USize → UInt32 → IO Unit
+  mprotect : Region → USize → USize → UInt32 → IO Unit
   patch64       : Region → USize → UInt64 → IO Unit
   patch32       : Region → USize → UInt64 → IO Unit
   zeroout       : Region → USize → USize → IO Unit
@@ -167,15 +167,15 @@ private def realMmapAtOp :
   | .mock _ _, _, _, _, _ =>
     throw (IO.userError "Ops.real.mmapAt: mock files cannot be mapped into real memory")
 
-private def realMmapAnonFixedOp (va : UInt64) (len : USize) : IO Region :=
-  .real <$> realMmapAnonFixed va len
+private def realMmapReserveOp (va : UInt64) (len : USize) : IO Region :=
+  .real <$> realMmapReserve va len
 
 private def realMmapStackOp (len : USize) : IO Region :=
   .real <$> realMmapStack len
 
-private def realMprotectRangeOp :
+private def realMprotectOp :
     Region → USize → USize → UInt32 → IO Unit
-  | .real r, off, len, prot => realMprotectRange r off len prot
+  | .real r, off, len, prot => realMprotect r off len prot
   | .mock _ _, _, _, _ => pure ()  -- mock has no protection bits to toggle
 
 private def mockWriteLE (ref : IO.Ref ByteArray) (off : USize) (width : Nat)
@@ -221,9 +221,9 @@ def Ops.real : Ops :=
     size          := realSizeOp
     pread         := realPreadOp
     mmapAt        := realMmapAtOp
-    mmapAnonFixed := realMmapAnonFixedOp
+    mmapReserve := realMmapReserveOp
     mmapStack     := realMmapStackOp
-    mprotectRange := realMprotectRangeOp
+    mprotect := realMprotectOp
     patch64       := realPatch64Op
     patch32       := realPatch32Op
     zeroout       := realZerooutOp
@@ -284,7 +284,7 @@ private def inMemoryMmapAtOp :
   | .real _, _, _, _, _ =>
     throw (IO.userError "inMemory.mmapAt: real handle leaked")
 
-private def inMemoryMmapAnonFixedOp (va : UInt64) (len : USize) : IO Region := do
+private def inMemoryMmapReserveOp (va : UInt64) (len : USize) : IO Region := do
   let ref ← IO.mkRef (ByteArray.mk (Array.replicate len.toNat 0))
   pure (.mock va ref)
 
@@ -326,9 +326,9 @@ def Ops.inMemory
     size          := inMemorySizeOp
     pread         := inMemoryPreadOp
     mmapAt        := inMemoryMmapAtOp
-    mmapAnonFixed := inMemoryMmapAnonFixedOp
+    mmapReserve := inMemoryMmapReserveOp
     mmapStack     := inMemoryMmapStackOp
-    mprotectRange := fun _ _ _ _ => pure ()
+    mprotect := fun _ _ _ _ => pure ()
     patch64       := realPatch64Op
     patch32       := realPatch32Op
     zeroout       := realZerooutOp

@@ -17,20 +17,15 @@ import LeanLoad.Spec.Reloc.X86_64
 import LeanLoad.Spec.GnuHash
 import LeanLoad.Spec.Reloc.Formula
 
-import LeanLoad.Layout
-import LeanLoad.DiscoverPlan
+import LeanLoad.Plan.Layout
+import LeanLoad.Plan.Discover
 import LeanLoad.DiscoverApply
-import LeanLoad.Resolve
-import LeanLoad.Image
-import LeanLoad.MapPlan
-import LeanLoad.MapApply
-import LeanLoad.RelocPlan
-import LeanLoad.RelocApply
-import LeanLoad.InitPlan
+import LeanLoad.Plan.Resolve
+import LeanLoad.Plan.Reloc
+import LeanLoad.Plan.Init
 import LeanLoad.Exec
 import LeanLoad.Runtime
 import LeanLoad.Thm.Parse
 import LeanLoad.Thm.Layout
-import LeanLoad.Thm.Resolve
 import LeanLoad.Thm.Discover
 import LeanLoad.Thm.GnuHash

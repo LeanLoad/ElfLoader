@@ -93,21 +93,16 @@ private def orderTest (g : ObjectList) : Except String Unit := do
   check (order.back? == some 0)
     s!"main (idx 0) should be last in order; got {order}"
 
-private def relocTest (g : ObjectList) (formula : Reloc.Formula) : Except String Unit := do
+private def relocTest (g : ObjectList) (formula : Spec.Reloc.Formula) : Except String Unit := do
   let layouts ← g.layouts
-  let patches ← Reloc.plan formula g layouts (Resolve.buildTable g)
+  let patches ← Reloc.plan formula g layouts.val (Resolve.buildTable g)
   check (patches.size > 0) "expected nonzero relocation writes"
 
-private def mapTest {n : Nat} (g : ObjectList) (image : Map.ProcessImage n) : Except String Unit :=
-  check (image.objects.size == g.val.size)
-    s!"image.objects.size {image.objects.size} ≠ object count {g.val.size}"
-
--- Apply has no test stage: its preconditions (objectIdx in bounds,
--- patch in range, size ∈ {4,8}) are all guaranteed upstream by
--- `Reloc.plan` + `Map.apply` + `Thm.formula_size_valid`. Running
--- `Apply.applyPatches` here would only re-test environmental
--- assumptions (kernel accepts the writes), which `./run.sh` covers
--- by actually launching the loaded program.
+-- Realize (mmap + overlays + zeroout + mprotect + patch writes +
+-- ctor calls + exec) has no test stage: it doesn't return (it
+-- `execAndJump`s into the loaded program). The pure planners above
+-- (`Layout`, `Reloc`, `Init`) are what's testable here; the IO
+-- bookend is exercised E2E by `./run.sh`.
 
 /-- Run a pure stage's test, log pass/fail, return whether it passed. -/
 private def runStage (name : String) (suite : Except String Unit) : IO Bool := do
@@ -137,11 +132,6 @@ def main : IO UInt32 := do
   let some formula := Spec.Reloc.formulaFor main.elf.header.e_machine
     | do IO.eprintln s!"skip: unsupported e_machine={main.elf.header.e_machine}"; return 0
   unless ← runStage "Reloc"   (relocTest g formula) do return 1
-
-  -- Map: needs IO (mmap); produces image consumed by mapTest.
-  let layouts ← IO.ofExcept g.layouts
-  let image ← Map.mapAll rt g layouts
-  unless ← runStage "Map" (mapTest g image) do return 1
 
   -- Apply has no test stage — see comment above. The actual apply
   -- is exercised E2E by `./run.sh`.

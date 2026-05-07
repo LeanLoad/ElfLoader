@@ -11,18 +11,19 @@ consume. Validation that the parser-produced segments are page-
 aligned-sorted and non-overlapping happens at the boundary in
 `g.layouts`, which returns a sized subtype carrying the witness.
 
-Init/fini ordering lives in `LeanLoad.InitPlan` (gabi 08); this
+Init/fini ordering lives in `LeanLoad.Plan.Init` (gabi 08); this
 file is purely gabi-07.
 -/
 
 import LeanLoad.Parse.Segment
-import LeanLoad.DiscoverPlan
+import LeanLoad.Plan.Discover
 import LeanLoad.Spec.Program
 
 namespace LeanLoad.Layout
 
 open LeanLoad
 open LeanLoad.Spec
+open LeanLoad.Spec.Program (Segment)
 open LeanLoad.Discover
 open LeanLoad.Parse.Segment
 
@@ -77,9 +78,10 @@ end LeanLoad.Layout
 -- are extension methods.
 -- ============================================================================
 
-namespace LeanLoad.Parse.Segment.Segment
+namespace LeanLoad.Spec.Program.Segment
 
 open LeanLoad.Layout
+open LeanLoad.Spec.Program
 
 /-- Effective alignment (treats `p_align = 0` as 1). -/
 private def effectiveAlign (s : Segment) : UInt64 :=
@@ -118,12 +120,13 @@ def endAddr (s : Segment) : UInt64 := s.vaddr + s.length
 def disjoint (s₁ s₂ : Segment) : Prop :=
   s₁.endAddr ≤ s₂.vaddr ∨ s₂.endAddr ≤ s₁.vaddr
 
-end LeanLoad.Parse.Segment.Segment
+end LeanLoad.Spec.Program.Segment
 
 namespace LeanLoad.Layout
 
 open LeanLoad
 open LeanLoad.Spec
+open LeanLoad.Spec.Program (Segment)
 open LeanLoad.Discover
 open LeanLoad.Parse.Segment
 
@@ -286,6 +289,42 @@ def assignBases (g : ObjectList) : Array UInt64 := Id.run do
     if !isExec then
       cursor := cursor + alignUp (objectSpan (Parse.File.segmentsOf obj.elf)) 0x1000
   return bases
+
+section Example
+open LeanLoad.Spec.Header (ET_EXEC ET_DYN)
+
+/-- Synthetic `LoadedObject` with the given `e_type`, no PT_LOAD
+    segments. Empty phdrs means `objectSpan = 0`, so the cursor
+    doesn't actually advance between consecutive ET_DYN entries —
+    the cumulative-stacking aspect of `assignBases` is exercised
+    E2E (run.sh against `build/main`). What this Example exercises
+    is the per-entry *dispatch*: ET_EXEC ⇒ 0, ET_DYN ⇒ cursor. -/
+private def synthEt (name : String) (etype : UInt16) : Discover.LoadedObject :=
+  let hdr : Spec.Header.ElfHeader64 :=
+    { (default : Spec.Header.ElfHeader64) with e_type := etype }
+  let elf : Parse.File.ParsedElf :=
+    { (default : Parse.File.ParsedElf) with phdrs := #[], header := hdr }
+  { name, path := s!"<synth:{name}>", handle := none, elf,
+    elf_wf := Parse.Segment.WellFormed_nil }
+
+private def synthList (objs : Array Discover.LoadedObject) (h : 0 < objs.size) :
+    Discover.ObjectList := ⟨objs, h⟩
+
+-- Single ET_EXEC main → base = 0.
+#guard assignBases (synthList #[synthEt "main" ET_EXEC] (by simp)) = #[0]
+
+-- Single ET_DYN object → base = dynAnchor (0x80000000).
+#guard assignBases (synthList #[synthEt "lib" ET_DYN] (by simp)) = #[dynAnchor]
+
+-- Mixed: ET_EXEC main + two ET_DYN libs. With empty phdrs all
+-- objectSpans are 0, so all ET_DYNs share the same dynAnchor base
+-- (real linkers produce non-empty PT_LOADs whose spans drive the
+-- cumulative cursor; that path is E2E-tested).
+#guard assignBases (synthList #[synthEt "main" ET_EXEC,
+                                 synthEt "libfoo" ET_DYN,
+                                 synthEt "libbar" ET_DYN] (by simp))
+       = #[0, dynAnchor, dynAnchor]
+end Example
 
 end LeanLoad.Layout
 

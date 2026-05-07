@@ -2,22 +2,25 @@
 
 A verified ELF loader in Lean 4. Reads, plans, and runs Linux ELF
 binaries (static + dynamically-linked) through a pipeline split into
-**pure planners** (verified core) and **trusted IO appliers** (FFI to
-`mmap` / `mprotect` / `pread`):
+a **pure middle** (verified core, all in `Plan/`) and two **trusted
+IO bookends**:
 
-| Stage    | Pure planner   | Trusted IO         | What it does                                                                                  |
-| -------- | -------------- | ------------------ | --------------------------------------------------------------------------------------------- |
-| Discover | `DiscoverPlan` | `DiscoverApply`    | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
-| Parse    | `Parse/*`      | `Parse/File.parse` | Decode each ELF; carry a `WellFormed` segment witness in the type.                            |
-| Resolve  | `Resolve`      | —                  | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`.            |
-| Layout   | `Layout`       | —                  | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
-| Map      | `MapPlan`      | `MapApply`         | Anon reservation + per-segment overlay/zero/mprotect; `Fin segIdx` for total slot writes.     |
-| Reloc    | `RelocPlan`    | `RelocApply`       | Per-arch formula → `Patch` list; `PatchSize` (`b4`/`b8`) makes apply dispatch structural.     |
-| Init     | `InitPlan`     | `InitApply`        | DFS post-order over deps, then per-object `init_array` resolution → constructor address list. |
-| Exec     | —              | `Exec`             | Build kernel-style stack + auxv; jump to entry. Does not return.                              |
+| Stage    | Pure planner    | IO bookend                | What it does                                                                                  |
+| -------- | --------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
+| Discover | `Plan/Discover` | `DiscoverApply.discover`  | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
+| Parse    | `Parse/*`       | `Parse/File.parse`        | Decode each ELF; carry a `WellFormed` segment witness in the type.                            |
+| Resolve  | `Plan/Resolve`  | —                         | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`.            |
+| Layout   | `Plan/Layout`   | —                         | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
+| Reloc    | `Plan/Reloc`    | (folded into `realize`)   | Per-arch formula → `Patch` list; `PatchSize` (`b4`/`b8`) makes realize dispatch structural.   |
+| Init     | `Plan/Init`     | (folded into `realize`)   | DFS post-order over deps, then per-object `init_array` resolution → constructor address list. |
+| Exec     | —               | `Exec.realize`            | Single IO sweep over layouts/patches/ctors: mmap + zeroout + mprotect + patch writes + ctor calls + stack + jump. |
 
-Every `*Plan` is pure Lean; every `*Apply` only orchestrates IO calls
-the planner already approved.
+Every file under `Plan/` is pure Lean; the only IO seams are
+`DiscoverApply` (file reads) and `Exec.realize` (mmap + writes +
+control transfer). The mmap-op sequence (overlay/bssZero/mprotect)
+is derived inline from each layout's segments inside `realize` —
+there's no separate Map planner because that "planning" was
+trivial (a function of segment shape) and only `realize` consumed it.
 
 Targets AArch64 + x86-64 with musl libc. The verified core is pure
 Lean.
@@ -79,23 +82,19 @@ LeanLoad/
     GnuHash.lean           DT_GNU_HASH chain reader → dynsym count
     File.lean              ParsedElf aggregate + top-level parse with WellFormed witness
   Thm/                     proven theorems — one file per topic, docstring is the contract
-    Parse.lean             VA → file-offset soundness within PT_LOAD; WellFormed ↔ WellFormedB
+    Parse.lean             named accessors deriving Spec.Program.{Sorted,…} from a WellFormed witness
     Layout.lean            sorted ⇒ pairwise disjoint; runtime check ↔ proof-level invariant
-    Resolve.lean           findInObject's index is in-bounds of obj.elf.symtab
     Discover.lean          BFS dedup primitive iff loaded; nodup-preservation on push
     GnuHash.lean           soundness of the dynsym-count derivation
-  DiscoverPlan.lean        BFS dedup + LoadedObject + ObjectList (non-empty subtype)
+  Plan/                    pure middle — every stage that produces abstract data
+    Discover.lean          BFS dedup + LoadedObject + ObjectList (non-empty subtype)
+    Resolve.lean           undef ref → SymRef n / Unresolved n / Table n (Fin n on objectIdx)
+    Layout.lean            per-object Segment + ObjectLayout; assignBases; layouts validator
+    Reloc.lean             Patch n (Fin objectIdx) + PatchSize (b4/b8); planner per-arch formula
+    Init.lean              buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
   DiscoverApply.lean       walk DT_NEEDED via IO; thread non-emptiness witness through the loop
-  Resolve.lean             undef ref → SymRef n / Unresolved n / Table n (Fin n on objectIdx)
-  Layout.lean              per-object Segment + ObjectLayout; assignBases; layouts validator
-  Image.lean               ProcessImage n (parameterised by object count, size_eq witness)
-  MapPlan.lean             ObjectPlan + PerObjectOp numSegs (Fin segIdx)
-  MapApply.lean            mmap + memcpy + mprotect (IO); per-object iteration
-  RelocPlan.lean           Patch n (Fin objectIdx) + PatchSize (b4/b8); planner per-arch formula
-  RelocApply.lean          dispatch on PatchSize; total `image.objects[p.objectIdx]` (Fin n)
-  InitPlan.lean            buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
-  InitApply.lean           call each constructor address (IO)
-  Exec.lean                kernel-style stack + auxv + transferControl (does not return)
+  Exec.lean                IO bookend — realize all plans (mmap + zeroout + mprotect + patch
+                           writes + ctor calls + stack + execAndJump). Does not return.
   Runtime.lean             @[extern] trust seam (FileHandle, Region, mmap*, patch{32,64}, …)
   Main.lean                CLI + load / debug orchestration
   Test.lean                test exe entry — drives every stage except Exec

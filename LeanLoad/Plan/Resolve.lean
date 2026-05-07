@@ -16,7 +16,7 @@ defining (object, symbol) pair via breadth-first search over the
 order: main first, then NEEDED entries in their declared order).
 -/
 
-import LeanLoad.DiscoverPlan
+import LeanLoad.Plan.Discover
 import LeanLoad.Spec.Symbol
 import LeanLoad.Fixtures
 
@@ -54,10 +54,16 @@ def isWeak (sym : Symbol.Symbol64) : Bool :=
 def symName (obj : Discover.LoadedObject) (sym : Symbol.Symbol64) : Option String :=
   Spec.StringTable.lookup obj.elf.strtab sym.st_name.toNat
 
-/-- Look up `name` as a global definition in `obj`'s symbol table. -/
-def findInObject (obj : Discover.LoadedObject) (name : String) : Option Nat :=
-  obj.elf.symtab.findIdx? fun sym =>
-    isGlobalDef sym && symName obj sym == some name
+/-- Look up `name` as a global definition in `obj`'s symbol table.
+    The returned index is a `Fin obj.elf.symtab.size` — the bound
+    that used to require `Thm.findInObject_lt_size` is now in the
+    type, courtesy of `Array.findIdx?_eq_some_iff_findIdx_eq`. -/
+def findInObject (obj : Discover.LoadedObject) (name : String) :
+    Option (Fin obj.elf.symtab.size) :=
+  match h : obj.elf.symtab.findIdx? (fun sym =>
+      isGlobalDef sym && symName obj sym == some name) with
+  | none   => none
+  | some i => some ⟨i, (Array.findIdx?_eq_some_iff_findIdx_eq.mp h).1⟩
 
 /-- Resolve `name` against `g` via breadth-first search over its
     objects. Returns the providing `SymRef`, or `none` if no object
@@ -65,7 +71,7 @@ def findInObject (obj : Discover.LoadedObject) (name : String) : Option Nat :=
 def resolveByName (g : ObjectList) (name : String) : Option (SymRef g.val.size) := Id.run do
   for h : objectIdx in [:g.val.size] do
     if let some symIdx := findInObject g.val[objectIdx] name then
-      return some { objectIdx := ⟨objectIdx, h.upper⟩, symIdx }
+      return some { objectIdx := ⟨objectIdx, h.upper⟩, symIdx := symIdx.val }
   return none
 
 /-- A failed-to-resolve undefined symbol; useful for diagnostics.
@@ -122,7 +128,7 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
 -- undefined ref to `printf` and libc defines it, then check the
 -- resolver finds the right pair.
 -- ============================================================================
-section UnitTest
+section Example
 open LeanLoad.Fixtures
 
 /-- Pack `ss` into a NUL-separated `.dynstr`; offset 0 reserved for "". -/
@@ -161,6 +167,6 @@ private def resolveG : ObjectList :=
 #guard (resolveByName resolveG "nonexistent")              = none
 #guard (buildTable    resolveG).missing.size               = 0
 
-end UnitTest
+end Example
 
 end LeanLoad.Resolve

@@ -1,13 +1,18 @@
 /-
 Parser-side theorems.
 
-- `Parse.File.vaToOffset` returns the offset of the file byte that
-  should appear at the requested virtual address.
-- Named accessors for the parse-time well-formedness witness
-  (`Parse.Segment.WellFormed`, defined as `WellFormedB segs = true`).
-  These let proof-side code destructure individual clauses (sorted,
-  nonOverlap, …) when needed; the production path (`Parse.File.parse`,
-  `LoadedObject.elf_wf`) treats the witness as opaque.
+Named accessors that derive each gabi-07 / de-facto invariant from a
+parse-time `Parse.Segment.WellFormed` witness. The Bool decision
+procedure is in `Parse/Segment.lean`; the Prop-level statements
+(`Spec.Program.{Sorted, FileszLeMemsz, AlignPow2, AlignCong,
+NonOverlap}`) live in `Spec/Program.lean`. This file bridges: given
+`WellFormedB segs = true`, produce the corresponding Spec-level
+Prop. Production code (`Parse.File.parse`, `LoadedObject.elf_wf`)
+treats the witness as opaque; only proofs that need to destructure
+individual clauses use these accessors.
+
+The companion theorem `vaToOffset_correct` was retired: the witness
+is now in `Parse.File.vaToOffset`'s return type as a subtype.
 -/
 
 import LeanLoad.Spec.Program
@@ -16,39 +21,17 @@ import LeanLoad.Parse.File
 namespace LeanLoad.Thm
 
 open LeanLoad.Spec
+open LeanLoad.Spec.Program (Segment)
 open LeanLoad.Parse.Segment
-
-/-- If `vaToOffset` returns `some off`, there is a witness `PT_LOAD`
-    segment in `phdrs` whose virtual range covers `va` and `off` is
-    the corresponding file offset. -/
-theorem vaToOffset_correct
-    (phdrs : Array Program.Header64) (va : UInt64) (off : Nat) :
-    Parse.File.vaToOffset phdrs va = some off →
-    ∃ ph ∈ phdrs,
-      ph.p_type = Program.PT_LOAD ∧
-      ph.p_vaddr ≤ va ∧
-      va < ph.p_vaddr + ph.p_memsz ∧
-      off = (va - ph.p_vaddr).toNat + ph.p_offset.toNat := by
-  intro h
-  unfold Parse.File.vaToOffset at h
-  obtain ⟨ph, hmem, hf⟩ := Array.exists_of_findSome?_eq_some h
-  refine ⟨ph, hmem, ?_⟩
-  split at hf
-  · rename_i hcond
-    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hcond
-    refine ⟨hcond.1.1, hcond.1.2, hcond.2, ?_⟩
-    injection hf with hf; exact hf.symm
-  · contradiction
 
 -- ============================================================================
 -- Named accessors on `Parse.Segment.WellFormed`.
 --
 -- `WellFormed segs := WellFormedB segs = true` is the propositional
--- reading of the Bool decision procedure, with no separate Prop
--- structure. The accessors below extract individual clauses from a
--- witness — they decode the conjunctive Bool by hand. Same layout as
--- the structure-style fields would have given, just lazy: only the
--- clauses callers actually consume need accessor lemmas.
+-- reading of the Bool decision procedure (in `Parse/Segment.lean`).
+-- The Prop-level statements of each clause live in `Spec.Program`.
+-- The accessors below bridge: given a `WellFormed` witness, produce
+-- the corresponding `Spec.Program.*` Prop.
 -- ============================================================================
 
 namespace WellFormed
@@ -124,47 +107,37 @@ private theorem unpack {segs : Array Segment} (h : WellFormed segs) :
   obtain ⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩ := h
   exact ⟨h1, h2, h3, h4, h5⟩
 
-/-- gabi 07 § Program Loading: PT_LOAD entries appear in `p_vaddr` order. -/
+/-- A `WellFormed` witness yields `Spec.Program.Sorted`. -/
 theorem sorted {segs : Array Segment} (h : WellFormed segs) :
-    ∀ i j (_ : i < segs.size) (_ : j < segs.size),
-      i < j → segs[i].phdr.p_vaddr ≤ segs[j].phdr.p_vaddr := by
+    Spec.Program.Sorted segs := by
   intro i j hi hj hlt
   exact decide_eq_true_eq.mp (of_pair (unpack h).1 i j hi hj hlt)
 
-/-- gabi 07 § Program Header (PT_LOAD): `p_filesz ≤ p_memsz`. -/
+/-- A `WellFormed` witness yields `Spec.Program.FileszLeMemsz`. -/
 theorem fileszLeMemsz {segs : Array Segment} (h : WellFormed segs) :
-    ∀ i (_ : i < segs.size),
-      segs[i].phdr.p_filesz ≤ segs[i].phdr.p_memsz := by
+    Spec.Program.FileszLeMemsz segs := by
   intro i hi
   exact decide_eq_true_eq.mp (of_perEntry (unpack h).2.1 i hi)
 
-/-- gabi 07 § Program Header: `p_align` is 0 or a power of two. -/
+/-- A `WellFormed` witness yields `Spec.Program.AlignPow2`. -/
 theorem alignPow2 {segs : Array Segment} (h : WellFormed segs) :
-    ∀ i (_ : i < segs.size),
-      segs[i].phdr.p_align = 0 ∨
-      (segs[i].phdr.p_align &&& (segs[i].phdr.p_align - 1)) = 0 := by
+    Spec.Program.AlignPow2 segs := by
   intro i hi
   have := of_perEntry (unpack h).2.2.1 i hi
   simp only [Bool.or_eq_true, decide_eq_true_eq] at this
   exact this
 
-/-- gabi 07 § Program Header: `p_vaddr ≡ p_offset (mod p_align)`. -/
+/-- A `WellFormed` witness yields `Spec.Program.AlignCong`. -/
 theorem alignCong {segs : Array Segment} (h : WellFormed segs) :
-    ∀ i (_ : i < segs.size),
-      segs[i].phdr.p_align = 0 ∨
-      segs[i].phdr.p_vaddr % segs[i].phdr.p_align =
-        segs[i].phdr.p_offset % segs[i].phdr.p_align := by
+    Spec.Program.AlignCong segs := by
   intro i hi
   have := of_perEntry (unpack h).2.2.2.1 i hi
   simp only [Bool.or_eq_true, decide_eq_true_eq] at this
   exact this
 
-/-- *De facto* (not gabi-mandated): PT_LOAD `[p_vaddr, p_vaddr + p_memsz)`
-    ranges are pairwise disjoint. -/
+/-- A `WellFormed` witness yields `Spec.Program.NonOverlap`. -/
 theorem nonOverlap {segs : Array Segment} (h : WellFormed segs) :
-    ∀ i j (_ : i < segs.size) (_ : j < segs.size),
-      i < j →
-      segs[i].phdr.p_vaddr + segs[i].phdr.p_memsz ≤ segs[j].phdr.p_vaddr := by
+    Spec.Program.NonOverlap segs := by
   intro i j hi hj hlt
   exact decide_eq_true_eq.mp (of_pair (unpack h).2.2.2.2 i j hi hj hlt)
 

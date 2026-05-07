@@ -71,7 +71,7 @@ static lean_object * mmap_rw(uint64_t vaddr, size_t len, int flags) {
 
 /* Anonymous private mapping pinned at `vaddr` (`MAP_FIXED`). Used by
  * Map as the per-object reservation at the Layout-assigned base. */
-LEAN_EXPORT lean_object * leanload_region_mmap_anon_fixed(uint64_t vaddr,
+LEAN_EXPORT lean_object * leanload_region_mmap_reserve(uint64_t vaddr,
                                                           size_t   len,
                                                           lean_object * /* w */) {
     return mmap_rw(vaddr, len, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED);
@@ -91,15 +91,14 @@ LEAN_EXPORT lean_object * leanload_region_mmap_stack(size_t len,
 
 /* mprotect on a sub-range of a region. Used when one big region holds
  * multiple `PT_LOAD` segments with different permissions. */
-LEAN_EXPORT lean_object * leanload_region_mprotect_range(b_lean_obj_arg robj,
+LEAN_EXPORT lean_object * leanload_region_mprotect(b_lean_obj_arg robj,
                                                          size_t offset,
                                                          size_t length,
                                                          uint32_t prot,
                                                          lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (!r->addr) return leanload_io_err("region: not mapped");
     if (offset > r->length || length > r->length - offset) {
-        return leanload_io_err("mprotect_range: out of bounds");
+        return leanload_io_err("mprotect: out of bounds");
     }
     char * start = (char *)r->addr + offset;
     if (mprotect(start, length, (int)prot) != 0) {
@@ -117,7 +116,6 @@ LEAN_EXPORT lean_object * leanload_region_patch64(b_lean_obj_arg robj,
                                                   uint64_t value,
                                                   lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (!r->addr) return leanload_io_err("region: not mapped");
     if (offset > r->length || 8 > r->length - offset) {
         return leanload_io_err("region: patch64 out of bounds");
     }
@@ -133,7 +131,6 @@ LEAN_EXPORT lean_object * leanload_region_patch32(b_lean_obj_arg robj,
                                                   uint64_t value,
                                                   lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (!r->addr) return leanload_io_err("region: not mapped");
     if (offset > r->length || 4 > r->length - offset) {
         return leanload_io_err("region: patch32 out of bounds");
     }
@@ -148,7 +145,6 @@ LEAN_EXPORT lean_object * leanload_region_zeroout(b_lean_obj_arg robj,
                                                   size_t len,
                                                   lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (!r->addr) return leanload_io_err("region: not mapped");
     if (offset > r->length || len > r->length - offset) {
         return leanload_io_err("region: zeroout out of bounds");
     }

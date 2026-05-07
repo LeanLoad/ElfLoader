@@ -10,11 +10,11 @@ Discover-stage theorems.
     preserves the name-uniqueness invariant.
 
 The `buildDeps` size + in-bounds invariants used to live here too,
-but `buildDeps` has moved to `LeanLoad.InitPlan` (init/fini are its
-only consumer). Its theorems live in `LeanLoad.Thm.InitPlan`.
+but `buildDeps` has moved to `LeanLoad.Plan.Init` (init/fini are its
+only consumer); its examples and any future theorems live there.
 -/
 
-import LeanLoad.DiscoverPlan
+import LeanLoad.Plan.Discover
 
 namespace LeanLoad.Thm
 

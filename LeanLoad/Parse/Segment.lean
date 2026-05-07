@@ -1,40 +1,45 @@
 /-
-Typed projection of `PT_LOAD` program headers — *parse-level only*.
+PT_LOAD segment helpers — *parse/IO-side* logic on top of the
+`Segment` refinement defined in `Spec.Program`.
 
-A `Segment` is a `Spec.Program.Header64` carrying a proof that
-`p_type = PT_LOAD`. Trivial accessors over raw header fields
-(`fileOff`, `fileLen`) live here because they're zero-computation
-projections.
+The Spec/ side owns:
+  - `Spec.Program.Segment` (refinement type: a `Header64` with
+    `p_type = PT_LOAD`).
+  - The Prop-level invariants `Spec.Program.{Sorted, FileszLeMemsz,
+    AlignPow2, AlignCong, NonOverlap}` — gabi-07 mandates plus one
+    de-facto convention, as plain quantifiers.
+
+This file owns:
+  - The smart constructor `Segment.fromPhdr?` (runtime PT_LOAD check).
+  - The trivial accessors `Segment.fileOff`, `Segment.fileLen`.
+  - The phdr-table → segments helper `fromPhdrs`.
+  - The decidable Bool mirror `WellFormedB` and the propositional
+    alias `WellFormed := WellFormedB segs = true`.
 
 **Loader-level views** (`vaddr`, `length`, `prot`, `endAddr`, …) —
 which page-align addresses for `mmap(2)` and translate `PF_*` to
 POSIX `PROT_*` — live in `LeanLoad.Layout`. Those are decisions the
 loader makes, not properties the spec dictates.
 
-Spec: gabi 07 § Program Header.
+Methods on `Segment` (`fromPhdr?`, `fileOff`, `fileLen`) live in
+the `Spec.Program.Segment` namespace so dot notation works wherever
+the type is in scope. Functions over `Array Segment` (`fromPhdrs`,
+`WellFormedB`, `WellFormed`) live in the `Parse.Segment` namespace.
 -/
 
 import LeanLoad.Spec.Program
 
-namespace LeanLoad.Parse.Segment
+-- ============================================================================
+-- Methods on `Spec.Program.Segment` — the smart constructor and the
+-- trivial header-field accessors. Defined in this namespace so
+-- `s.fromPhdr?` / `s.fileLen` dot notation resolves on the type.
+-- ============================================================================
 
-open LeanLoad
-open LeanLoad.Spec
-
-/-- A loadable segment: a `Header64` whose `p_type = PT_LOAD`. The
-    `isLoad` field defaults via `decide` for direct construction with
-    a concrete phdr; the smart constructor `fromPhdr?` filters
-    arbitrary phdrs by type. -/
-structure Segment where
-  phdr   : Program.Header64
-  isLoad : phdr.p_type = Program.PT_LOAD := by decide
-  deriving Repr
-
-namespace Segment
+namespace LeanLoad.Spec.Program.Segment
 
 /-- Lift a `Header64` into a `Segment` if it is `PT_LOAD`. -/
-def fromPhdr? (ph : Program.Header64) : Option Segment :=
-  if h : ph.p_type = Program.PT_LOAD then some ⟨ph, h⟩ else none
+def fromPhdr? (ph : Header64) : Option Segment :=
+  if h : ph.p_type = PT_LOAD then some ⟨ph, h⟩ else none
 
 /-- File offset to start copying bytes from. -/
 def fileOff (s : Segment) : UInt64 := s.phdr.p_offset
@@ -42,7 +47,13 @@ def fileOff (s : Segment) : UInt64 := s.phdr.p_offset
 /-- Number of bytes to copy (≤ memory length; remainder is BSS). -/
 def fileLen (s : Segment) : UInt64 := s.phdr.p_filesz
 
-end Segment
+end LeanLoad.Spec.Program.Segment
+
+namespace LeanLoad.Parse.Segment
+
+open LeanLoad
+open LeanLoad.Spec
+open LeanLoad.Spec.Program (Segment)
 
 /-- Extract loadable segments from a phdr table. Filters by
     `PT_LOAD` and wraps each in `Segment`. The ParsedElf-keyed
@@ -53,17 +64,17 @@ def fromPhdrs (phdrs : Array Spec.Program.Header64) : Array Segment :=
 -- ============================================================================
 -- Parse-time well-formedness on PT_LOAD segments.
 --
--- `WellFormedB` is the single source of truth — a decidable Bool that
--- runs in `Parse.File.parse` and rejects malformed ELFs at the
--- parse boundary. `WellFormed` is the propositional reading of the
--- same Bool, defined as `WellFormedB = true`, used wherever code
--- carries the witness as a Prop (subtype components, structure
--- fields). They are *the same property* — no bridge to maintain.
+-- `WellFormedB` is the single source of truth — a decidable Bool
+-- that runs in `Parse.File.validate` and rejects malformed ELFs at
+-- the parse boundary. `WellFormed` is the propositional reading,
+-- defined as `WellFormedB = true`, used wherever code carries the
+-- witness as a Prop (subtype components, structure fields). They
+-- are *the same property* — no bridge to maintain.
 --
--- Named accessors for individual clauses (`WellFormed.sorted`,
--- `WellFormed.nonOverlap`, …) live in `Thm/Parse.lean` — they are
--- proof-only and not needed by the production path, which only
--- packs/unpacks the witness as an opaque hypothesis.
+-- The Prop-level statements of each clause (`Spec.Program.Sorted`,
+-- `Spec.Program.NonOverlap`, …) live in `Spec/Program.lean` —
+-- they're transcriptions of gabi-07 mandates. Theorems in
+-- `Thm/Parse.lean` extract each one from a `WellFormed` witness.
 --
 -- All five clauses are pure properties of header bytes — no loader
 -- page-size knowledge. The loader still runs an additional page-
@@ -77,28 +88,9 @@ def fromPhdrs (phdrs : Array Spec.Program.Header64) : Array Segment :=
     each as a finite pairwise/per-entry scan over `segs.size`. Real
     ELFs have <10 PT_LOAD entries, so the O(n²) loops are immaterial.
 
-    Clauses:
-    1. **Sorted by `p_vaddr`** — gabi 07 § Program Loading: "PT_LOAD
-       entries appear in p_vaddr order in the program header".
-    2. **`p_filesz ≤ p_memsz`** — gabi 07 § Program Header (PT_LOAD):
-       "p_memsz cannot be smaller than p_filesz". The `[p_filesz,
-       p_memsz)` tail is BSS.
-    3. **`p_align` is 0 or a power of two** — gabi 07 § Program Header:
-       "If p_align is greater than zero, it must be a positive
-       integral power of two". `p_align = 0` means "no alignment
-       constraint" and is treated as 1 by the loader.
-    4. **`p_vaddr ≡ p_offset (mod p_align)`** — gabi 07 § Program
-       Header: "p_vaddr should equal p_offset, modulo p_align".
-       Specified as SHOULD (not MUST), but `Layout.fileOffsetPaged`
-       relies on it; without it `mmap(2)` would map the wrong file
-       bytes for page-unaligned segments.
-    5. **`[p_vaddr, p_vaddr + p_memsz)` ranges pairwise disjoint** —
-       *de facto* convention, NOT gabi-mandated. Every linker
-       produces it; `Map.lean`'s `MAP_FIXED` mmap relies on the
-       stronger page-aligned form (`Layout.segmentsSortedB`) for
-       correctness, which follows from this raw non-overlap together
-       with `p_align ≥ pageSize` and segment-start page-alignment
-       (also de facto). -/
+    Each clause's gabi-07 reference and meaning lives next to the
+    Prop-level statement in `Spec.Program` (`Sorted`,
+    `FileszLeMemsz`, `AlignPow2`, `AlignCong`, `NonOverlap`). -/
 def WellFormedB (segs : Array Segment) : Bool :=
   let pair (p : Segment → Segment → Bool) : Bool :=
     (List.range segs.size).all fun i =>
@@ -129,7 +121,7 @@ def WellFormedB (segs : Array Segment) : Bool :=
     carries. Definitionally `WellFormedB segs = true`, so the runtime
     check decides this Prop with no separate bridge. Named accessors
     for individual clauses (`sorted`, `nonOverlap`, …) live in
-    `Thm/Parse.lean`. -/
+    `Thm/Parse.lean` and produce `Spec.Program.*` Props. -/
 abbrev WellFormed (segs : Array Segment) : Prop := WellFormedB segs = true
 
 /-- The empty segment array is well-formed by `decide` on a closed
@@ -138,5 +130,86 @@ abbrev WellFormed (segs : Array Segment) : Prop := WellFormedB segs = true
     surrounding parameters leave the goal open and `decide +revert`
     quantifies over an infinite type. -/
 theorem WellFormed_nil : WellFormed (#[] : Array Segment) := by decide
+
+section Example
+open LeanLoad.Spec.Program (Header64 PT_LOAD PF_R PF_W)
+
+/-- Build a PT_LOAD segment with named arguments — each example
+    below uses `(vaddr := …)` syntax so the call site is readable
+    even though the function takes 5 `UInt64`s. -/
+private def mkSeg (vaddr memsz filesz align offset : UInt64) : Segment :=
+  ⟨{ (default : Header64) with
+       p_type := PT_LOAD,
+       p_vaddr := vaddr, p_memsz := memsz, p_filesz := filesz,
+       p_align := align, p_offset := offset,
+       p_flags := PF_R ||| PF_W }, rfl⟩
+
+-- A small library of segments named after the property they
+-- demonstrate. Each one is annotated with the clause it exercises.
+-- Examples below combine them; reading a guard's input list reads
+-- as English ("text + data" / "text + overlapping" / …).
+
+/-- A normal text segment: `[0x1000, 0x2000)` in memory, `0x800`
+    bytes from the file, page-aligned and congruent. Baseline for
+    "well-formed" examples. -/
+private def textSeg : Segment :=
+  mkSeg (vaddr := 0x1000) (memsz := 0x1000) (filesz := 0x800)
+        (align := 0x1000) (offset := 0x1000)
+
+/-- A normal data segment that follows `textSeg` cleanly:
+    `[0x3000, 0x3500)` in memory, fully file-backed. -/
+private def dataSeg : Segment :=
+  mkSeg (vaddr := 0x3000) (memsz := 0x500) (filesz := 0x500)
+        (align := 0x1000) (offset := 0x2000)
+
+/-- Starts at 0x1800, inside `textSeg`'s `[0x1000, 0x2000)` —
+    overlapping the first one. Used to exercise the `NonOverlap`
+    clause. -/
+private def overlappingSeg : Segment :=
+  mkSeg (vaddr := 0x1800) (memsz := 0x500) (filesz := 0x500)
+        (align := 0x1000) (offset := 0x1800)
+
+/-- `p_filesz` (0x200) exceeds `p_memsz` (0x100) — exercises the
+    `FileszLeMemsz` clause. -/
+private def filesizeTooBig : Segment :=
+  mkSeg (vaddr := 0x1000) (memsz := 0x100) (filesz := 0x200)
+        (align := 0x1000) (offset := 0x1000)
+
+/-- `p_align = 3` is not a power of two — exercises `AlignPow2`. -/
+private def badAlign : Segment :=
+  mkSeg (vaddr := 0x1000) (memsz := 0x100) (filesz := 0x100)
+        (align := 3) (offset := 0x1000)
+
+/-- `p_offset = 0x1004`, `p_vaddr = 0x1000`, both `mod 0x1000` ⇒
+    `0x4 ≠ 0x0`. Exercises the `AlignCong` clause (gabi-07 SHOULD). -/
+private def badCongruence : Segment :=
+  mkSeg (vaddr := 0x1000) (memsz := 0x100) (filesz := 0x100)
+        (align := 0x1000) (offset := 0x1004)
+
+-- ============================================================================
+-- Examples — read each input list as a sentence describing the case.
+-- ============================================================================
+
+-- Two well-formed PT_LOADs back-to-back.
+#guard WellFormedB #[textSeg, dataSeg] = true
+
+-- Empty array is vacuously well-formed.
+#guard WellFormedB (#[] : Array Segment) = true
+
+-- Out of order (data first, then text) → fails `Sorted`.
+#guard WellFormedB #[dataSeg, textSeg] = false
+
+-- Overlap (text + a segment that starts inside text) → fails `NonOverlap`.
+#guard WellFormedB #[textSeg, overlappingSeg] = false
+
+-- filesz > memsz → fails `FileszLeMemsz`.
+#guard WellFormedB #[filesizeTooBig] = false
+
+-- p_align = 3 (not a power of 2) → fails `AlignPow2`.
+#guard WellFormedB #[badAlign] = false
+
+-- p_vaddr % align ≠ p_offset % align → fails `AlignCong`.
+#guard WellFormedB #[badCongruence] = false
+end Example
 
 end LeanLoad.Parse.Segment

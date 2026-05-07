@@ -23,8 +23,8 @@ The dep edges are re-derived here from `obj.elf.needed` rather than
 stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
 -/
 
-import LeanLoad.DiscoverPlan
-import LeanLoad.Image
+import LeanLoad.Plan.Discover
+import LeanLoad.Plan.Layout
 import LeanLoad.Spec.Header
 import Std.Data.HashMap
 
@@ -32,6 +32,7 @@ namespace LeanLoad.Init
 
 open LeanLoad
 open LeanLoad.Discover
+open LeanLoad.Layout
 
 -- ============================================================================
 -- Dep edges (re-derived from `obj.elf.needed`)
@@ -98,26 +99,54 @@ def computeOrder (deps : Array (Array Nat)) (n : Nat) : Array Nat :=
 def order (g : ObjectList) : Array Nat :=
   computeOrder (buildDeps g.val) g.val.size
 
+section Example
+-- Three-object DAG: 0 (main) → {1, 2}; 1 → {2}; 2 → ∅.
+-- DFS from 0 visits 1 first, descends to 2, emits 2 then 1, then
+-- returns and emits 0. Result: deps before dependents, main last.
+#guard computeOrder #[#[1, 2], #[2], #[]] 3 = #[2, 1, 0]
+
+-- Empty graph → empty order.
+#guard computeOrder #[] 0 = #[]
+
+-- Linear chain 0 → 1 → 2 → 3: deeper objects emit first.
+#guard computeOrder #[#[1], #[2], #[3], #[]] 4 = #[3, 2, 1, 0]
+
+-- Cycle 0 → 1 → 0: visited-flag breaks the back-edge mid-descent;
+-- both still emit (gabi 08 leaves cycle order undefined — we just
+-- terminate without re-recursing).
+#guard computeOrder #[#[1], #[0]] 2 = #[1, 0]
+
+-- Diamond: 0 → {1, 2}; 1 → {3}; 2 → {3}; 3 → ∅.
+-- 3 is shared by 1 and 2 — DFS emits it once on the first visit.
+#guard computeOrder #[#[1, 2], #[3], #[3], #[]] 4 = #[3, 1, 2, 0]
+end Example
+
 -- ============================================================================
 -- Address resolution
 -- ============================================================================
 
 /-- Constructor function addresses to call, in init order. Walks
-    `order` forward (init); fini callers walk `(plan g image).reverse`.
+    `order` forward (init); fini callers walk `(plan g layouts order).reverse`.
 
     For each object, walks `elf.initArr`: ET_DYN entries are relative
     (add base); ET_EXEC are absolute. Zero entries are skipped — gabi
     leaves them unspecified, but historical practice (and the table
-    layout where zero-terminators are common) treats them as no-ops. -/
-def plan {n : Nat} (g : ObjectList) (image : Map.ProcessImage n)
+    layout where zero-terminators are common) treats them as no-ops.
+
+    Pure: takes `layouts` (per-object base + segments) directly, not
+    a `ProcessImage`. The base is the only thing this function needs
+    from the post-Map state, and bases come from Layout deterministically.
+    Threading layouts instead of an image keeps Init.plan free of any
+    IO dependency. -/
+def plan (g : ObjectList) (layouts : Array ObjectLayout)
     (order : Array Nat) : Array UInt64 := Id.run do
   let mut addrs : Array UInt64 := #[]
   for objectIdx in order do
-    let some obj    := g.val[objectIdx]?     | continue
-    let some imgObj := image.objects[objectIdx]? | continue
+    let some obj := g.val[objectIdx]?  | continue
+    let some lyt := layouts[objectIdx]? | continue
     let isExec := obj.elf.header.e_type = Spec.Header.ET_EXEC
     for entry in obj.elf.initArr do
-      let fnAddr := if isExec then entry else imgObj.layout.base + entry
+      let fnAddr := if isExec then entry else lyt.base + entry
       if fnAddr != 0 then addrs := addrs.push fnAddr
   return addrs
 

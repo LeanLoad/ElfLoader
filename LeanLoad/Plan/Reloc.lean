@@ -9,34 +9,27 @@ The formula notation `S, A, B, P` follows gabi 06 and the per-arch
 supplements. Per-arch formula tables live under `Spec/Reloc/`.
 -/
 
-import LeanLoad.DiscoverPlan
-import LeanLoad.Layout
+import LeanLoad.Plan.Discover
+import LeanLoad.Plan.Layout
 import LeanLoad.Spec.Reloc
 import LeanLoad.Spec.Symbol
-import LeanLoad.Resolve
+import LeanLoad.Plan.Resolve
 
 namespace LeanLoad.Reloc
 
 open LeanLoad
 open LeanLoad.Discover
 open LeanLoad.Layout
+open LeanLoad.Spec.Reloc (PatchSize FormulaInputs FormulaResult Formula)
+
+-- The formula-input/output types (`PatchSize`, `FormulaInputs`,
+-- `FormulaResult`, `Formula`) live in `Spec.Reloc` so per-arch
+-- formula tables can define formulas without depending on the
+-- planner; opened above so unqualified names work below.
 
 -- ============================================================================
 -- A single planned write
 -- ============================================================================
-
-/-- Width of a relocation write: ELF dynamic relocations write either
-    a 32-bit or a 64-bit value at the target. Encoding the choice as
-    a 2-element type means `RelocApply.applyPatch` dispatches
-    structurally — no `if size = 8 ...` runtime check, no
-    `Thm.formula_size_valid` lookup. -/
-inductive PatchSize where | b4 | b8
-  deriving Repr, BEq
-
-/-- Width as a `Nat`, for diagnostics / `inRange` arithmetic. -/
-def PatchSize.toNat : PatchSize → Nat
-  | .b4 => 4
-  | .b8 => 8
 
 /-- One memory write computed from a relocation entry, parameterised by
     the dep graph's object count `n`. The `objectIdx : Fin n` carries
@@ -53,27 +46,6 @@ structure Patch (n : Nat) where
   /-- Width of the write (4 or 8 bytes). -/
   size      : PatchSize
   deriving Repr
-
-/-- Inputs to a single relocation formula. Notation follows gabi 06. -/
-structure FormulaInputs where
-  /-- `S` — value of the resolved symbol (post base relocation). -/
-  symValue : UInt64
-  /-- `A` — addend (from `r_addend` for `Rela`). -/
-  addend   : UInt64
-  /-- `B` — base of the object containing the relocation site. -/
-  base     : UInt64
-  /-- `P` — virtual address being relocated. -/
-  place    : UInt64
-  deriving Repr
-
-/-- The result of applying a relocation formula. -/
-structure FormulaResult where
-  value : UInt64
-  size  : PatchSize
-  deriving Repr, BEq
-
-/-- A relocation formula: an interpretation of `(type, inputs)`. -/
-abbrev Formula := UInt32 → FormulaInputs → Option FormulaResult
 
 -- ============================================================================
 -- Per-object planning
@@ -168,5 +140,43 @@ def plan (formula : Formula) (g : ObjectList)
     let chunk ← planObject formula g layouts bases rt ⟨i, h.upper⟩
     acc := acc ++ chunk
   return acc
+
+section Example
+open LeanLoad.Spec
+
+-- Toy AArch64 formula table: just the two types this Example
+-- exercises (`R_AARCH64_RELATIVE` and `R_AARCH64_NONE`). Real
+-- per-arch tables live in `Spec/Reloc/{Aarch64,X86_64}.lean`.
+private def toyFormula : Formula := fun ty inp =>
+  if ty == 1027 then some { value := inp.base + inp.addend, size := .b8 }
+  else if ty == 0 then none
+  else none
+
+-- One R_AARCH64_RELATIVE rela: r_info=1027 (sym=0, type=1027),
+-- r_addend=0xa90, r_offset=0x1000. With base=0x10000, span=0x100000:
+-- targetVa = base + r_offset = 0x11000; value = base + addend = 0x10a90.
+private def relativeRela : Reloc.Rela64 :=
+  { r_offset := 0x1000, r_info := 1027, r_addend := 0xa90 }
+
+-- A RELATIVE reloc inside the object's span → `some` with the right
+-- value/size/offset.
+#guard match planRela (n := 1) toyFormula 0x10000 0x100000 ⟨0, by decide⟩
+                      (r := relativeRela) with
+       | .ok (some p) => p.size.toNat == 8 ∧ p.value == 0x10a90 ∧ p.targetVa == 0x11000
+       | _            => false
+
+-- R_AARCH64_NONE → no patch (`some none` after the `Except` layer).
+#guard match planRela (n := 1) toyFormula 0x10000 0x100000 ⟨0, by decide⟩
+                      (r := { r_offset := 0x1000, r_info := 0, r_addend := 0 }) with
+       | .ok none => true
+       | _        => false
+
+-- A RELATIVE reloc whose targetVa falls past the span → `Except.error`
+-- (bounds check at planning time means Apply never sees an OOB patch).
+#guard match planRela (n := 1) toyFormula 0x10000 0x10
+                      ⟨0, by decide⟩ (r := relativeRela) with
+       | .error _ => true
+       | _        => false
+end Example
 
 end LeanLoad.Reloc

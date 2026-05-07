@@ -40,8 +40,10 @@ private def Nat.hex12 (n : Nat) : String :=
 #guard padR "abc" 6 '.' = "abc..."
 #guard padL "abc" 6 '.' = "...abc"
 
-/-- Discover + layout + map + relocate + run inits + jump.
-    **Does not return** — the loaded program terminates the process. -/
+/-- Discover (IO) → pure planning (Layout, Reloc, Init) →
+    Exec.realize (single IO bookend that mmaps, applies patches,
+    runs ctors, and jumps). **Does not return** — the loaded program
+    terminates the process. -/
 def load (path : String) : IO Unit := do
   let rt := Runtime.Ops.real
   let g ← Discover.discover rt path
@@ -50,13 +52,15 @@ def load (path : String) : IO Unit := do
   if let some u := resTable.missing[0]? then
     throw (IO.userError s!"load: {resTable.missing.size} unresolved strong symbol(s); first: {u.name}")
   let layouts ← IO.ofExcept g.layouts
-  let image ← Map.mapAll rt g layouts
+  -- realize takes only the size proof; the sortedness witness is
+  -- proof-only material that isn't consumed by the IO sweep.
+  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
+    ⟨layouts.val, layouts.property.left⟩
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
-  let patches ← IO.ofExcept (Reloc.plan formula g layouts resTable)
-  Apply.applyPatches rt image patches
-  Exec.runInits rt (Init.plan g image (Init.order g))
-  Exec.transferControl rt mainObj image path
+  let patches ← IO.ofExcept (Reloc.plan formula g layouts.val resTable)
+  let ctorAddrs := Init.plan g layouts.val (Init.order g)
+  Exec.realize rt g mainObj sizedLayouts patches ctorAddrs path
 
 /-- `--debug`: same as `load` but with a header and summary per stage,
     so a developer can see which stages succeeded if the loaded image
@@ -116,30 +120,23 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"init order: {initOrder}"
   IO.eprintln s!"fini order: {initOrder.reverse}"
 
-  IO.eprintln "\n== Map =="
-  let image ← Map.mapAll rt g layouts
-  for i in [:image.objects.size] do
-    let some obj    := g.val[i]?     | continue
-    let some imgObj := image.objects[i]? | continue
-    IO.eprintln s!"[{i}] {obj.name} → 0x{Nat.hex imgObj.layout.base.toNat}"
-
   IO.eprintln "\n== Reloc =="
   let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
   let labelW := 16
-  let bases := image.objects.map (·.layout.base)
+  let bases := layouts.val.map (·.base)
   -- Re-walk each object's relas to enrich each patch with its type
-  -- and symbol name. The actual `applyPatches` below uses the same
-  -- formula via `Reloc.plan`, so the trace and the patches match.
-  for i in [:g.val.size] do
-    let some obj    := g.val[i]? | continue
-    let some imgObj := image.objects[i]? | continue
-    let base := imgObj.layout.base
+  -- and symbol name. `Exec.realize` below uses the same formula via
+  -- `Reloc.plan`, so the trace and the patches match.
+  for h : i in [:g.val.size] do
+    let obj  := g.val[i]
+    let some lyt := layouts.val[i]? | continue
+    let base := lyt.base
     let label := padR s!"[{i}] {obj.name}" labelW
     let printOne (r : Spec.Reloc.Rela64) : IO Unit := do
       let symValue : UInt64 := if r.sym == 0 then 0
         else Reloc.resolveSymValue g bases resTable i r.sym.toNat
-      let inputs : Reloc.FormulaInputs :=
+      let inputs : Spec.Reloc.FormulaInputs :=
         { symValue, addend := r.r_addend, base, place := base + r.r_offset }
       match formula r.type inputs with
       | none     => pure ()
@@ -152,21 +149,17 @@ def debug (path : String) : IO Unit := do
         IO.eprintln s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size.toNat}B)  sym='{symName}'"
     for r in obj.elf.rela do printOne r
     for r in obj.elf.jmprel do printOne r
-  let patches ← IO.ofExcept (Reloc.plan formula g layouts resTable)
+  let patches ← IO.ofExcept (Reloc.plan formula g layouts.val resTable)
   IO.eprintln s!"planned {patches.size} patches"
 
-  IO.eprintln "\n== Apply =="
-  Apply.applyPatches rt image patches
-  IO.eprintln s!"applied {patches.size} patches"
+  IO.eprintln "\n== InitPlan =="
+  let ctorAddrs := Init.plan g layouts.val initOrder
+  IO.eprintln s!"planned {ctorAddrs.size} constructor(s)"
 
-  IO.eprintln "\n== Init =="
-  let ctorAddrs := Init.plan g image initOrder
-  IO.eprintln s!"calling {ctorAddrs.size} constructor(s)"
-  Exec.runInits rt ctorAddrs
-  IO.eprintln "done"
-
-  IO.eprintln "\n== Exec =="
-  Exec.transferControl rt mainObj image path
+  IO.eprintln "\n== Realize =="
+  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
+    ⟨layouts.val, layouts.property.left⟩
+  Exec.realize rt g mainObj sizedLayouts patches ctorAddrs path
 
 end LeanLoad.Main
 

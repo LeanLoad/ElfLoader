@@ -51,7 +51,7 @@ proven-theorem catalogue lives under `LeanLoad/Thm/`.
   NEEDED graph; "undefined" for cycles per gabi 08.
 - **Anonymous-mmap semantic model.** A pure `Memory` type with
   `[vaddr, vaddr+len)` ranges + per-byte content, plus a state-monad
-  shadow for the IO operations (`mmapAnonFixed`, `mmapAt`, `write`,
+  shadow for the IO operations (`mmapReserve`, `mmapAt`, `write`,
   `mprotect`). Once present, "BSS zeroed" and "Bytes preserved"
   become provable as state-machine invariants. This is the linksem /
   CertiKOS tier of work — out of scope for v1.
