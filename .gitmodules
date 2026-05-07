@@ -43,3 +43,6 @@
 [submodule "third_party/linux-abi"]
 	path = third_party/linux-abi
 	url = https://github.com/hjl-tools/linux-abi
+[submodule "third_party/glibc"]
+	path = third_party/glibc
+	url = https://sourceware.org/git/glibc.git

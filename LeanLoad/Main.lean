@@ -56,9 +56,9 @@ def load (path : String) : IO Unit := do
   -- proof-only material that isn't consumed by the IO sweep.
   let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
     ⟨layouts.val, layouts.property.left⟩
-  let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
+  let some formula := Elaborate.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"load: unsupported e_machine={mainObj.elf.header.e_machine} (need EM_AARCH64=183 or EM_X86_64=62)")
-  let patches ← IO.ofExcept (Reloc.plan formula g layouts.val resTable)
+  let patches := Reloc.plan formula g layouts.val resTable
   let ctorAddrs := Init.plan g layouts.val (Init.order g)
   Exec.realize rt g mainObj sizedLayouts patches ctorAddrs path
 
@@ -94,14 +94,14 @@ def debug (path : String) : IO Unit := do
       | none =>
         let weakTag :=
           match g.val[u.objectIdx]?.bind (fun obj => obj.elf.symtab[u.symIdx]?) with
-          | some sym => if Resolve.isWeak sym then "  (weak)" else ""
-          | none     => ""
+          | some entry => if entry.sym.isWeak then "  (weak)" else ""
+          | none       => ""
         s!"{padR "<unresolved>" providerW}{weakTag}"
       | some r =>
         let p := padR (providerName r) providerW
         match g.val[r.objectIdx]?.bind (fun obj => obj.elf.symtab[r.symIdx]?) with
-        | some sym => s!"{p} [sym {r.symIdx} @0x{Nat.hex sym.st_value.toNat}]"
-        | none     => s!"{p} [sym {r.symIdx}]"
+        | some entry => s!"{p} [sym {r.symIdx} @0x{Nat.hex entry.sym.st_value.toNat}]"
+        | none       => s!"{p} [sym {r.symIdx}]"
     IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
   IO.eprintln s!"strong missing: {resTable.missing.size}, weak missing: {resTable.weakMissing.size}"
 
@@ -121,35 +121,36 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"fini order: {initOrder.reverse}"
 
   IO.eprintln "\n== Reloc =="
-  let some formula := Spec.Reloc.formulaFor mainObj.elf.header.e_machine
+  let some formula := Elaborate.formulaFor mainObj.elf.header.e_machine
     | throw (IO.userError s!"debug: unsupported e_machine={mainObj.elf.header.e_machine}")
   let labelW := 16
   let bases := layouts.val.map (·.base)
-  -- Re-walk each object's relas to enrich each patch with its type
-  -- and symbol name. `Exec.realize` below uses the same formula via
-  -- `Reloc.plan`, so the trace and the patches match.
+  -- Re-walk each object's per-segment relas to enrich each patch with
+  -- its type and symbol name. `Exec.realize` below uses the same
+  -- formula via `Reloc.plan`, so the trace and the patches match.
   for h : i in [:g.val.size] do
     let obj  := g.val[i]
     let some lyt := layouts.val[i]? | continue
     let base := lyt.base
     let label := padR s!"[{i}] {obj.name}" labelW
-    let printOne (r : Spec.Reloc.Rela64) : IO Unit := do
+    let printOne (segI : Nat) (r : Parse.RawRela) : IO Unit := do
       let symValue : UInt64 := if r.sym == 0 then 0
         else Reloc.resolveSymValue g bases resTable i r.sym.toNat
-      let inputs : Spec.Reloc.FormulaInputs :=
+      let inputs : Elaborate.FormulaInputs :=
         { symValue, addend := r.r_addend, base, place := base + r.r_offset }
       match formula r.type inputs with
       | none     => pure ()
       | some res =>
         let symName : String :=
           if r.sym == 0 then ""
-          else (obj.elf.symtab[r.sym.toNat]?.bind fun s =>
-                  Spec.StringTable.lookup obj.elf.strtab s.st_name.toNat).getD "?"
+          else (obj.elf.symtab[r.sym.toNat]?.bind (·.name)).getD "?"
         let typeStr := padR (toString r.type) 2
-        IO.eprintln s!"{label}  type={typeStr}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size.toNat}B)  sym='{symName}'"
-    for r in obj.elf.rela do printOne r
-    for r in obj.elf.jmprel do printOne r
-  let patches ← IO.ofExcept (Reloc.plan formula g layouts.val resTable)
+        IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size.toNat}B)  sym='{symName}'"
+    for h2 : segI in [:obj.elf.segments.size] do
+      let seg := obj.elf.segments[segI]
+      for entry in seg.rela do printOne segI entry.val
+      for entry in seg.jmprel do printOne segI entry.val
+  let patches := Reloc.plan formula g layouts.val resTable
   IO.eprintln s!"planned {patches.size} patches"
 
   IO.eprintln "\n== InitPlan =="

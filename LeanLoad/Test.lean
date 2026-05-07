@@ -24,6 +24,7 @@ import LeanLoad
 open LeanLoad
 open LeanLoad.Discover
 open LeanLoad.Layout
+open LeanLoad.Elaborate (Elf)
 
 /-- Expected name set for the `build/main` fixture's dependency
     graph. libbar↔libbaz form a cycle (mutual NEEDED); the
@@ -36,15 +37,15 @@ private def expectedNames : Array String :=
 private def check (cond : Bool) (msg : String) : Except String Unit :=
   if cond then .ok () else .error msg
 
-private def parseTest (elf : Parse.File.ParsedElf) : Except String Unit := do
-  check (elf.header.e_type == Spec.Header.ET_DYN)
-    s!"e_type: expected ET_DYN={Spec.Header.ET_DYN}, got {elf.header.e_type}"
+private def parseTest (elf : Elaborate.Elf) : Except String Unit := do
+  check (elf.header.e_type == Elaborate.ET_DYN)
+    s!"e_type: expected ET_DYN={Elaborate.ET_DYN}, got {elf.header.e_type}"
   check (elf.header.e_ehsize == 64)
     s!"e_ehsize: expected 64, got {elf.header.e_ehsize}"
   check (elf.header.e_phentsize == 56)
     s!"e_phentsize: expected 56, got {elf.header.e_phentsize}"
-  check (elf.phdrs.size == elf.header.e_phnum.toNat)
-    s!"phnum mismatch: header says {elf.header.e_phnum}, parsed {elf.phdrs.size}"
+  check (elf.segments.size > 0)
+    s!"expected ≥ 1 PT_LOAD segment, got {elf.segments.size}"
   check (elf.needed.size ≥ 3)
     s!"expected ≥ 3 NEEDED entries, got {elf.needed.size}: {elf.needed}"
   check (elf.needed.any (· == "libfoo.so"))
@@ -93,9 +94,9 @@ private def orderTest (g : ObjectList) : Except String Unit := do
   check (order.back? == some 0)
     s!"main (idx 0) should be last in order; got {order}"
 
-private def relocTest (g : ObjectList) (formula : Spec.Reloc.Formula) : Except String Unit := do
+private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
   let layouts ← g.layouts
-  let patches ← Reloc.plan formula g layouts.val (Resolve.buildTable g)
+  let patches := Reloc.plan formula g layouts.val (Resolve.buildTable g)
   check (patches.size > 0) "expected nonzero relocation writes"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +
@@ -129,7 +130,7 @@ def main : IO UInt32 := do
   unless ← runStage "Layout"  (layoutTest g)        do return 1
   unless ← runStage "Order"   (orderTest g)         do return 1
 
-  let some formula := Spec.Reloc.formulaFor main.elf.header.e_machine
+  let some formula := Elaborate.formulaFor main.elf.header.e_machine
     | do IO.eprintln s!"skip: unsupported e_machine={main.elf.header.e_machine}"; return 0
   unless ← runStage "Reloc"   (relocTest g formula) do return 1
 

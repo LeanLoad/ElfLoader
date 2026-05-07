@@ -16,18 +16,13 @@ TLS, no `IFUNC`):
 
 Note: `GLOB_DAT` and `JUMP_SLOT` are documented as `S + A` for
 completeness; in practice the linker emits them with `A = 0`.
-
-The `Formula` type lives alongside the gabi-06 spec
-(`LeanLoad.Spec.Reloc`); this file is the per-arch table + per-type
-compile-time canaries. No dependency on the planner — the
-planner-formula integration is exercised E2E via test fixtures.
 -/
 
-import LeanLoad.Spec.Reloc
+import LeanLoad.Elaborate.Reloc
 
-namespace LeanLoad.Spec.Reloc.Aarch64
+namespace LeanLoad.Elaborate.Aarch64
 
-open LeanLoad.Spec.Reloc
+open LeanLoad.Elaborate
 
 def R_AARCH64_NONE      : UInt32 := 0
 def R_AARCH64_ABS64     : UInt32 := 257
@@ -50,23 +45,14 @@ def formula : Formula := fun ty inp =>
   else if ty == R_AARCH64_RELATIVE  then some { value := B + A, size := .b8 }
   else none
 
--- Compile-time unit tests. Evaluated at elaboration; a wrong table
--- fails to build.
-
--- A skipped reloc is not a zero write — "no operation" is structural.
 #guard (formula R_AARCH64_NONE      { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
-
--- An unknown type also yields none (totality boundary).
 #guard (formula 999 { symValue := 0, addend := 0, base := 0, place := 0 }) == none
 
--- RELATIVE = B + A. By construction, *only* base and addend matter:
--- swapping symValue must not perturb the result.
 #guard (formula R_AARCH64_RELATIVE { symValue := 0xdead, addend := 0xa90, base := 0x10000, place := 0 })
     == (formula R_AARCH64_RELATIVE { symValue := 0xbeef, addend := 0xa90, base := 0x10000, place := 0 })
 #guard (formula R_AARCH64_RELATIVE { symValue := 0,      addend := 0xa90, base := 0x10000, place := 0 })
         == some { value := 0x10a90, size := .b8 }
 
--- ABS-family = S + A. Symmetrically, base and place are unused.
 #guard (formula R_AARCH64_ABS64 { symValue := 100, addend := 1, base := 0xdead, place := 0 })
     == (formula R_AARCH64_ABS64 { symValue := 100, addend := 1, base := 0xbeef, place := 0 })
 #guard (formula R_AARCH64_ABS64    { symValue := 0xfeedface, addend := 0, base := 0, place := 0 })
@@ -74,15 +60,12 @@ def formula : Formula := fun ty inp =>
 #guard (formula R_AARCH64_ABS32    { symValue := 0xc0ffee,   addend := 0, base := 0, place := 0 })
         == some { value := 0xc0ffee,   size := .b4 }
 
--- Same shape for GLOB_DAT / JUMP_SLOT (S + A, 8 bytes).
 #guard (formula R_AARCH64_GLOB_DAT  { symValue := 0xdeadbeef, addend := 0, base := 0, place := 0 })
         == some { value := 0xdeadbeef, size := .b8 }
 #guard (formula R_AARCH64_JUMP_SLOT { symValue := 0xb16b00b5, addend := 0, base := 0, place := 0 })
         == some { value := 0xb16b00b5, size := .b8 }
 
--- UInt64 wraps modulo 2^64 (relevant for absolute relocs near
--- the top of the address space).
 #guard (formula R_AARCH64_ABS64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := .b8 }
 
-end LeanLoad.Spec.Reloc.Aarch64
+end LeanLoad.Elaborate.Aarch64

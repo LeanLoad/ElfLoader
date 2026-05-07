@@ -1,9 +1,9 @@
 /* FileHandle externs: opaque `int fd` wrapper.
  *
- * Lifetime: opened by `openRead`, lives via Lean GC, finalizer
- * closes the fd. Used by parsing (pread for metadata, Stage D) and
- * by Map's mapping path (file-backed mmap from the already-open fd
- * so we don't open/close once per segment).
+ * Lifetime: opened by `leanload_filehandle_open`, lives via Lean GC,
+ * the finalizer closes the fd. Used by `Parse.File.parse` (per-section
+ * pread) and by `Exec.realize` (file-backed mmap from the already-open
+ * fd so we don't open/close once per segment).
  */
 
 #include "runtime.h"
@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 /* ------------------------------------------------------------------ */
@@ -49,7 +48,7 @@ lean_external_class * leanload_filehandle_class(void) {
 
 /* Open a file read-only, return its `FileHandle`. The fd is closed
  * by the finalizer when Lean GCs the handle. */
-LEAN_EXPORT lean_object * leanload_filehandle_open_read(b_lean_obj_arg path_obj,
+LEAN_EXPORT lean_object * leanload_filehandle_open(b_lean_obj_arg path_obj,
                                                         lean_object * /* w */) {
     const char * path = lean_string_cstr(path_obj);
     int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -64,18 +63,6 @@ LEAN_EXPORT lean_object * leanload_filehandle_open_read(b_lean_obj_arg path_obj,
     h->fd = fd;
     return lean_io_result_mk_ok(
         lean_alloc_external(leanload_filehandle_class(), h));
-}
-
-/* `fstat(2)` the open fd, return its byte size. */
-LEAN_EXPORT lean_object * leanload_filehandle_size(b_lean_obj_arg hobj,
-                                                   lean_object * /* w */) {
-    leanload_filehandle * h = (leanload_filehandle *)lean_get_external_data(hobj);
-    if (h->fd < 0) return leanload_io_err("filehandle: closed");
-    struct stat st;
-    if (fstat(h->fd, &st) < 0) {
-        return leanload_io_err(strerror(errno));
-    }
-    return lean_io_result_mk_ok(lean_box_uint64((uint64_t)st.st_size));
 }
 
 /* `pread(2)` exactly `len` bytes at `offset` into a fresh ByteArray.
@@ -113,7 +100,7 @@ LEAN_EXPORT lean_object * leanload_filehandle_pread(b_lean_obj_arg hobj,
  * `prot` is the final permissions; the caller owns the address
  * range (typically a sub-range of an anon reservation that this
  * overlays). */
-LEAN_EXPORT lean_object * leanload_filehandle_mmap_at(b_lean_obj_arg hobj,
+LEAN_EXPORT lean_object * leanload_filehandle_mmap(b_lean_obj_arg hobj,
                                                       uint64_t vaddr,
                                                       size_t   len,
                                                       uint32_t prot,

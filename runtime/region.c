@@ -86,7 +86,12 @@ LEAN_EXPORT lean_object * leanload_region_mmap_stack(size_t len,
 }
 
 /* ------------------------------------------------------------------ */
-/* mprotect + write at raw addresses                                   */
+/* mprotect + write at raw addresses.                                  */
+/*                                                                     */
+/* Bounds (offset + length <= r->length) are checked at the Lean       */
+/* level via `Runtime.Region.InRange` proof obligations on each op.    */
+/* By the time these C functions are called, the bound holds — no     */
+/* runtime check needed here.                                          */
 /* ------------------------------------------------------------------ */
 
 /* mprotect on a sub-range of a region. Used when one big region holds
@@ -97,9 +102,6 @@ LEAN_EXPORT lean_object * leanload_region_mprotect(b_lean_obj_arg robj,
                                                          uint32_t prot,
                                                          lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (offset > r->length || length > r->length - offset) {
-        return leanload_io_err("mprotect: out of bounds");
-    }
     char * start = (char *)r->addr + offset;
     if (mprotect(start, length, (int)prot) != 0) {
         return leanload_io_err(strerror(errno));
@@ -116,9 +118,6 @@ LEAN_EXPORT lean_object * leanload_region_patch64(b_lean_obj_arg robj,
                                                   uint64_t value,
                                                   lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (offset > r->length || 8 > r->length - offset) {
-        return leanload_io_err("region: patch64 out of bounds");
-    }
     /* unaligned little-endian write; assumes host is little-endian
      * (which both x86-64 and AArch64 in our supported configs are). */
     memcpy((uint8_t *)r->addr + offset, &value, 8);
@@ -131,9 +130,6 @@ LEAN_EXPORT lean_object * leanload_region_patch32(b_lean_obj_arg robj,
                                                   uint64_t value,
                                                   lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (offset > r->length || 4 > r->length - offset) {
-        return leanload_io_err("region: patch32 out of bounds");
-    }
     uint32_t lo = (uint32_t)value;
     memcpy((uint8_t *)r->addr + offset, &lo, 4);
     return lean_io_result_mk_ok(lean_box(0));
@@ -145,9 +141,6 @@ LEAN_EXPORT lean_object * leanload_region_zeroout(b_lean_obj_arg robj,
                                                   size_t len,
                                                   lean_object * /* w */) {
     leanload_region * r = (leanload_region *)lean_get_external_data(robj);
-    if (offset > r->length || len > r->length - offset) {
-        return leanload_io_err("region: zeroout out of bounds");
-    }
     memset((uint8_t *)r->addr + offset, 0, len);
     return lean_io_result_mk_ok(lean_box(0));
 }

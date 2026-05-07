@@ -4,28 +4,25 @@ Exec stage: the loader's single IO bookend after the pure middle.
 Everything between Discover (which reads files) and the loaded
 program's actual execution lives in this file. Pure planners
 (`Layout`, `Reloc`, `Init`) produce abstract data — layouts with
-chosen bases, `Reloc.Patch n` lists, ctor `UInt64` addresses — and
-`Exec.realize` interprets them all in one IO sweep:
+chosen bases, segment-tied `Reloc.Patch g` lists, ctor `UInt64`
+addresses — and `Exec.realize` interprets them all in one IO sweep:
 
-  1. For each `ObjectLayout`: anonymous reservation, file-backed
-     `mmap` overlays per segment (kernel does the file→memory
-     mapping; no userspace memcpy), BSS zeroing for partial-last-page
-     bytes, `mprotect` per segment.
-  2. For each `Reloc.Patch n`: a 4- or 8-byte write into the right
-     reservation at `targetVa - layout.base`.
+  1. For each PT_LOAD segment of each object: anon `MAP_FIXED`
+     reservation sized to the segment, file-backed `mmap` overlay
+     (if filesz > 0), partial-last-page BSS zeroing, `mprotect`.
+  2. For each `Reloc.Patch g`: a 4- or 8-byte write into the right
+     segment's `Region` at `p.offset`. Patches are *segment-tied*
+     by construction (each `Rela64` was located against a PT_LOAD
+     at parse time — see `Parse.Reloc.LocatedRela`), so `applyPatch`
+     looks up the segment by `Fin` index — no runtime cross-checks.
   3. For each ctor address: `callCtor`.
   4. Allocate the kernel-style stack and `execAndJump` to the entry
      point. Does not return.
 
-No byte mutation happens before this point — the middle is pure
-data, and `realize` is the trust seam. The per-segment op sequence
-(overlay/bssZero/mprotect) is derived inline from `lyt.segments` —
-there's no separate `MapPlan` stage because that planning was
-trivial (a function of segment shape) and only `realize` consumed it.
-
-The `ObjectImage` / `ProcessImage` data types used internally to
-thread mapped regions across the realize stages are inlined here —
-they have no other consumers since the middle is plan-only.
+There's no per-object outer reservation: with patches segment-tied,
+each segment is its own MAP_FIXED unit. Inter-segment gaps stay
+unmapped, which is stricter than the old "anon reservation + file
+overlays" scheme.
 
 Spec: gabi 08 § Process Initialization. AT_PHDR / AT_PHENT /
 AT_PHNUM / AT_ENTRY in the auxv are required by the process-startup
@@ -37,7 +34,7 @@ import LeanLoad.Plan.Init
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Reloc
 import LeanLoad.Runtime
-import LeanLoad.Spec.Program
+import LeanLoad.Parse.Program
 
 namespace LeanLoad.Exec
 
@@ -45,27 +42,25 @@ open LeanLoad
 open LeanLoad.Discover
 open LeanLoad.Layout
 open LeanLoad.Reloc (Patch)
-open LeanLoad.Spec.Reloc (PatchSize)
+open LeanLoad.Parse (RawPhdr)
+open LeanLoad.Elaborate (PatchSize)
 
 -- ============================================================================
--- Process image — internal data structure threaded through the realize
--- stages. Pairs a per-object layout with its mmap'd `Region`s so
--- patch-writes and exec-stack-build can index by `Fin n` without a
--- separate cross-array invariant.
+-- Process image — per-object, per-segment runtime artifacts.
 -- ============================================================================
 
-/-- Per-object runtime artifact: planning-side `ObjectLayout` plus
-    the mmap'd `Region`s. -/
+/-- One PT_LOAD segment's mmap'd region. Stored as a `Sigma` so the
+    `Region`'s size index can refer to the segment's loader-level
+    `length` (page-aligned). Patches that target this segment derive
+    their `Region.InRange` proof from the segment's bound. -/
+private abbrev SegmentImage : Type :=
+  Σ s : RawPhdr, Runtime.Region s.length.toUSize
+
+/-- Per-object runtime artifact: the planning-side layout plus one
+    `SegmentImage` per PT_LOAD, in lock-step with `layout.segments`. -/
 private structure ObjectImage where
-  /-- Layout (where the object lives in VA space). -/
-  layout : ObjectLayout
-  /-- Anon `MAP_FIXED` reservation covering `[layout.base,
-      layout.base + objectSpan layout.segments)`. -/
-  reservation : Runtime.Region
-  /-- One file-backed `Region` per segment with `fileLenPaged > 0`
-      (aligned with `layout.segments`; `none` for BSS-only segments
-      that have no file overlay). -/
-  segments    : Array (Option Runtime.Region)
+  layout   : ObjectLayout
+  segments : Array SegmentImage
 
 /-- Realized process state: one `ObjectImage` per loaded object, in
     `ObjectList` order. The `size_eq` proof carries the count at the
@@ -75,48 +70,54 @@ private structure ProcessImage (n : Nat) where
   size_eq : objects.size = n
 
 -- ============================================================================
--- Step 1: realize one object's layout into mmap'd `Region`s.
+-- Step 1: realize one object's layout into mmap'd `SegmentImage`s.
 --
--- Per-object op order (gabi 07 § Program Loading):
---   1. anon `MAP_FIXED` reservation covering the full object span.
---   2. for each segment: file-backed overlay (if filesz > 0) +
---      BSS zeroing (if memsz > filesz).
---   3. for each segment: `mprotect` to drop the temporary
---      `PROT_WRITE` we widened the overlay with.
+-- Per-segment op order (gabi 07 § Program Loading):
+--   1. anon `MAP_FIXED` reservation covering the segment's full
+--      page-aligned `[vaddr, vaddr + length)` range.
+--   2. file-backed overlay (if filesz > 0): same address, length
+--      `fileLenPaged`, prot widened with `PROT_WRITE` so partial-
+--      last-page BSS bytes can be cleared.
+--   3. zero out partial-last-page BSS bytes (the gap between
+--      `pageInset + fileLen` and `fileLenPaged`).
+--   4. `mprotect` the full segment to drop the temporary
+--      `PROT_WRITE`.
 -- ============================================================================
 
-/-- Realize one object's layout: build the reservation, copy in file
-    bytes, zero BSS, drop write permission. The threaded
-    `segs.size = lyt.segments.size` invariant makes `Array.set`
-    total — no `set!`/panic seam. -/
+/-- Realize one segment: anon reservation + file overlay + BSS zero +
+    mprotect. Returns the `SegmentImage` (segment + region).
+    Bounds proofs at zeroout/mprotect are runtime-checked here — the
+    planner's invariants make them unreachable in practice. -/
+private def realizeSegment (rt : Runtime.Ops) (obj : LoadedObject)
+    (base : UInt64) (s : RawPhdr) : IO SegmentImage := do
+  let length := s.length.toUSize
+  let region ← rt.mmapReserve (base + s.vaddr) length
+  if s.fileLenPaged > 0 then
+    let some handle := obj.handle
+      | throw (IO.userError s!"realize: object '{obj.name}' has no file handle")
+    let writableProt := s.prot ||| Runtime.PROT_WRITE
+    let _overlay ← rt.mmap handle (base + s.vaddr) s.fileLenPaged.toUSize
+                     writableProt s.fileOffsetPaged
+    pure ()
+  let bssLen := s.p_memsz - s.fileLen
+  if bssLen > 0 then
+    let bssOff := (s.pageInset + s.fileLen).toUSize
+    let bssLenU := bssLen.toUSize
+    if h : Runtime.Region.InRange length bssOff bssLenU then
+      rt.zeroout region bssOff bssLenU h
+    else
+      throw (IO.userError s!"realize: BSS zero out of range (object {obj.name})")
+  if h : Runtime.Region.InRange length 0 length then
+    rt.mprotect region 0 length h s.prot
+  else
+    throw (IO.userError s!"realize: mprotect out of range (object {obj.name})")
+  return ⟨s, region⟩
+
+/-- Realize every segment of one object. -/
 private def realizeObject (rt : Runtime.Ops) (obj : LoadedObject) (lyt : ObjectLayout) :
     IO ObjectImage := do
-  let reservation ← rt.mmapReserve lyt.base lyt.span.toUSize
-  -- `segs` carries `size = lyt.segments.size` as a subtype so `set`
-  -- (not `set!`) discharges the bounds check at each overlay.
-  let mut segs : { a : Array (Option Runtime.Region) //
-                   a.size = lyt.segments.size } :=
-    ⟨Array.replicate lyt.segments.size none, by simp⟩
-  -- Pass 1: per-segment overlay + BSS zeroing.
-  for h : i in [:lyt.segments.size] do
-    let s := lyt.segments[i]
-    if s.fileLenPaged > 0 then
-      let some handle := obj.handle
-        | throw (IO.userError s!"realize: object '{obj.name}' has no file handle")
-      let writableProt := s.prot ||| Runtime.PROT_WRITE
-      let r ← rt.mmapAt handle (lyt.base + s.vaddr) s.fileLenPaged.toUSize
-                writableProt s.fileOffsetPaged
-      have h_idx : i < segs.val.size := segs.property.symm ▸ h.upper
-      segs := ⟨segs.val.set i (some r) h_idx,
-               by simp [Array.size_set, segs.property]⟩
-    let bssLen := s.phdr.p_memsz - s.fileLen
-    if bssLen > 0 then
-      let bssOff := (s.vaddr + s.pageInset + s.fileLen).toUSize
-      rt.zeroout reservation bssOff bssLen.toNat.toUSize
-  -- Pass 2: per-segment mprotect (drops the temporary PROT_WRITE).
-  for s in lyt.segments do
-    rt.mprotect reservation s.vaddr.toUSize s.length.toUSize s.prot
-  return { layout := lyt, reservation, segments := segs.val }
+  let segments ← lyt.segments.mapM (realizeSegment rt obj lyt.base)
+  return { layout := lyt, segments }
 
 /-- Realize each layout in lock-step with `g.val`, producing a
     `ProcessImage g.val.size`. Both arrays are indexed by the same
@@ -137,8 +138,8 @@ private def realizeLoop (rt : Runtime.Ops) (g : ObjectList)
     return ⟨acc, by omega⟩
 termination_by g.val.size - i
 
-/-- Anonymous reservation + file-backed mmap overlays + BSS zeroing
-    + mprotect for every object, producing the `ProcessImage` that
+/-- Anon reservation + file overlays + BSS zeroing + mprotect for
+    every segment of every object, producing the `ProcessImage` that
     subsequent steps write into. -/
 private def realizeImage (rt : Runtime.Ops) (g : ObjectList)
     (layouts : { a : Array ObjectLayout // a.size = g.val.size }) :
@@ -147,21 +148,36 @@ private def realizeImage (rt : Runtime.Ops) (g : ObjectList)
   return ⟨objs, h⟩
 
 -- ============================================================================
--- Step 2: write each `Reloc.Patch` into its object's reservation.
+-- Step 2: write each `Reloc.Patch g` into its segment's `Region`.
 -- ============================================================================
 
-/-- Apply one `Patch n`. Totally typed: `objectIdx : Fin n` is in
-    bounds via `image.size_eq`; bounds inside the region are
-    enforced by `Reloc.Patch.inRange` at planning time; width is
-    `PatchSize` (4 or 8 only). -/
-private def applyPatch {n : Nat} (rt : Runtime.Ops) (image : ProcessImage n)
-    (p : Patch n) : IO Unit :=
-  let h : p.objectIdx.val < image.objects.size := image.size_eq.symm ▸ p.objectIdx.isLt
-  let obj := image.objects[p.objectIdx.val]'h
-  let offset := (p.targetVa - obj.layout.base).toUSize
+/-- Apply one `Patch g`. Totally typed: `objectIdx : Fin g.val.size`
+    is in bounds via `image.size_eq`, `segIdx` is a `Fin` into the
+    object's segment array. The reservation-relative bound proof
+    `Region.InRange (seg.length.toUSize) p.offset 8/4` is checked
+    at runtime — the planner's `LocatedRela` witness guarantees the
+    bound holds, but the witness's UInt64↔USize translation isn't
+    threaded through `Patch`'s type yet; the runtime check produces
+    the witness the typed op signature requires. -/
+private def applyPatch {g : ObjectList} (rt : Runtime.Ops)
+    (image : ProcessImage g.val.size) (p : Patch g) : IO Unit := do
+  let h_idx : p.objectIdx.val < image.objects.size := image.size_eq.symm ▸ p.objectIdx.isLt
+  let obj := image.objects[p.objectIdx.val]'h_idx
+  let some segImg := obj.segments[p.segIdx.val]?
+    | throw (IO.userError s!"applyPatch: segIdx {p.segIdx.val} out of range")
+  let ⟨seg, region⟩ := segImg
+  let length := seg.length.toUSize
   match p.size with
-  | .b8 => rt.patch64 obj.reservation offset p.value
-  | .b4 => rt.patch32 obj.reservation offset p.value
+  | .b8 =>
+    if h : Runtime.Region.InRange length p.offset 8 then
+      rt.patch64 region p.offset h p.value
+    else
+      throw (IO.userError s!"applyPatch: 8-byte write out of range (offset={p.offset})")
+  | .b4 =>
+    if h : Runtime.Region.InRange length p.offset 4 then
+      rt.patch32 region p.offset h p.value
+    else
+      throw (IO.userError s!"applyPatch: 4-byte write out of range (offset={p.offset})")
 
 -- ============================================================================
 -- Step 4: kernel-style stack + jump (does not return).
@@ -181,7 +197,7 @@ private def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : LoadedObject
   let entry  := mainImg.layout.base + mainImg.layout.entry.getD 0
   let phdrVa := mainImg.layout.base + mainObj.elf.header.e_phoff
   let phnum  := mainObj.elf.header.e_phnum.toUInt64
-  let phent  := Spec.Program.entrySize.toUInt64
+  let phent  := RawPhdr.entrySize.toUInt64
   rt.execAndJump entry phdrVa phent phnum 0 stack path
 
 -- ============================================================================
@@ -190,13 +206,13 @@ private def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : LoadedObject
 
 /-- The loader's single IO bookend. Takes the layouts (from
     `g.layouts`), reloc patches, and ctor addresses, and realizes
-    them in order: mmap + zeroout + mprotect → patch writes →
-    ctor calls → stack + jump.
+    them in order: per-segment mmap → patch writes → ctor calls →
+    stack + jump.
 
     **Does not return** — the loaded program owns the process. -/
 def realize (rt : Runtime.Ops) (g : ObjectList) (mainObj : LoadedObject)
     (layouts : { a : Array ObjectLayout // a.size = g.val.size })
-    (patches : Array (Patch g.val.size))
+    (patches : Array (Patch g))
     (ctorAddrs : Array UInt64)
     (path : String) : IO Unit := do
   let image ← realizeImage rt g layouts

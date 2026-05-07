@@ -3,9 +3,8 @@ x86-64 relocation formulas.
 
 Spec: x86-64 psABI § Relocation Types
 (`third_party/x86-64-ABI/x86-64-ABI/object-files.tex`, table
-`tab-relocations`). Subset needed for the loader-minimal scope (no
-TLS, no `IFUNC`, no `COPY` since the `Formula` type can't model
-"copy bytes from another object's symbol"):
+`tab-relocations`). Subset for the loader-minimal scope (no TLS, no
+`IFUNC`, no `COPY`):
 
 | Type                  | Code | Width | Formula |
 | --------------------- | ---- | ----- | ------- |
@@ -20,16 +19,14 @@ TLS, no `IFUNC`, no `COPY` since the `Formula` type can't model
 (AArch64 documents them as `S + A`; the addend is conventionally 0
 in both cases, but we follow each arch's spec literally.)
 
-`R_X86_64_32` truncates to 32 bits. The psABI also asks the linker
-to verify that the value zero-extends to the original 64-bit value;
-that overflow check is not modelled here.
+`R_X86_64_32` truncates to 32 bits.
 -/
 
-import LeanLoad.Spec.Reloc
+import LeanLoad.Elaborate.Reloc
 
-namespace LeanLoad.Spec.Reloc.X86_64
+namespace LeanLoad.Elaborate.X86_64
 
-open LeanLoad.Spec.Reloc
+open LeanLoad.Elaborate
 
 def R_X86_64_NONE      : UInt32 := 0
 def R_X86_64_64        : UInt32 := 1
@@ -52,19 +49,14 @@ def formula : Formula := fun ty inp =>
   else if ty == R_X86_64_32        then some { value := S + A, size := .b4 }
   else none
 
--- Compile-time unit tests. Evaluated at elaboration; a wrong table
--- fails to build.
-
 #guard (formula R_X86_64_NONE  { symValue := 0xdead, addend := 0xbeef, base := 0xcafe, place := 0xbabe }) == none
 #guard (formula 999 { symValue := 0, addend := 0, base := 0, place := 0 }) == none
 
--- RELATIVE = B + A: only base+addend matter.
 #guard (formula R_X86_64_RELATIVE { symValue := 0xdead, addend := 0xa90, base := 0x10000, place := 0 })
     == (formula R_X86_64_RELATIVE { symValue := 0xbeef, addend := 0xa90, base := 0x10000, place := 0 })
 #guard (formula R_X86_64_RELATIVE { symValue := 0,      addend := 0xa90, base := 0x10000, place := 0 })
         == some { value := 0x10a90, size := .b8 }
 
--- 64 = S + A. base/place unused.
 #guard (formula R_X86_64_64 { symValue := 100, addend := 1, base := 0xdead, place := 0 })
     == (formula R_X86_64_64 { symValue := 100, addend := 1, base := 0xbeef, place := 0 })
 #guard (formula R_X86_64_64 { symValue := 0xfeedface, addend := 0, base := 0, place := 0 })
@@ -72,14 +64,12 @@ def formula : Formula := fun ty inp =>
 #guard (formula R_X86_64_32 { symValue := 0xc0ffee,   addend := 0, base := 0, place := 0 })
         == some { value := 0xc0ffee,   size := .b4 }
 
--- GLOB_DAT / JUMP_SLOT = S (no addend per psABI).
 #guard (formula R_X86_64_GLOB_DAT  { symValue := 0xdeadbeef, addend := 0xbad, base := 0, place := 0 })
         == some { value := 0xdeadbeef, size := .b8 }
 #guard (formula R_X86_64_JUMP_SLOT { symValue := 0xb16b00b5, addend := 0xbad, base := 0, place := 0 })
         == some { value := 0xb16b00b5, size := .b8 }
 
--- UInt64 wraps modulo 2^64.
 #guard (formula R_X86_64_64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := .b8 }
 
-end LeanLoad.Spec.Reloc.X86_64
+end LeanLoad.Elaborate.X86_64

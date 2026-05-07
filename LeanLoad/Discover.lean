@@ -3,7 +3,7 @@ Discover executor — trusted IO.
 
 The BFS file-walking loop, plus the IO leaves it calls
 (`resolveSoname`, `readAndParse`). Decision-making and state
-integration live in `DiscoverPlan`; this file just orchestrates IO
+integration live in `Plan.Discover`; this file just orchestrates IO
 calls in the order the planner says.
 
 Search-path rules per gabi 08 § Shared Object Dependencies:
@@ -15,39 +15,36 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
 
 import LeanLoad.Plan.Discover
 import LeanLoad.Parse.File
+import LeanLoad.Elaborate.File
 import LeanLoad.Runtime
 
 
 namespace LeanLoad.Discover
 
 open LeanLoad
-open LeanLoad.Parse
 
 
 -- ============================================================================
 -- IO leaves
 -- ============================================================================
 
-/-- Open the file (read-only handle), parse it via per-section
-    `pread`s, then validate PT_LOAD well-formedness. The handle
-    stays open for the loader's lifetime — used downstream by Map
-    for file-backed `mmap`. The returned subtype carries a
-    `Parse.Segment.WellFormed` witness; downstream code can rely
-    on it without rechecking.
+/-- Open the file (read-only handle), byte-decode it, then elaborate
+    PT_LOAD well-formedness AND group dynamic relocations by their
+    target segment. The handle stays open for the loader's lifetime —
+    used downstream by Exec for file-backed `mmap`.
 
-    `parse` (I/O) and `validate` (pure) are separate stages so I/O
-    failure (short read, missing section) is distinguishable from
-    validation failure (well-formed bytes that violate gabi-07 /
-    linker conventions). All I/O routes through the `rt` capability
+    `Parse.parse` (I/O) and `Elaborate.elaborate` (pure) are separate
+    stages so I/O failure (short read, missing section) is
+    distinguishable from validation failure (well-formed bytes that
+    violate gabi-07 / linker conventions, or relocations that fall
+    outside any PT_LOAD). All I/O routes through the `rt` capability
     so tests can drive the loader against an in-memory filesystem. -/
 def readAndParse (rt : Runtime.Ops) (path : String) :
-    IO (Runtime.FileHandle ×
-        { elf : File.ParsedElf //
-          Parse.Segment.WellFormed (Parse.Segment.fromPhdrs elf.phdrs) }) := do
-  let handle    ← rt.open path
-  let raw       ← File.parse rt handle
-  let validated ← IO.ofExcept (File.validate raw)
-  pure (handle, validated)
+    IO (Runtime.FileHandle × Elaborate.Elf) := do
+  let handle ← rt.open path
+  let raw    ← Parse.File.parse rt handle
+  let elf    ← IO.ofExcept (Elaborate.elaborate raw)
+  pure (handle, elf)
 
 /-- Find the first existing path among `paths`. -/
 def firstExisting (paths : Array String) : IO (Option String) := do
@@ -64,7 +61,7 @@ def resolveSoname (soname : String) (ctx : SearchContext) : IO (Option String) :
 -- BFS executor
 -- ============================================================================
 
-/-- BFS loop: dispatches each `step` decision from `DiscoverPlan` to
+/-- BFS loop: dispatches each `step` decision from `Plan.Discover` to
     the right IO action, then `integrate`s the result. Recurses on
     `fuel`; the planner's natural termination (visited dedup) is
     invisible to Lean, so we cap with a generous bound.
@@ -76,7 +73,7 @@ private def discoverLoop (rt : Runtime.Ops) (envPath : Option String) (fuel : Na
     (objs : Array LoadedObject) (h : 0 < objs.size) (work : List WorkItem) :
     IO ObjectList := do
   match fuel with
-  | 0 => pure (Subtype.mk objs h)   -- bound exhausted; caller's responsibility to size it
+  | 0 => pure (Subtype.mk objs h)
   | fuel + 1 =>
     match step objs work with
     | .done => pure (Subtype.mk objs h)
@@ -87,24 +84,23 @@ private def discoverLoop (rt : Runtime.Ops) (envPath : Option String) (fuel : Na
       | none =>
         throw (IO.userError s!"discover: cannot find '{sn}' (runpath={rp}, env={envPath})")
       | some path =>
-        let (handle, parsedElf) ← readAndParse rt path
-        let result := integrate objs rest sn path handle parsedElf
-        have h' : 0 < result.fst.size := integrate_size_pos objs rest sn path handle parsedElf h
+        let (handle, elf) ← readAndParse rt path
+        let result := integrate objs rest sn path handle elf
+        have h' : 0 < result.fst.size := integrate_size_pos objs rest sn path handle elf h
         discoverLoop rt envPath fuel result.fst h' result.snd
 
 /-- Walk `DT_NEEDED` from `mainPath` transitively. Returns an
     `ObjectList` containing main and all reachable dependencies in
     BFS order — non-emptiness witnessed at the type level. -/
 def discover (rt : Runtime.Ops) (mainPath : String) : IO ObjectList := do
-  let (mainHandle, main) ← readAndParse rt mainPath
+  let (mainHandle, mainElf) ← readAndParse rt mainPath
   let envPath ← IO.getEnv "LD_LIBRARY_PATH"
-  let mainName := main.val.soname.getD mainPath
+  let mainName := mainElf.soname.getD mainPath
   let initObjs : Array LoadedObject :=
-    #[{ name := mainName, path := mainPath, handle := some mainHandle,
-        elf := main.val, elf_wf := main.property }]
+    #[{ name := mainName, path := mainPath, handle := some mainHandle, elf := mainElf }]
   have h : 0 < initObjs.size := Nat.zero_lt_one
   let initWork : List WorkItem :=
-    main.val.needed.toList.map (fun n => (main.val.runpath, n))
+    mainElf.needed.toList.map (fun n => (mainElf.runpath, n))
   -- Fuel: a generous cap. Real binaries land in the low tens; 4096
   -- leaves headroom and still discharges termination at type-check.
   discoverLoop rt envPath 4096 initObjs h initWork

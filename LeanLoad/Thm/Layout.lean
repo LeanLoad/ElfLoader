@@ -24,7 +24,7 @@ namespace LeanLoad.Thm
 
 open LeanLoad.Layout
 open LeanLoad.Discover
-open LeanLoad.Parse.Segment
+open LeanLoad.Elaborate
 
 /-- Each segment's `endAddr` is bounded by its object's `objectSpan`.
     The `foldl max 0` upper-bound, lifted to every input element. -/

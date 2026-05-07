@@ -25,7 +25,7 @@ stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
 
 import LeanLoad.Plan.Discover
 import LeanLoad.Plan.Layout
-import LeanLoad.Spec.Header
+import LeanLoad.Elaborate.File
 import Std.Data.HashMap
 
 namespace LeanLoad.Init
@@ -144,7 +144,7 @@ def plan (g : ObjectList) (layouts : Array ObjectLayout)
   for objectIdx in order do
     let some obj := g.val[objectIdx]?  | continue
     let some lyt := layouts[objectIdx]? | continue
-    let isExec := obj.elf.header.e_type = Spec.Header.ET_EXEC
+    let isExec := obj.elf.header.e_type = Elaborate.ET_EXEC
     for entry in obj.elf.initArr do
       let fnAddr := if isExec then entry else lyt.base + entry
       if fnAddr != 0 then addrs := addrs.push fnAddr

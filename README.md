@@ -7,7 +7,7 @@ IO bookends**:
 
 | Stage    | Pure planner    | IO bookend                | What it does                                                                                  |
 | -------- | --------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
-| Discover | `Plan/Discover` | `DiscoverApply.discover`  | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
+| Discover | `Plan/Discover` | `Discover.discover`       | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
 | Parse    | `Parse/*`       | `Parse/File.parse`        | Decode each ELF; carry a `WellFormed` segment witness in the type.                            |
 | Resolve  | `Plan/Resolve`  | —                         | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`.            |
 | Layout   | `Plan/Layout`   | —                         | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
@@ -16,7 +16,7 @@ IO bookends**:
 | Exec     | —               | `Exec.realize`            | Single IO sweep over layouts/patches/ctors: mmap + zeroout + mprotect + patch writes + ctor calls + stack + jump. |
 
 Every file under `Plan/` is pure Lean; the only IO seams are
-`DiscoverApply` (file reads) and `Exec.realize` (mmap + writes +
+`Discover` (file reads) and `Exec.realize` (mmap + writes +
 control transfer). The mmap-op sequence (overlay/bssZero/mprotect)
 is derived inline from each layout's segments inside `realize` —
 there's no separate Map planner because that "planning" was
@@ -92,7 +92,7 @@ LeanLoad/
     Layout.lean            per-object Segment + ObjectLayout; assignBases; layouts validator
     Reloc.lean             Patch n (Fin objectIdx) + PatchSize (b4/b8); planner per-arch formula
     Init.lean              buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
-  DiscoverApply.lean       walk DT_NEEDED via IO; thread non-emptiness witness through the loop
+  Discover.lean            walk DT_NEEDED via IO; thread non-emptiness witness through the loop
   Exec.lean                IO bookend — realize all plans (mmap + zeroout + mprotect + patch
                            writes + ctor calls + stack + execAndJump). Does not return.
   Runtime.lean             @[extern] trust seam (FileHandle, Region, mmap*, patch{32,64}, …)

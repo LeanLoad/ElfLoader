@@ -17,14 +17,14 @@ order: main first, then NEEDED entries in their declared order).
 -/
 
 import LeanLoad.Plan.Discover
-import LeanLoad.Spec.Symbol
+import LeanLoad.Parse.Symbol
+import LeanLoad.Elaborate.File
 import LeanLoad.Fixtures
 
 namespace LeanLoad.Resolve
 
-open LeanLoad.Spec
-
 open LeanLoad
+open LeanLoad.Parse
 open LeanLoad.Discover
 
 /-- A resolved global symbol, parameterised by the dep graph's
@@ -37,31 +37,14 @@ structure SymRef (n : Nat) where
   symIdx    : Nat
   deriving Repr
 
-/-- True iff `sym` is an externally-visible definition. -/
-def isGlobalDef (sym : Symbol.Symbol64) : Bool :=
-  sym.st_shndx != Symbol.SHN_UNDEF && sym.bind != Symbol.STB_LOCAL
-
-/-- True iff `sym` is an undefined reference. -/
-def isUndef (sym : Symbol.Symbol64) : Bool :=
-  sym.st_shndx == Symbol.SHN_UNDEF
-
-/-- True iff `sym` is weak (gabi 05): a weak undefined reference is
-    allowed to remain unresolved at link time. -/
-def isWeak (sym : Symbol.Symbol64) : Bool :=
-  sym.bind == Symbol.STB_WEAK
-
-/-- Symbol name from an object's strtab. -/
-def symName (obj : Discover.LoadedObject) (sym : Symbol.Symbol64) : Option String :=
-  Spec.StringTable.lookup obj.elf.strtab sym.st_name.toNat
-
 /-- Look up `name` as a global definition in `obj`'s symbol table.
-    The returned index is a `Fin obj.elf.symtab.size` — the bound
-    that used to require `Thm.findInObject_lt_size` is now in the
-    type, courtesy of `Array.findIdx?_eq_some_iff_findIdx_eq`. -/
+    Names are pre-resolved at validation time (see `Elaborate.Symbol`),
+    so no string-table lookup happens here. The per-symbol `isGlobalDef`
+    predicate lives on `Symbol64` directly (`Parse.Symbol`). -/
 def findInObject (obj : Discover.LoadedObject) (name : String) :
     Option (Fin obj.elf.symtab.size) :=
-  match h : obj.elf.symtab.findIdx? (fun sym =>
-      isGlobalDef sym && symName obj sym == some name) with
+  match h : obj.elf.symtab.findIdx? (fun entry =>
+      entry.sym.isGlobalDef && entry.name == some name) with
   | none   => none
   | some i => some ⟨i, (Array.findIdx?_eq_some_iff_findIdx_eq.mp h).1⟩
 
@@ -107,9 +90,9 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
   for h : objectIdx in [:g.val.size] do
     let obj := g.val[objectIdx]
     let mut symIdx := 0
-    for sym in obj.elf.symtab do
-      if isUndef sym then
-        match symName obj sym with
+    for symEntry in obj.elf.symtab do
+      if symEntry.sym.isUndef then
+        match symEntry.name with
         | none    => pure ()
         | some "" => pure ()
         | some n =>
@@ -118,7 +101,7 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
           let r := resolveByName g n
           resolved := resolved.push (entry, r)
           if r.isNone then
-            if isWeak sym then weakMissing := weakMissing.push entry
+            if symEntry.sym.isWeak then weakMissing := weakMissing.push entry
             else missing := missing.push entry
       symIdx := symIdx + 1
   return { resolved, missing, weakMissing }
@@ -131,37 +114,26 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
 section Example
 open LeanLoad.Fixtures
 
-/-- Pack `ss` into a NUL-separated `.dynstr`; offset 0 reserved for "". -/
-private def packStrings (ss : Array String) : Spec.StringTable.StringTable × Array Nat :=
-  let init : ByteArray × Array Nat := (⟨#[0]⟩, #[])
-  let (acc, offs) := ss.foldl (init := init) fun (a, os) s =>
-    let off := a.size
-    let bs  := s.toUTF8
-    (a ++ bs ++ ⟨#[0]⟩, os.push off)
-  (acc, offs)
+private def defSym (name : String) (value : UInt64) : Elaborate.Symbol :=
+  { sym := { (default : Parse.RawSym) with
+              st_info := (1 : UInt8) <<< 4
+              st_shndx := 1, st_value := value }
+    name := some name }
 
-private def defSym (nameOff : UInt32) (value : UInt64) : Symbol.Symbol64 :=
-  { (default : Symbol.Symbol64) with
-    st_name := nameOff, st_info := (1 : UInt8) <<< 4
-    st_shndx := 1, st_value := value }
-
-private def undefSym (nameOff : UInt32) : Symbol.Symbol64 :=
-  { (default : Symbol.Symbol64) with
-    st_name := nameOff, st_info := (1 : UInt8) <<< 4
-    st_shndx := Symbol.SHN_UNDEF }
+private def undefSym (name : String) : Elaborate.Symbol :=
+  { sym := { (default : Parse.RawSym) with
+              st_info := (1 : UInt8) <<< 4
+              st_shndx := Elaborate.SHN_UNDEF }
+    name := some name }
 
 /-- main's undef `printf`, libc's def `printf`. -/
 private def resolveG : ObjectList :=
-  let (mainStrtab, mOffs) := packStrings #["printf"]
-  let (libcStrtab, lOffs) := packStrings #["printf"]
   ⟨#[
     synthObj "main"
       (needed := #["libc.so"])
-      (symtab := #[default, undefSym mOffs[0]!.toUInt32])
-      (strtab := mainStrtab),
+      (symtab := #[default, undefSym "printf"]),
     synthObj "libc.so"
-      (symtab := #[default, defSym lOffs[0]!.toUInt32 0xc0ffee])
-      (strtab := libcStrtab) ], by simp⟩
+      (symtab := #[default, defSym "printf" 0xc0ffee]) ], by simp⟩
 
 #guard (resolveByName resolveG "printf").map (·.objectIdx.val) = some 1
 #guard (resolveByName resolveG "nonexistent")              = none
