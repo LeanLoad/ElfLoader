@@ -156,19 +156,16 @@ def step (objs : Array LoadedObject) (work : List WorkItem) : StepResult :=
     if alreadyLoaded objs sn then .skip rest
     else .resolve sn rp rest
 
-/-- Canonical name for an elaborated ELF. -/
-private def canonicalNameV (needed : String) (elf : Elaborate.Elf) : String :=
-  elf.soname.getD needed
-
 /-- Pure integration: given a freshly resolved + parsed + elaborated
     dep, update `(objs, work)`. Performs the *post-canonicalisation*
-    dedup (`canonicalNameV` may differ from the soname we resolved
-    through); a hit returns the unchanged state. -/
+    dedup (the post-parse `DT_SONAME` may differ from the
+    `DT_NEEDED` string we resolved through); a hit returns the
+    unchanged state. -/
 def integrate (objs : Array LoadedObject) (rest : List WorkItem)
     (sn : String) (path : String) (handle : Runtime.FileHandle)
     (elf : Elaborate.Elf) :
     Array LoadedObject × List WorkItem :=
-  let canonical := canonicalNameV sn elf
+  let canonical := canonicalName sn elf
   if alreadyLoaded objs canonical then
     (objs, rest)
   else
@@ -185,7 +182,7 @@ theorem integrate_size_pos (objs : Array LoadedObject) (rest : List WorkItem)
     (sn : String) (path : String) (handle : Runtime.FileHandle)
     (elf : Elaborate.Elf) (h : 0 < objs.size) :
     0 < (integrate objs rest sn path handle elf).fst.size := by
-  by_cases hh : alreadyLoaded objs (canonicalNameV sn elf) <;>
+  by_cases hh : alreadyLoaded objs (canonicalName sn elf) <;>
     simp [integrate, hh, Array.size_push, h]
 
 -- ============================================================================

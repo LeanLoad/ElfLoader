@@ -35,7 +35,7 @@ import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Reloc
 import LeanLoad.Runtime
 import LeanLoad.Parse.Structs
-import LeanLoad.Thm.Layout
+
 
 namespace LeanLoad.Exec
 
@@ -50,25 +50,34 @@ open LeanLoad.Elaborate (PatchSize Segment)
 -- Process image — per-object, per-segment runtime artifacts.
 -- ============================================================================
 
-/-- One PT_LOAD segment's mmap'd region. Stored as a `Sigma` so the
-    `Region`'s size index can refer to the segment's loader-level
-    `pageLength` (page-aligned). Patches that target this segment
-    derive their `Region.InRange` proof from the segment's bound. -/
-private abbrev SegmentImage : Type :=
-  Σ s : Segment, Runtime.Region s.pageLength
+/-- One PT_LOAD segment's mmap'd region, indexed by the *planning*
+    segment it realizes. The `Region`'s size index is `pageLength` of
+    the planning-side `Segment`, so `Exec.applyPatch` can transfer
+    `Patch.covers` to a `Region.InRange` proof via `Layout.patch_inRange`
+    without runtime checks. -/
+private abbrev SegmentImage (g : ObjectList) (objIdx : Fin g.val.size)
+    (segIdx : Fin g.val[objIdx].elf.segments.size) : Type :=
+  Runtime.Region g.val[objIdx].elf.segments[segIdx].pageLength
 
 /-- Per-object runtime artifact: the planning-side layout plus one
-    `SegmentImage` per PT_LOAD, in lock-step with `layout.segments`. -/
-private structure ObjectImage where
+    `SegmentImage` per PT_LOAD, in lock-step with the object's
+    `elf.segments`. The `segments_idx` proof says the array's k-th
+    entry's `fst` is `k`; combined with `segments_size`, this pins
+    each entry's `Region` to `g.val[objIdx].elf.segments[k]`. -/
+private structure ObjectImage (g : ObjectList) (objIdx : Fin g.val.size) where
   layout   : ObjectLayout
-  segments : Array SegmentImage
+  segments : Array (Σ (segIdx : Fin g.val[objIdx].elf.segments.size),
+                      SegmentImage g objIdx segIdx)
+  segments_size : segments.size = g.val[objIdx].elf.segments.size
+  segments_idx  : ∀ (k : Nat) (h : k < segments.size), segments[k].fst.val = k
 
-/-- Realized process state: one `ObjectImage` per loaded object, in
-    `ObjectList` order. The `size_eq` proof carries the count at the
-    type level so per-patch indexing via `Fin n` is total. -/
-private structure ProcessImage (n : Nat) where
-  objects : Array ObjectImage
-  size_eq : objects.size = n
+/-- Realized process state: one `ObjectImage` per loaded object, with
+    each entry tagged by its `Fin g.val.size` index. `objects_idx`
+    pins the k-th entry's index to `k`, so per-patch lookup is total. -/
+private structure ProcessImage (g : ObjectList) where
+  objects : Array (Σ (i : Fin g.val.size), ObjectImage g i)
+  objects_size : objects.size = g.val.size
+  objects_idx  : ∀ (k : Nat) (h : k < objects.size), objects[k].fst.val = k
 
 -- ============================================================================
 -- Step 1: realize one object's layout into mmap'd `SegmentImage`s.
@@ -86,11 +95,11 @@ private structure ProcessImage (n : Nat) where
 -- ============================================================================
 
 /-- Realize one segment: anon reservation + file overlay + BSS zero +
-    mprotect. Returns the `SegmentImage` (segment + region).
-    Bounds proofs are discharged from `Segment`'s gabi-07 witnesses;
-    no runtime range checks. -/
+    mprotect. Returns a `SegmentImage` typed against the planning-side
+    `Segment` directly. Bounds proofs are discharged from `Segment`'s
+    gabi-07 witnesses; no runtime range checks. -/
 private def realizeSegment (rt : Runtime.Ops) (obj : LoadedObject)
-    (base : UInt64) (s : Segment) : IO SegmentImage := do
+    (base : UInt64) (s : Segment) : IO (Runtime.Region s.pageLength) := do
   let length := s.pageLength
   let region ← rt.mmapReserve (base + s.pageVaddr) length
   if s.fileLenPaged > 0 then
@@ -101,82 +110,161 @@ private def realizeSegment (rt : Runtime.Ops) (obj : LoadedObject)
                      writableProt s.fileOffsetPaged
     pure ()
   -- BSS InRange is discharged from `Segment`'s gabi-07 witnesses by
-  -- `Thm.bss_inRange`; no runtime check needed.
+  -- `Layout.bss_inRange`; no runtime check needed.
   let bssLen := s.memsz - s.filesz
   if bssLen > 0 then
-    rt.zeroout region (s.pageInset + s.filesz) bssLen (Thm.bss_inRange s)
+    rt.zeroout region (s.pageInset + s.filesz) bssLen (Layout.bss_inRange s)
   -- `InRange length 0 length` is `0 ≤ length ∧ length ≤ length - 0`;
   -- both trivially hold.
   have hMprot : Runtime.Region.InRange length 0 length := by
     unfold Runtime.Region.InRange; exact ⟨by simp, by simp⟩
   rt.mprotect region 0 length hMprot s.prot
-  return ⟨s, region⟩
+  return region
+
+/-- Realize one object's segments by walking `segs` in order. The
+    accumulator carries the size + identity proofs that `ObjectImage`
+    requires. `segs` is `g.val[objIdx].elf.segments` passed in
+    explicitly so termination is on `segs.size - k` (an outer-bound
+    variable, not a `Fin`-coerced expression that confuses omega). -/
+private def realizeObjectLoop (rt : Runtime.Ops) (g : ObjectList)
+    (objIdx : Fin g.val.size) (lyt : ObjectLayout)
+    (segs : Array Segment) (h_segs : segs = g.val[objIdx].elf.segments)
+    (k : Nat) (h_le : k ≤ segs.size)
+    (acc : Array (Σ (segIdx : Fin g.val[objIdx].elf.segments.size),
+                    SegmentImage g objIdx segIdx))
+    (ha : acc.size = k)
+    (ha_idx : ∀ (j : Nat) (hj : j < acc.size), acc[j].fst.val = j) :
+    IO (ObjectImage g objIdx) := do
+  if hk : k < segs.size then
+    have hk' : k < g.val[objIdx].elf.segments.size := h_segs ▸ hk
+    let segIdx : Fin g.val[objIdx].elf.segments.size := ⟨k, hk'⟩
+    let s := g.val[objIdx].elf.segments[segIdx]
+    let region ← realizeSegment rt g.val[objIdx] lyt.base s
+    let entry : Σ (segIdx : Fin g.val[objIdx].elf.segments.size),
+                  SegmentImage g objIdx segIdx := ⟨segIdx, region⟩
+    let acc' := acc.push entry
+    have ha' : acc'.size = k + 1 := by simp [acc', ha]
+    have ha_idx' : ∀ (j : Nat) (hj : j < acc'.size), acc'[j].fst.val = j := by
+      intro j hj
+      have h_acc'_size : acc'.size = acc.size + 1 := by simp [acc']
+      by_cases hj_eq : j = k
+      · subst hj_eq
+        show (acc.push entry)[j].fst.val = j
+        rw [show (acc.push entry)[j] = entry from by
+              simp [Array.getElem_push, ha]]
+      · have hj_lt : j < acc.size := by
+          rw [h_acc'_size] at hj; rw [ha]; omega
+        have heq : acc'[j] = acc[j] := by
+          show (acc.push entry)[j] = _; simp [Array.getElem_push, hj_lt]
+        rw [heq]; exact ha_idx j hj_lt
+    realizeObjectLoop rt g objIdx lyt segs h_segs (k + 1) hk acc' ha' ha_idx'
+  else
+    have h_size_eq : k = g.val[objIdx].elf.segments.size := by
+      rw [← h_segs]; exact Nat.le_antisymm h_le (Nat.le_of_not_lt hk)
+    return {
+      layout := lyt,
+      segments := acc,
+      segments_size := by rw [ha, h_size_eq]
+      segments_idx := ha_idx
+    }
+termination_by segs.size - k
 
 /-- Realize every segment of one object. -/
-private def realizeObject (rt : Runtime.Ops) (obj : LoadedObject) (lyt : ObjectLayout) :
-    IO ObjectImage := do
-  let segments ← lyt.segments.mapM (realizeSegment rt obj lyt.base)
-  return { layout := lyt, segments }
+private def realizeObject (rt : Runtime.Ops) (g : ObjectList)
+    (objIdx : Fin g.val.size) (lyt : ObjectLayout) :
+    IO (ObjectImage g objIdx) :=
+  realizeObjectLoop rt g objIdx lyt g.val[objIdx].elf.segments rfl
+    0 (Nat.zero_le _) #[] rfl
+    (by intro j hj; simp at hj)
 
-/-- Realize each layout in lock-step with `g.val`, producing a
-    `ProcessImage g.val.size`. Both arrays are indexed by the same
-    `Fin g.val.size` so per-iteration lookup is total. -/
+/-- Realize each layout in lock-step with `g.val`. The accumulator
+    carries the size + identity proofs that `ProcessImage` requires. -/
 private def realizeLoop (rt : Runtime.Ops) (g : ObjectList)
     (layouts : { a : Array ObjectLayout // a.size = g.val.size })
-    (i : Nat) (h_le : i ≤ g.val.size)
-    (acc : Array ObjectImage) (ha : acc.size = i) :
-    IO { a : Array ObjectImage // a.size = g.val.size } := do
-  if hi : i < g.val.size then
-    let obj := g.val[i]
-    let lyt := layouts.val[i]'(layouts.property.symm ▸ hi)
-    let img ← realizeObject rt obj lyt
-    let acc' := acc.push img
-    have ha' : acc'.size = i + 1 := by simp [acc', ha]
-    realizeLoop rt g layouts (i + 1) hi acc' ha'
+    (k : Nat) (h_le : k ≤ g.val.size)
+    (acc : Array (Σ (i : Fin g.val.size), ObjectImage g i))
+    (ha : acc.size = k)
+    (ha_idx : ∀ (j : Nat) (hj : j < acc.size), acc[j].fst.val = j) :
+    IO (ProcessImage g) := do
+  if hk : k < g.val.size then
+    let i : Fin g.val.size := ⟨k, hk⟩
+    let lyt := layouts.val[k]'(layouts.property.symm ▸ hk)
+    let img ← realizeObject rt g i lyt
+    let entry : Σ (i : Fin g.val.size), ObjectImage g i := ⟨i, img⟩
+    let acc' := acc.push entry
+    have ha' : acc'.size = k + 1 := by simp [acc', ha]
+    have ha_idx' : ∀ (j : Nat) (hj : j < acc'.size), acc'[j].fst.val = j := by
+      intro j hj
+      have h_acc'_size : acc'.size = acc.size + 1 := by simp [acc']
+      by_cases hj_eq : j = k
+      · subst hj_eq
+        show (acc.push entry)[j].fst.val = j
+        rw [show (acc.push entry)[j] = entry from by
+              simp [Array.getElem_push, ha]]
+      · have hj_lt : j < acc.size := by
+          rw [h_acc'_size] at hj; rw [ha]; omega
+        have heq : acc'[j] = acc[j] := by
+          show (acc.push entry)[j] = _; simp [Array.getElem_push, hj_lt]
+        rw [heq]; exact ha_idx j hj_lt
+    realizeLoop rt g layouts (k + 1) hk acc' ha' ha_idx'
   else
-    return ⟨acc, by omega⟩
-termination_by g.val.size - i
+    have h_size_eq : k = g.val.size := Nat.le_antisymm h_le (Nat.le_of_not_lt hk)
+    return {
+      objects := acc,
+      objects_size := by rw [ha, h_size_eq]
+      objects_idx := ha_idx
+    }
+termination_by g.val.size - k
 
 /-- Anon reservation + file overlays + BSS zeroing + mprotect for
     every segment of every object, producing the `ProcessImage` that
     subsequent steps write into. -/
 private def realizeImage (rt : Runtime.Ops) (g : ObjectList)
     (layouts : { a : Array ObjectLayout // a.size = g.val.size }) :
-    IO (ProcessImage g.val.size) := do
-  let ⟨objs, h⟩ ← realizeLoop rt g layouts 0 (Nat.zero_le _) #[] rfl
-  return ⟨objs, h⟩
+    IO (ProcessImage g) :=
+  realizeLoop rt g layouts 0 (Nat.zero_le _) #[] rfl
+    (by intro j hj; simp at hj)
 
 -- ============================================================================
 -- Step 2: write each `Reloc.Patch g` into its segment's `Region`.
 -- ============================================================================
 
-/-- Apply one `Patch g`. Totally typed: `objectIdx : Fin g.val.size`
-    is in bounds via `image.size_eq`, `segIdx` is a `Fin` into the
-    object's segment array. The reservation-relative bound proof
-    `Region.InRange (seg.length) p.offset 8/4` is checked
-    at runtime — the planner's `LocatedRela` witness guarantees the
-    bound holds, but the witness's UInt64↔UInt64 translation isn't
-    threaded through `Patch`'s type yet; the runtime check produces
-    the witness the typed op signature requires. -/
+/-- Apply one `Patch g`. Fully proven: `objectIdx` and `segIdx` index
+    totally via `image.objects_size`/`objects_idx` and `ObjectImage`'s
+    `segments_size`/`segments_idx`. The `InRange` bound is discharged
+    structurally from `Patch.covers` via `Layout.patch_inRange`, so no
+    runtime range check remains. -/
 private def applyPatch {g : ObjectList} (rt : Runtime.Ops)
-    (image : ProcessImage g.val.size) (p : Patch g) : IO Unit := do
-  let h_idx : p.objectIdx.val < image.objects.size := image.size_eq.symm ▸ p.objectIdx.isLt
-  let obj := image.objects[p.objectIdx.val]'h_idx
-  let some segImg := obj.segments[p.segIdx.val]?
-    | throw (IO.userError s!"applyPatch: segIdx {p.segIdx.val} out of range")
-  let ⟨seg, region⟩ := segImg
-  let length := seg.pageLength
+    (image : ProcessImage g) (p : Patch g) : IO Unit := do
+  let h_idx : p.objectIdx.val < image.objects.size :=
+    image.objects_size.symm ▸ p.objectIdx.isLt
+  let entry := image.objects[p.objectIdx.val]'h_idx
+  -- entry.fst.val = p.objectIdx.val (by objects_idx); upgrade to Fin equality.
+  have h_obj_eq : entry.fst = p.objectIdx :=
+    Fin.ext (by rw [image.objects_idx p.objectIdx.val h_idx])
+  -- Cast the per-object image to the index we need.
+  let obj : ObjectImage g p.objectIdx := h_obj_eq ▸ entry.snd
+  -- Now look up the segment.
+  have h_seg_idx : p.segIdx.val < obj.segments.size :=
+    obj.segments_size.symm ▸ p.segIdx.isLt
+  let segEntry := obj.segments[p.segIdx.val]'h_seg_idx
+  have h_seg_eq : segEntry.fst = p.segIdx :=
+    Fin.ext (obj.segments_idx p.segIdx.val h_seg_idx)
+  -- segEntry.snd : Region g.val[p.objectIdx].elf.segments[segEntry.fst].pageLength.
+  -- Rewrite the size index to `p.segIdx`'s pageLength via `h_seg_eq`.
+  let seg : Segment := g.val[p.objectIdx].elf.segments[p.segIdx]
+  let region : Runtime.Region seg.pageLength := by
+    have := segEntry.snd
+    rw [h_seg_eq] at this
+    exact this
+  -- `Patch.covers` witnesses `coversRela seg.vaddr seg.memsz p.rela`,
+  -- so `Layout.patch_inRange` discharges `InRange seg.pageLength _ 8`.
+  let offset := p.rela.r_offset - seg.pageVaddr
+  let h8 : Runtime.Region.InRange seg.pageLength offset 8 :=
+    Layout.patch_inRange seg p.rela p.covers
   match p.size with
-  | .b8 =>
-    if h : Runtime.Region.InRange length p.offset 8 then
-      rt.patch64 region p.offset h p.value
-    else
-      throw (IO.userError s!"applyPatch: 8-byte write out of range (offset={p.offset})")
-  | .b4 =>
-    if h : Runtime.Region.InRange length p.offset 4 then
-      rt.patch32 region p.offset h p.value
-    else
-      throw (IO.userError s!"applyPatch: 4-byte write out of range (offset={p.offset})")
+  | .b8 => rt.patch64 region offset h8 p.value
+  | .b4 => rt.patch32 region offset (Layout.inRange_4_of_8 h8) p.value
 
 -- ============================================================================
 -- Step 4: kernel-style stack + jump (does not return).
@@ -187,11 +275,11 @@ def stackBytes : UInt64 := 8 * 1024 * 1024
 
 /-- Allocate kernel-style stack and jump to entry. **Does not return.**
     Non-emptiness of `image.objects` is structurally derivable from
-    `ObjectList`'s `0 < g.val.size` invariant + `image.size_eq`, so
-    the index `image.objects[0]` is total — no `?`/`throw`. -/
-private def transferControl {n : Nat} (rt : Runtime.Ops) (mainObj : LoadedObject)
-    (image : ProcessImage n) (h_pos : 0 < image.objects.size) (path : String) : IO Unit := do
-  let mainImg := image.objects[0]'h_pos
+    `ObjectList`'s `0 < g.val.size` invariant + `image.objects_size`,
+    so the index `image.objects[0]` is total — no `?`/`throw`. -/
+private def transferControl (rt : Runtime.Ops) {g : ObjectList} (mainObj : LoadedObject)
+    (image : ProcessImage g) (h_pos : 0 < image.objects.size) (path : String) : IO Unit := do
+  let mainImg := (image.objects[0]'h_pos).snd
   let stack ← rt.mmapStack stackBytes
   let entry  := mainImg.layout.base + mainImg.layout.entry.getD 0
   let phdrVa := mainImg.layout.base + mainObj.elf.phoff
@@ -226,9 +314,9 @@ def realize (rt : Runtime.Ops) (g : ObjectList) (mainObj : LoadedObject)
   let image ← realizeImage rt g sizedLayouts
   for p in patches do applyPatch rt image p
   ctorAddrs.forM rt.callCtor
-  -- `image.objects.size = g.val.size` (image.size_eq) and `0 < g.val.size`
-  -- (g.property), so `0 < image.objects.size` is total.
-  have h_pos : 0 < image.objects.size := image.size_eq.symm ▸ g.property
+  -- `image.objects.size = g.val.size` and `0 < g.val.size`, so
+  -- `0 < image.objects.size` — `image.objects[0]` is total.
+  have h_pos : 0 < image.objects.size := image.objects_size.symm ▸ g.property
   transferControl rt mainObj image h_pos path
 
 end LeanLoad.Exec

@@ -52,8 +52,10 @@ def load (path : String) : IO Unit := do
   if let some u := resTable.missing[0]? then
     throw (IO.userError s!"load: {resTable.missing.size} unresolved strong symbol(s); first: {u.name}")
   let layouts ← IO.ofExcept g.layouts
+  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
+    ⟨layouts.val, layouts.property.left⟩
   let formula := Elaborate.formulaFor mainObj.elf.machine
-  let patches := Reloc.plan formula g layouts.val resTable
+  let patches := Reloc.plan formula g sizedLayouts resTable
   let ctorAddrs := Init.plan g layouts.val (Init.order g)
   -- `layouts`'s subtype carries the per-layout `segmentsSorted`
   -- witness — required by `realize` as a documented precondition
@@ -172,7 +174,9 @@ def debug (path : String) : IO Unit := do
       let seg := obj.elf.segments[segI]
       for entry in seg.rela do printOne segI entry.val
       for entry in seg.jmprel do printOne segI entry.val
-  let patches := Reloc.plan formula g layouts.val resTable
+  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
+    ⟨layouts.val, layouts.property.left⟩
+  let patches := Reloc.plan formula g sizedLayouts resTable
   IO.eprintln s!"planned {patches.size} patches"
 
   IO.eprintln "\n== InitPlan =="

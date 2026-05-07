@@ -2,30 +2,32 @@
 
 A verified ELF loader in Lean 4. Reads, plans, and runs Linux ELF
 binaries (static + dynamically-linked) through a pipeline split into
-a **pure middle** (verified core, all in `Plan/`) and two **trusted
-IO bookends**:
+a **pure middle** (verified core, all under `Parse/` + `Elaborate/`
++ `Plan/`) and two **trusted IO bookends**:
 
-| Stage    | Pure planner    | IO bookend                | What it does                                                                                  |
-| -------- | --------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
-| Discover | `Plan/Discover` | `Discover.discover`       | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
-| Parse    | `Parse/*`       | `Parse/File.parse`        | Decode each ELF; carry a `WellFormed` segment witness in the type.                            |
-| Resolve  | `Plan/Resolve`  | —                         | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`.            |
-| Layout   | `Plan/Layout`   | —                         | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
-| Reloc    | `Plan/Reloc`    | (folded into `realize`)   | Per-arch formula → `Patch` list; `PatchSize` (`b4`/`b8`) makes realize dispatch structural.   |
-| Init     | `Plan/Init`     | (folded into `realize`)   | DFS post-order over deps, then per-object `init_array` resolution → constructor address list. |
-| Exec     | —               | `Exec.realize`            | Single IO sweep over layouts/patches/ctors: mmap + zeroout + mprotect + patch writes + ctor calls + stack + jump. |
+| Stage     | Pure module     | IO bookend                | What it does                                                                                  |
+| --------- | --------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
+| Parse     | `Parse/*`       | `Parse/RawElf.parse`      | Byte-decode each ELF into `RawElf`; no semantic checks.                                       |
+| Elaborate | `Elaborate/*`   | —                         | Validate the bytes, lift to typed enums, group rela by segment, carry `WellFormed` segments and per-segment page-arithmetic invariants on `Segment`. |
+| Discover  | `Plan/Discover` | `Discover.discover`       | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
+| Resolve   | `Plan/Resolve`  | —                         | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`; HashMap-indexed for O(1) lookup. |
+| Layout    | `Plan/Layout`   | —                         | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
+| Reloc     | `Plan/Reloc`    | (folded into `realize`)   | Per-arch formula → `Patch` list; each patch carries the segment-tying `coversRela` witness so `applyPatch` discharges `Region.InRange` with no runtime check. |
+| Init      | `Plan/Init`     | (folded into `realize`)   | DFS post-order over deps, then per-object `init_array` resolution → constructor address list. |
+| Exec      | —               | `Exec.realize`            | Single IO sweep over layouts/patches/ctors: mmap + zeroout + mprotect + patch writes + ctor calls + stack + jump. |
 
-Every file under `Plan/` is pure Lean; the only IO seams are
-`Discover` (file reads) and `Exec.realize` (mmap + writes +
-control transfer). The mmap-op sequence (overlay/bssZero/mprotect)
-is derived inline from each layout's segments inside `realize` —
-there's no separate Map planner because that "planning" was
-trivial (a function of segment shape) and only `realize` consumed it.
+Every file under `Parse/`, `Elaborate/`, and `Plan/` is pure Lean;
+the only IO seams are `Discover` (file reads) and `Exec.realize`
+(mmap + writes + control transfer). The mmap-op sequence
+(overlay/bssZero/mprotect) is derived inline from each layout's
+segments inside `realize` — there's no separate Map planner because
+that "planning" was trivial (a function of segment shape) and only
+`realize` consumed it.
 
 Targets AArch64 + x86-64 with musl libc. The verified core is pure
 Lean.
 
-https://github.com/ShawnZhong/LeanLoad/blob/8efc31143c07302e9fc5743b7e144602fd5eb0c2/run.log#L1-L213
+https://github.com/ShawnZhong/LeanLoad/blob/7db77ebd080827228f5376478ee5db3e3f12c0a5/run.log#L1-L320
 
 ## Quick start
 
@@ -43,9 +45,13 @@ https://github.com/ShawnZhong/LeanLoad/blob/8efc31143c07302e9fc5743b7e144602fd5e
   assumptions.
 - [`docs/plan.md`](docs/plan.md) — open work and out-of-scope items.
 
-The audit surface inside the code is `LeanLoad/Spec/` (gabi/abi
-transcriptions, one file per chapter) and `LeanLoad/Thm/` (every
-machine-checked theorem, one file per topic).
+The audit surface inside the code is `LeanLoad/Parse/` (byte-level
+gabi/abi transcriptions) and `LeanLoad/Elaborate/` (typed views with
+gabi-mandated invariants carried as `Segment` fields). Cross-stage
+theorems (`bss_inRange`, `patch_inRange`, `inRange_4_of_8`,
+`assignBases_size`, `segment_endAddr_le_objectSpan`,
+`segmentsPairwiseDisjoint_of_segmentsSorted`) live alongside the
+constructions they discharge in `LeanLoad/Plan/Layout.lean`.
 
 ## Status
 
@@ -59,38 +65,28 @@ machine-checked theorem, one file per topic).
 ```
 LeanLoad.lean              package root (re-exports)
 LeanLoad/
-  Spec/                    gabi/abi transcriptions — types and constants only, no logic
-    Header.lean            gabi 02 § ELF Header (ElfHeader64, ELFMAG, ET_*, EM_*)
-    Program.lean           gabi 07 § Program Header (PT_*, PF_*, Header64)
-    Dynamic.lean           gabi 08 § Dynamic Section (DT_* tags, Dyn64)
-    StringTable.lean       gabi 04 § String Table (NUL-terminated lookup by offset)
-    Symbol.lean            gabi 05 § Symbol Table (STB_*, STT_*, Symbol64, bind/type extract)
-    Reloc.lean             gabi 06 § Relocation (Rela64, sym/type extract from r_info)
-    Reloc/Aarch64.lean     aarch64-elf-abi § Dynamic Relocations (per-type formula table)
-    Reloc/X86_64.lean      x86-64-ABI § Relocation Types (per-type formula table)
-    Reloc/Formula.lean     per-`e_machine` dispatch to the right per-arch formula
-    GnuHash.lean           gnu-gabi § Hashes (layout + dynsym-count derivation)
-  Parse/                   byte decoders — one file per Spec/ section
-    Bytes.lean             parser monad (cursor + Except, u32le / u64le primitives)
-    Header.lean            ElfHeader64 decoder
-    Program.lean           Header64 decoder + table reader
-    Dynamic.lean           .dynamic decoder + tag-keyed lookups (find?, findAll)
-    StringTable.lean       view a `ByteArray` slice as a string table
-    Symbol.lean            Symbol64 decoder
-    Reloc.lean             Rela64 decoder
-    Segment.lean           Segment + WellFormed (sorted, sized, aligned, congruent, non-overlap)
-    GnuHash.lean           DT_GNU_HASH chain reader → dynsym count
-    File.lean              ParsedElf aggregate + top-level parse with WellFormed witness
-  Thm/                     proven theorems — one file per topic, docstring is the contract
-    Parse.lean             named accessors deriving Spec.Program.{Sorted,…} from a WellFormed witness
-    Layout.lean            sorted ⇒ pairwise disjoint; runtime check ↔ proof-level invariant
-    Discover.lean          BFS dedup primitive iff loaded; nodup-preservation on push
-    GnuHash.lean           soundness of the dynsym-count derivation
+  Parse/                   byte decoders — Elf64_* C-struct transcriptions
+    Decode.lean            parser monad (cursor + Except, u32le / u64le primitives)
+    Deriving.lean          `deriving BytesDecode` handler — auto field-by-field decode
+    Structs.lean           Raw{Ehdr,Phdr,Sym,Rela,Dyn,…} structs + DT_*/PT_* tag constants
+    Dynamic.lean           .dynamic decoder + tag-keyed lookups (find?, findAll, pair?)
+    RawElf.lean            top-level `parse` (header → phdrs → .dynamic → strtab → …)
+  Elaborate/               typed semantic views over Parse — validates and enriches
+    Header.lean            ElfType / Machine enums; ELFCLASS64 / ELFDATA2LSB constants
+    Strtab.lean            NUL-terminated UTF-8 lookup by offset
+    Symbol.lean            SymBind / ShnIdx enums + `Symbol` (name pre-resolved)
+    Reloc.lean             PatchSize (b4/b8); per-arch formula tables; `formulaFor` dispatch
+    Segment.lean           validated `Segment` with gabi-07 invariants + page-arithmetic
+                           views (pageVaddr, pageLength, …) + pre-discharged InRange facts
+    WellFormed.lean        multi-segment Sorted + NonOverlap, decidable
+    Elf.lean               `Elf` aggregate + `elaborate : RawElf → Except String Elf`
   Plan/                    pure middle — every stage that produces abstract data
+                           (theorems for the IO-bookend live alongside their construction)
     Discover.lean          BFS dedup + LoadedObject + ObjectList (non-empty subtype)
-    Resolve.lean           undef ref → SymRef n / Unresolved n / Table n (Fin n on objectIdx)
-    Layout.lean            per-object Segment + ObjectLayout; assignBases; layouts validator
-    Reloc.lean             Patch n (Fin objectIdx) + PatchSize (b4/b8); planner per-arch formula
+    Resolve.lean           SymRef n / Unresolved n / Table n with O(1) HashMap index
+    Layout.lean            ObjectLayout; assignBases (sized output); `g.layouts` validator;
+                           bss_inRange / patch_inRange / segmentsPairwiseDisjoint
+    Reloc.lean             Patch g (Fin segIdx + coversRela witness) + PatchSize dispatch
     Init.lean              buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
   Discover.lean            walk DT_NEEDED via IO; thread non-emptiness witness through the loop
   Exec.lean                IO bookend — realize all plans (mmap + zeroout + mprotect + patch

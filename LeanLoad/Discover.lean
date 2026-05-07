@@ -95,7 +95,7 @@ private def discoverLoop (rt : Runtime.Ops) (envPath : Option String) (fuel : Na
 def discover (rt : Runtime.Ops) (mainPath : String) : IO ObjectList := do
   let (mainHandle, mainElf) ← readAndParse rt mainPath
   let envPath ← IO.getEnv "LD_LIBRARY_PATH"
-  let mainName := mainElf.soname.getD mainPath
+  let mainName := canonicalName mainPath mainElf
   let initObjs : Array LoadedObject :=
     #[{ name := mainName, path := mainPath, handle := some mainHandle, elf := mainElf }]
   have h : 0 < initObjs.size := Nat.zero_lt_one

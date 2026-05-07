@@ -34,18 +34,36 @@ open LeanLoad.Elaborate (PatchSize FormulaInputs FormulaResult Formula)
 
 /-- One memory write, keyed by `(objectIdx, segIdx)` so the runtime
     knows exactly which mmap'd region to write into. The offset is
-    segment-relative (in UInt64, ready for `Region.patchN`). -/
+    segment-relative (in UInt64, ready for `Region.patchN`). The
+    `coversRela` witness on the originating rela is carried so
+    `Exec.applyPatch` can discharge `Region.InRange` structurally
+    (via `Layout.patch_inRange`) instead of re-checking at runtime. -/
 structure Patch (g : ObjectList) where
   /-- Index into `g.val`. -/
   objectIdx : Fin g.val.size
   /-- Index into `g.val[objectIdx].elf.segments`. -/
   segIdx    : Fin g.val[objectIdx].elf.segments.size
-  /-- Offset from the segment's mmap'd region base, in bytes. -/
-  offset    : UInt64
+  /-- Originating rela. Kept (instead of just `r.r_offset`) so the
+      `coversRela` witness has a `RawRela` to refer to. -/
+  rela      : Parse.RawRela
+  /-- Witness from validation: the rela's 8-byte write window lies
+      inside the segment's `[vaddr, vaddr + memsz)` range. -/
+  covers    : Elaborate.coversRela
+                g.val[objectIdx].elf.segments[segIdx].vaddr
+                g.val[objectIdx].elf.segments[segIdx].memsz
+                rela
   /-- Value to write. -/
   value     : UInt64
   /-- Width of the write (4 or 8 bytes). -/
   size      : PatchSize
+
+namespace Patch
+
+/-- Segment-relative offset (from the page-aligned mmap base). -/
+def offset {g : ObjectList} (p : Patch g) : UInt64 :=
+  p.rela.r_offset - g.val[p.objectIdx].elf.segments[p.segIdx].pageVaddr
+
+end Patch
 
 -- ============================================================================
 -- Symbol-value resolution (used to plug `S` into the formula)
@@ -60,11 +78,12 @@ def absoluteSymbolValue (g : ObjectList) (bases : Array UInt64)
   let base  ← bases[ref.objectIdx.val]?
   return base + entry.value
 
-/-- Find the resolution for `(objectIdx, symIdx)` in a built table. -/
+/-- Find the resolution for `(objectIdx, symIdx)` in a built table.
+    O(1) via `Resolve.Table.index` (a HashMap built in lock-step with
+    `resolved`). -/
 def lookupResolved (g : ObjectList) (rt : Resolve.Table g.val.size)
     (bases : Array UInt64) (objectIdx symIdx : Nat) : Option UInt64 := do
-  let (_, ref?) ← rt.resolved.find? fun (u, _) =>
-    u.objectIdx.val == objectIdx && u.symIdx == symIdx
+  let ref? ← rt.index[(objectIdx, symIdx)]?
   let ref ← ref?
   absoluteSymbolValue g bases ref
 
@@ -92,29 +111,33 @@ def resolveSymValue (g : ObjectList) (bases : Array UInt64)
 -- ============================================================================
 
 /-- Plan one rela inside a specific segment. Returns `none` for no-op
-    relocations (`R_*_NONE` and unsupported types). -/
+    relocations (`R_*_NONE` and unsupported types). The `coversRela`
+    witness on the input rela carries through to the `Patch.covers`
+    field, where `Exec.applyPatch` consumes it via `Layout.patch_inRange`. -/
 private def planRela (formula : Formula) (g : ObjectList)
     (objectIdx : Fin g.val.size) (segIdx : Fin g.val[objectIdx].elf.segments.size)
-    (base : UInt64) (symValue : UInt64) (r : RawRela) : Option (Patch g) :=
+    (base : UInt64) (symValue : UInt64)
+    (entry : { r : RawRela //
+      Elaborate.coversRela
+        g.val[objectIdx].elf.segments[segIdx].vaddr
+        g.val[objectIdx].elf.segments[segIdx].memsz r }) :
+    Option (Patch g) :=
+  let r := entry.val
   let inputs : FormulaInputs :=
     { symValue, addend := r.r_addend, base, place := base + r.r_offset }
   match formula r.type inputs with
   | none     => none
   | some res =>
-    let seg := g.val[objectIdx].elf.segments[segIdx]
-    -- Segment-relative offset from the mmap'd region base. The mmap'd
-    -- region starts at `seg.pageVaddr` (page-aligned `alignDown` of
-    -- the raw `vaddr`); the rela's `r_offset` lies inside the raw
-    -- `[vaddr, vaddr + memsz)` range by validation's witness, hence
-    -- inside the larger page-aligned region.
-    let offset : UInt64 := r.r_offset - seg.pageVaddr
-    some { objectIdx, segIdx, offset, value := res.value, size := res.size }
+    some { objectIdx, segIdx, rela := r, covers := entry.property,
+           value := res.value, size := res.size }
 
-/-- Plan all relocations for one object's segments. -/
+/-- Plan all relocations for one object's segments. The `bases` array
+    is sized to `g.val.size` so per-object indexing is total. -/
 def planObject (formula : Formula) (g : ObjectList) (bases : Array UInt64)
+    (hBases : bases.size = g.val.size)
     (rt : Resolve.Table g.val.size) (objectIdx : Fin g.val.size) : Array (Patch g) := Id.run do
   let obj  := g.val[objectIdx]
-  let base := (bases[objectIdx.val]?).getD 0
+  let base := bases[objectIdx.val]'(by rw [hBases]; exact objectIdx.isLt)
   let mut acc : Array (Patch g) := #[]
   for h : segI in [:obj.elf.segments.size] do
     let segIdx : Fin obj.elf.segments.size := ⟨segI, h.upper⟩
@@ -126,7 +149,7 @@ def planObject (formula : Formula) (g : ObjectList) (bases : Array UInt64)
       let symValue : UInt64 :=
         if r.sym == 0 then 0
         else resolveSymValue g bases rt objectIdx.val r.sym.toNat
-      match planRela formula g objectIdx segIdx base symValue r with
+      match planRela formula g objectIdx segIdx base symValue entry with
       | none   => acc
       | some p => acc.push p
     acc := seg.rela.foldl planEntry acc
@@ -135,13 +158,17 @@ def planObject (formula : Formula) (g : ObjectList) (bases : Array UInt64)
 
 /-- Plan relocations for every object. Pure (no `Except`): every
     rela has been segment-tied at validation, so there's no
-    out-of-range failure mode left for the planner to surface. -/
-def plan (formula : Formula) (g : ObjectList) (layouts : Array ObjectLayout)
+    out-of-range failure mode left for the planner to surface. The
+    sized-`layouts` subtype gives a `bases.size = g.val.size` proof
+    that flows into `planObject`. -/
+def plan (formula : Formula) (g : ObjectList)
+    (layouts : { a : Array ObjectLayout // a.size = g.val.size })
     (rt : Resolve.Table g.val.size) : Array (Patch g) := Id.run do
-  let bases : Array UInt64 := layouts.map (·.base)
+  let bases : Array UInt64 := layouts.val.map (·.base)
+  have hBases : bases.size = g.val.size := by simp [bases, layouts.property]
   let mut acc : Array (Patch g) := #[]
   for h : i in [:g.val.size] do
-    acc := acc ++ planObject formula g bases rt ⟨i, h.upper⟩
+    acc := acc ++ planObject formula g bases hBases rt ⟨i, h.upper⟩
   return acc
 
 end LeanLoad.Reloc

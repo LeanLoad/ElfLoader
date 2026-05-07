@@ -92,7 +92,9 @@ private def orderTest (g : ObjectList) : Except String Unit := do
 
 private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
   let layouts ← g.layouts
-  let patches := Reloc.plan formula g layouts.val (Resolve.buildTable g)
+  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
+    ⟨layouts.val, layouts.property.left⟩
+  let patches := Reloc.plan formula g sizedLayouts (Resolve.buildTable g)
   check (patches.size > 0) "expected nonzero relocation writes"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +

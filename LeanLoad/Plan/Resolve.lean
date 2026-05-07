@@ -20,6 +20,7 @@ import LeanLoad.Plan.Discover
 import LeanLoad.Parse.Structs
 import LeanLoad.Elaborate.Elf
 import LeanLoad.Fixtures
+import Std.Data.HashMap
 
 namespace LeanLoad.Resolve
 
@@ -67,20 +68,27 @@ structure Unresolved (n : Nat) where
     every contained `Unresolved` / `SymRef` carries its bounds
     proof. -/
 structure Table (n : Nat) where
-  /-- One entry per undefined reference in any object. -/
+  /-- One entry per undefined reference in any object. Iteration
+      order — used by the debug printer in `Main.debug`. -/
   resolved : Array (Unresolved n × Option (SymRef n))
+  /-- O(1) `(objectIdx, symIdx) → Option (SymRef n)` lookup. Built
+      in lock-step with `resolved`; `Plan.Reloc.lookupResolved` reads
+      this so per-rela symbol resolution is O(1) instead of scanning
+      `resolved` linearly (which was O(undefs × relas) in aggregate). -/
+  index : Std.HashMap (Nat × Nat) (Option (SymRef n))
   /-- Strong (non-weak) undef references that did not resolve.
       A non-empty `missing` means the program would fail at load. -/
   missing  : Array (Unresolved n)
   /-- Weak undef references that did not resolve. Allowed by gabi 05;
       surfaced for diagnostics only. -/
   weakMissing : Array (Unresolved n)
-  deriving Repr
 
 /-- Walk every object's symbol table, look up each undefined
-    reference's definition. -/
+    reference's definition. Builds both the iteration array
+    (`resolved`) and the O(1) lookup `index` in lock-step. -/
 def buildTable (g : ObjectList) : Table g.val.size := Id.run do
   let mut resolved : Array (Unresolved g.val.size × Option (SymRef g.val.size)) := #[]
+  let mut index : Std.HashMap (Nat × Nat) (Option (SymRef g.val.size)) := ∅
   let mut missing : Array (Unresolved g.val.size) := #[]
   let mut weakMissing : Array (Unresolved g.val.size) := #[]
   for h : objectIdx in [:g.val.size] do
@@ -96,11 +104,12 @@ def buildTable (g : ObjectList) : Table g.val.size := Id.run do
             { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := n }
           let r := resolveByName g n
           resolved := resolved.push (entry, r)
+          index := index.insert (objectIdx, symIdx) r
           if r.isNone then
             if symEntry.isWeak then weakMissing := weakMissing.push entry
             else missing := missing.push entry
       symIdx := symIdx + 1
-  return { resolved, missing, weakMissing }
+  return { resolved, index, missing, weakMissing }
 
 -- ============================================================================
 -- Compile-time unit tests: synthesise a tiny `ObjectList` where main has an
