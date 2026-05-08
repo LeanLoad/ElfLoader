@@ -87,8 +87,8 @@ LEAN_EXPORT lean_object * leanload_mmap_file(uint32_t fd,
 /* Kernel-picked anon mapping, `len` bytes. Kernel returns the
  * chosen base; caller threads it into pure planning (per-load
  * reservation) or into `exec_run` (loaded program's stack). */
-LEAN_EXPORT lean_object * leanload_mmap_alloc(uint64_t len,
-                                              lean_object * /* w */) {
+LEAN_EXPORT lean_object * leanload_mmap_anon(uint64_t len,
+                                             lean_object * /* w */) {
     void * p = mmap(NULL, (size_t)len,
                     PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -113,10 +113,10 @@ LEAN_EXPORT lean_object * leanload_mprotect(uint64_t addr,
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* Write the low `size` (4 or 8) little-endian bytes of `value` at
+/* Store the low `size` (4 or 8) little-endian bytes of `value` at
  * `addr`. The relocation formula computes a uint64; we truncate to
  * `size` bytes by memcpy'ing only the low ones. */
-LEAN_EXPORT lean_object * leanload_write(uint64_t addr,
+LEAN_EXPORT lean_object * leanload_store(uint64_t addr,
                                          uint8_t size,
                                          uint64_t value,
                                          lean_object * /* w */) {
@@ -125,9 +125,9 @@ LEAN_EXPORT lean_object * leanload_write(uint64_t addr,
 }
 
 /* Zero `len` bytes starting at `addr`. */
-LEAN_EXPORT lean_object * leanload_zeroout(uint64_t addr,
-                                           uint64_t len,
-                                           lean_object * /* w */) {
+LEAN_EXPORT lean_object * leanload_zero(uint64_t addr,
+                                        uint64_t len,
+                                        lean_object * /* w */) {
     memset((void *)(uintptr_t)addr, 0, (size_t)len);
     return lean_io_result_mk_ok(lean_box(0));
 }

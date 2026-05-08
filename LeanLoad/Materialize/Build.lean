@@ -1,21 +1,24 @@
 /-
 Builder + safety gate: turn base-free `Plan/` outputs into a
-`LoadOps` tree, then flatten + decidable-check at the runtime seam.
+structured `LoadOps` tree, then witness it for `runSafe`.
 
 Three top-level entry points:
-  • `build`       — pure: `(lp, handles, bases, formula, relocPlan)
-                    → LoadOps`. Combines `setupOps` (from
-                    `LoadOps.lean`) with `bakeSegmentRelocs` (from
-                    `Reloc.lean`) per segment.
-  • `initAddrs`   — pure: `(lp, bases, order) → Array UInt64`.
-                    Walks each elf's `initArr` in init order; ET_DYN
-                    entries get the chosen base added, ET_EXEC
-                    entries are absolute, zero entries are skipped.
-  • `safe`        — pure: `(rsvAddr, rsvLen, lo) → safety-witnessed
-                    flat ops`. Flattens + runs the decidable safety
-                    predicates over the kernel-picked reservation.
+  • `build`     — pure: `(lp, handles, bases, formula, relocPlan)
+                  → LoadOps`. Per segment: `setupSlots` (mmap, zero,
+                  mprotect from the `SegmentPlan` + base) +
+                  `bakeSegmentRelocs` (stores from the base-free
+                  `RelocEntry`s).
+  • `initAddrs` — pure: `(lp, bases, order) → Array UInt64`. Walks
+                  each elf's `initArr` in init order; ET_DYN entries
+                  get the chosen base added, ET_EXEC entries are
+                  absolute, zero entries are skipped.
+  • `safe`      — pure: `(rsvAddr, rsvLen, lo) → safety-witnessed
+                  LoadOps`. Runs the decidable safety predicates over
+                  the kernel-picked reservation; on success the
+                  witness is fed to `LoadOps.runSafe`.
 
-`Main.realize` uses `safe`; `Main.load` uses `build` and `initAddrs`.
+`Main.realize` uses `safe` then `LoadOps.runSafe`. `Main.load` uses
+`build` and `initAddrs`.
 -/
 
 import LeanLoad.Materialize.LoadOps
@@ -34,7 +37,7 @@ open LeanLoad.Elaborate (Elf Formula)
 
 /-- Build the `LoadOps` tree from a `LoadPlan`, file handles, bases
     (from `Plan.assignBases`), the per-arch reloc formula, and the
-    base-free `LoadRelocs`. Per segment of each elf: `setupOps` +
+    base-free `LoadRelocs`. Per segment: `setupSlots` + stores from
     `bakeSegmentRelocs`. -/
 def build (lp : LoadPlan) (elfs : Array Elf)
     (h_elfs : elfs.size = lp.elfs.size)
@@ -53,10 +56,11 @@ def build (lp : LoadPlan) (elfs : Array Elf)
     let mut segments : Array SegmentOps := #[]
     for h2 : segI in [:ep.segments.size] do
       let sp := ep.segments[segI]
-      let setup := setupOps handle sp base
+      let (mmap, zero, mprotect) := setupSlots sp handle base
       let segRelocs := (elfRelocs[segI]?).getD #[]
-      let writes ← bakeSegmentRelocs formula elfs bases h_bases base segRelocs
-      segments := segments.push { plan := sp, ops := setup ++ writes }
+      let stores ← bakeSegmentRelocs formula elfs bases h_bases base segRelocs
+      segments := segments.push
+        { plan := sp, mmap, zero, stores, mprotect }
     lo := lo.push { base, segments }
   return lo
 
@@ -85,29 +89,29 @@ def initAddrs (lp : LoadPlan) (bases : Array UInt64)
   return addrs
 
 -- ============================================================================
--- Safety gate: flatten + decidable check.
+-- Safety gate: decidable check over the structured tree.
 -- ============================================================================
 
-/-- Flatten the `LoadOps` and gate through the decidable safety
-    predicates (`OverlaysDisjoint`, `OverlaysContained`,
-    `WritesContained`, `MprotectsContained`) parameterized on the
+/-- Gate the `LoadOps` tree through the decidable safety predicates
+    (`MmapsDisjoint`, `MmapsContained`, `ZerosContained`,
+    `StoresContained`, `MprotectsContained`) parameterized on the
     reservation `[rsvAddr, rsvAddr+rsvLen)`. Failure means a planner
     bug (the OS would otherwise raise SIGSEGV / mmap failure). -/
 def safe (rsvAddr rsvLen : UInt64) (lo : LoadOps) :
-    Except String { ops : Array MemoryOp //
-      OverlaysDisjoint ops ∧
-      OverlaysContained rsvAddr rsvLen ops ∧
-      WritesContained rsvAddr rsvLen ops ∧
-      MprotectsContained rsvAddr rsvLen ops } :=
-  let ops := lo.flatten
-  if h : OverlaysDisjoint ops ∧
-         OverlaysContained rsvAddr rsvLen ops ∧
-         WritesContained rsvAddr rsvLen ops ∧
-         MprotectsContained rsvAddr rsvLen ops then
-    .ok ⟨ops, h⟩
+    Except String { lo : LoadOps //
+      MmapsDisjoint lo ∧
+      MmapsContained rsvAddr rsvLen lo ∧
+      ZerosContained rsvAddr rsvLen lo ∧
+      StoresContained rsvAddr rsvLen lo ∧
+      MprotectsContained rsvAddr rsvLen lo } :=
+  if h : MmapsDisjoint lo ∧
+         MmapsContained rsvAddr rsvLen lo ∧
+         ZerosContained rsvAddr rsvLen lo ∧
+         StoresContained rsvAddr rsvLen lo ∧
+         MprotectsContained rsvAddr rsvLen lo then
+    .ok ⟨lo, h⟩
   else
     .error "Materialize.safe: planned ops violate safety invariants \
-      (loader bug — overlays collide or extend outside the \
-      reservation)"
+      (loader bug — mmaps collide or extend outside the reservation)"
 
 end LeanLoad.Materialize

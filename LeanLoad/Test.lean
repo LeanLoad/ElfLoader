@@ -79,15 +79,13 @@ private def resolveTest (g : ObjectList) : Except String Unit := do
 
 /-- Synthetic reservation base used by tests that don't need the
     kernel-picked address. Lives only here — production gets the
-    real base from `Runtime.mmapAnonAlloc`. -/
+    real base from `Runtime.mmapAnon`. -/
 private def testAnchor : UInt64 := 0x80000000
 
 private def layoutTest (g : ObjectList) : Except String Unit := do
-  -- `Plan.layouts` succeeds → returns a sized subtype; the size
-  -- proof is the second component, so this test only checks that the
-  -- well-formedness validation succeeds (size match is by construction).
-  let lp := LoadPlan.ofElfs (g.val.map (·.elf))
-  let _ ← layouts testAnchor lp
+  -- `LoadPlan.ofElfs` succeeds → returns a sized subtype with the
+  -- per-elf `segmentsSorted` proof. Size match is by construction.
+  let _ ← LoadPlan.ofElfs (g.val.map (·.elf))
   .ok ()
 
 private def orderTest (g : ObjectList) : Except String Unit := do
@@ -105,17 +103,19 @@ private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except St
     er.foldl (init := acc) fun acc sr => acc + sr.size
   check (totalEntries > 0) "expected nonzero planned relocations"
   -- Bake them too — exercises the formula + symValueOf path.
-  let lp := LoadPlan.ofElfs elfs
-  let bases ← layouts testAnchor lp
-  have h_lp : elfs.size = lp.elfs.size := (LoadPlan.ofElfs_size elfs).symm
-  have h_bases : bases.val.size = elfs.size := h_lp ▸ bases.property.left
-  let mut ops : Array MemoryOp := #[]
+  let lpW ← LoadPlan.ofElfs elfs
+  let lp := lpW.val
+  have h_lp : elfs.size = lp.elfs.size := lpW.property.symm
+  let bases := assignBases testAnchor lp
+  have h_bases : bases.size = elfs.size :=
+    (assignBases_size testAnchor lp).trans h_lp.symm
+  let mut stores : Array Store := #[]
   for h : i in [:elfs.size] do
-    let base := bases.val[i]'(by rw [h_bases]; exact h.upper)
+    let base := bases[i]'(by rw [h_bases]; exact h.upper)
     let elfRelocs := (relocPlan[i]?).getD #[]
     for sr in elfRelocs do
-      ops := ops ++ (← Materialize.bakeSegmentRelocs formula elfs bases.val h_bases base sr)
-  check (ops.size > 0) "expected nonzero baked write ops"
+      stores := stores ++ (← Materialize.bakeSegmentRelocs formula elfs bases h_bases base sr)
+  check (stores.size > 0) "expected nonzero baked Store ops"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +
 -- ctor calls + exec) has no test stage: it doesn't return (it

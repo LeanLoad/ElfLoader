@@ -155,10 +155,27 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
 
 -- ET_EXEC is rejected at elaborate time, so every elf reaching
 -- planning is ET_DYN. `assignBases` takes the reservation base
--- as a parameter; production gets it from `Runtime.mmapAnonAlloc`.
+-- as a parameter; production gets it from `Runtime.mmapAnon`.
 #guard
-  let lp := LoadPlan.ofElfs #[synthElf (elfType := .dyn)]
-  assignBases exampleAnchor lp = #[exampleAnchor]
+  match LoadPlan.ofElfs #[synthElf (elfType := .dyn)] with
+  | .ok lp => assignBases exampleAnchor lp.val == #[exampleAnchor]
+  | .error _ => false
+
+-- A single-segment array's `Sorted` and `NonOverlap` predicates are
+-- vacuously true (no `i < j` with both `< 1`). Provide explicit
+-- proofs since `synthElf`'s `by decide` defaults can't discharge a
+-- type containing a free `Segment` variable.
+private theorem sorted_singleton (seg : Segment) :
+    Elaborate.Sorted #[seg] := by
+  intro i hi j hj h_ij
+  simp at hi hj
+  omega
+
+private theorem nonOverlap_singleton (seg : Segment) :
+    Elaborate.NonOverlap #[seg] := by
+  intro i hi j hj h_ij
+  simp at hi hj
+  omega
 
 -- Stacking: each `.dyn` lib has a 0x2000-byte span (one PT_LOAD at
 -- vaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
@@ -167,8 +184,11 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
 private def stackingExample : Option (Array UInt64) := do
   let seg ← synthSegment? 0 0x2000
   let libElf := synthElf (elfType := .dyn) (segments := #[seg])
-  let lp := LoadPlan.ofElfs #[libElf, libElf, libElf]
-  some (assignBases exampleAnchor lp)
+                  (segmentsSorted := sorted_singleton seg)
+                  (segmentsNonOverlap := nonOverlap_singleton seg)
+  match LoadPlan.ofElfs #[libElf, libElf, libElf] with
+  | .ok lp => some (assignBases exampleAnchor lp.val)
+  | .error _ => none
 
 #guard stackingExample = some #[exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000]
 
@@ -238,21 +258,27 @@ private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- pa
 private def fileAnonBss     : Option Segment := synthSeg? 0 0x2000 0x1000  -- full-page BSS only
 private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- partial + full-page
 
-private def setupOpsOf (seg : Option Segment) : Option (Array MemoryOp) :=
-  seg.map fun s => Materialize.setupOps dummyHandle (SegmentPlan.ofSegment s) exampleAnchor
+/-- Count of slots (`Mmap` + `Zero` + `Mprotect`) `setupSlots` emits
+    for one segment. `Mmap` is 1 if `hasFileBacked`, else 0; `Zero`
+    is 1 if `hasPartialBss`, else 0; `Mprotect` is always 1. -/
+private def slotCount (seg : Option Segment) : Option Nat :=
+  seg.map fun s =>
+    let (mmap, zero, _mp) :=
+      Materialize.setupSlots (SegmentPlan.ofSegment s) dummyHandle exampleAnchor
+    (if mmap.isSome then 1 else 0) + (if zero.isSome then 1 else 0) + 1
 
-#guard (setupOpsOf bssOnlySeg).map (·.size)      = some 1  -- mprotect only
-#guard (setupOpsOf fileOnlySeg).map (·.size)     = some 2  -- mmapFile, mprotect
-#guard (setupOpsOf filePartialBss).map (·.size)  = some 3  -- mmapFile, zeroout, mprotect
-#guard (setupOpsOf fileAnonBss).map (·.size)     = some 2  -- mmapFile, mprotect
-#guard (setupOpsOf fileBothBss).map (·.size)     = some 3  -- mmapFile, zeroout, mprotect
+#guard slotCount bssOnlySeg     = some 1  -- mprotect only
+#guard slotCount fileOnlySeg    = some 2  -- mmap + mprotect
+#guard slotCount filePartialBss = some 3  -- mmap + zero + mprotect
+#guard slotCount fileAnonBss    = some 2  -- mmap + mprotect
+#guard slotCount fileBothBss    = some 3  -- mmap + zero + mprotect
 
 -- ---- 4c. End-to-end Materialize.safe gating an empty LoadOps. ----------
 --
--- `Materialize.safe rsvAddr rsvLen lo` returns `Except String { ops //
+-- `Materialize.safe rsvAddr rsvLen lo` returns `Except String { lo //
 -- safety predicates wrt [rsvAddr, +rsvLen) }`. The empty `LoadOps`
--- tree flattens to an empty op list, and the predicates vacuously
--- hold for any reservation range.
+-- tree has no slots, and the predicates vacuously hold for any
+-- reservation range.
 
 #guard (Materialize.safe exampleAnchor 0 #[]).toOption.map (·.val.size) = some 0
 

@@ -1,23 +1,21 @@
 /-
 Trust seam: every `@[extern]` declaration that crosses into the C
-shims under `runtime/`, plus the `MemoryOp` abstraction over those
-externs and the IO interpreter that dispatches each constructor.
+shims under `runtime/`, the four typed slot records (`Mmap` / `Zero`
+/ `Store` / `Mprotect`) that wrap each FFI signature, the per-slot
+`run` dispatchers, and the `Disjoint` / `InRange` range predicates
+the safety witness consumes.
+
+`Materialize/LoadOps.lean` orchestrates the structured op tree
+(`SegmentOps` / `ElfOps` / `LoadOps`) on top of these slot records
+and exposes the witnessed entry point `LoadOps.runSafe`.
 
 Reserve-then-overlay design:
-  • At the IO boundary, `mmapAnonAlloc` requests a kernel-picked
-    anon block large enough to hold every loaded object. The
-    returned base is threaded into pure planning.
-  • The planned `Array MemoryOp` contains only ops that operate
-    INSIDE that reservation: `mmapFile` overlays, `zeroout`,
-    `mprotect`, and patches. The reservation itself is not in the
-    op array — it's a one-shot IO call before any planned op runs.
-
-Three layers:
-  1. Externs (top half) — opaque `FileHandle`, mmap variants,
-     mprotect, raw writes, ctor calls, exec/jump.
-  2. `MemoryOp` — pure data type for fire-and-forget kernel calls.
-  3. `runSafe` — IO interpreter; only path to the kernel from
-     planned ops.
+  • At the IO boundary, `mmapAnon` requests a kernel-picked anon
+    block large enough to hold every loaded object. The returned
+    base is threaded into pure planning.
+  • Structured slots in `LoadOps` only operate INSIDE that
+    reservation. The reservation itself is not in the tree — it's a
+    one-shot IO call before any planned slot runs.
 
 The semantics of each extern match Linux `mmap(2)` / `mprotect(2)`.
 Mappings live for the process lifetime; the kernel reclaims at exit.
@@ -32,8 +30,7 @@ namespace Runtime
 -- FileHandle — a transparent kernel fd. Held until process exit.
 -- ============================================================================
 
-def FileHandle : Type := UInt32
-instance : Inhabited FileHandle := inferInstanceAs (Inhabited UInt32)
+abbrev FileHandle : Type := UInt32
 
 @[extern "leanload_open"]
 opaque openFile (path : @& String) : IO FileHandle
@@ -41,12 +38,15 @@ opaque openFile (path : @& String) : IO FileHandle
 @[extern "leanload_pread"]
 opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 
-/-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `vaddr`. Used
-    by `MemoryOp.mmapFile` for per-segment file content. Replaces
-    whatever was at `[vaddr, vaddr+len)` (intentionally — in our
-    design that's the kernel-picked anon reservation). -/
+-- ============================================================================
+-- FFI primitives — one Lean signature per C shim.
+-- ============================================================================
+
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap at `vaddr`.
+    Replaces whatever was at `[vaddr, vaddr+len)` (intentionally — in
+    our design that's the kernel-picked anon reservation). -/
 @[extern "leanload_mmap_file"]
-opaque mmap (h : FileHandle) (vaddr : UInt64) (len : UInt64)
+opaque mmapFile (h : FileHandle) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
 /-- Kernel-picked anon mapping. `mmap(NULL, len, PROT_READ |
@@ -56,23 +56,23 @@ opaque mmap (h : FileHandle) (vaddr : UInt64) (len : UInt64)
     (called once at the IO boundary before planning) and for the
     loaded program's stack (`MAP_STACK` on Linux is a no-op so we
     don't bother distinguishing). -/
-@[extern "leanload_mmap_alloc"]
-opaque mmapAnonAlloc (len : UInt64) : IO UInt64
+@[extern "leanload_mmap_anon"]
+opaque mmapAnon (len : UInt64) : IO UInt64
 
 @[extern "leanload_mprotect"]
 opaque mprotect (addr : UInt64) (len : UInt64) (prot : UInt32) : IO Unit
 
-/-- Write the low 4 or 8 little-endian bytes of `value` at `addr`,
+/-- Store the low 4 or 8 little-endian bytes of `value` at `addr`,
     selected by `size` (4 or 8). Used for relocation patches; the
     formula computes a `UInt64` and we truncate at memcpy time. -/
-@[extern "leanload_write"]
-opaque write (addr : UInt64) (size : UInt8) (value : UInt64) : IO Unit
+@[extern "leanload_store"]
+opaque store (addr : UInt64) (size : UInt8) (value : UInt64) : IO Unit
 
 /-- Zero `len` bytes starting at `addr`. Used for the partial-page
-    BSS tail past `filesz` on a file overlay's last page (kernel
-    maps file content there, not zero). -/
-@[extern "leanload_zeroout"]
-opaque zeroout (addr : UInt64) (len : UInt64) : IO Unit
+    BSS tail past `filesz` on a file mmap's last page (kernel maps
+    file content there, not zero). -/
+@[extern "leanload_zero"]
+opaque zero (addr : UInt64) (len : UInt64) : IO Unit
 
 -- ============================================================================
 -- Control transfer (does not return).
@@ -100,84 +100,73 @@ def PROT_WRITE : UInt32 := 2
 end Runtime
 
 -- ============================================================================
--- MemoryOp — fire-and-forget kernel-state mutations that run INSIDE
--- the kernel-picked anon reservation. No `mmapAnon` constructor:
--- the reservation is a one-shot IO call (`mmapAnonAlloc`) at the IO
--- boundary, not part of the planned op array.
+-- Typed slot records — each wraps the FFI signature of one of the
+-- four kernel-state mutations we plan. `Materialize/LoadOps.lean`
+-- assembles arrays of these into the per-segment tree.
 -- ============================================================================
 
-/-- One *kernel-state mutation* the loader asks for inside the
-    reservation. -/
-inductive MemoryOp where
-  /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay. Replaces the
-      anon backing for `[addr, addr+len)` with file bytes. -/
-  | mmapFile (handle : Runtime.FileHandle) (addr len : UInt64)
-             (prot : UInt32) (offset : UInt64)
-  /-- Zero `len` bytes at `addr`. -/
-  | zeroout (addr len : UInt64)
-  /-- Set protection on `[addr, addr+len)`. -/
-  | mprotect (addr len : UInt64) (prot : UInt32)
-  /-- Write the low `size` bytes (4 or 8) of `value` at `addr`. -/
-  | write (addr : UInt64) (size : UInt8) (value : UInt64)
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap. -/
+structure Mmap where
+  handle : Runtime.FileHandle
+  addr   : UInt64
+  len    : UInt64
+  prot   : UInt32
+  offset : UInt64
 
-namespace MemoryOp
+/-- Zero `len` bytes starting at `addr`. -/
+structure Zero where
+  addr : UInt64
+  len  : UInt64
 
-/-- Interpret an op list in order. **Private**: the only public entry
-    point is `runSafe`, which requires the safety witness. -/
-private def runAllUnsafe (ops : Array MemoryOp) : IO Unit := ops.forM fun op =>
-  match op with
-  | .mmapFile h addr len prot offset => Runtime.mmap h addr len prot offset
-  | .zeroout  addr len               => Runtime.zeroout addr len
-  | .mprotect addr len prot          => Runtime.mprotect addr len prot
-  | .write    addr size value        => Runtime.write addr size value
+/-- Store the low `size` bytes (4 or 8) of `value` at `addr`. -/
+structure Store where
+  addr  : UInt64
+  size  : UInt8
+  value : UInt64
+
+/-- Set protection on `[addr, addr+len)`. -/
+structure Mprotect where
+  addr : UInt64
+  len  : UInt64
+  prot : UInt32
+
+/-- Width of a `Store` as a `UInt64`, for range arithmetic. -/
+@[inline] def Store.byteLen (s : Store) : UInt64 := s.size.toUInt64
 
 -- ============================================================================
--- Per-op accessors and kind predicates.
+-- Per-slot dispatchers — bridge a typed slot to its FFI primitive.
+-- *Internal*: meant to be invoked only from
+-- `Materialize.LoadOps.runSafe`, which has discharged the safety
+-- witness. Direct use bypasses every safety check.
 -- ============================================================================
 
-/-- The op's target address. -/
-def addr : MemoryOp → UInt64
-  | .mmapFile _ a _ _ _ => a
-  | .zeroout  a _       => a
-  | .mprotect a _ _     => a
-  | .write    a _ _     => a
+namespace Mmap
+def run (m : Mmap) : IO Unit :=
+  Runtime.mmapFile m.handle m.addr m.len m.prot m.offset
+end Mmap
 
-/-- The op's memory-range length. -/
-def len : MemoryOp → UInt64
-  | .mmapFile _ _ l _ _ => l
-  | .zeroout  _ l       => l
-  | .mprotect _ l _     => l
-  | .write    _ s _     => s.toUInt64
+namespace Zero
+def run (z : Zero) : IO Unit :=
+  Runtime.zero z.addr z.len
+end Zero
 
-/-- The op overlays a file inside the reservation. -/
-def IsOverlay : MemoryOp → Prop
-  | .mmapFile .. => True
-  | _            => False
+namespace Store
+def run (s : Store) : IO Unit :=
+  Runtime.store s.addr s.size s.value
+end Store
 
-instance (op : MemoryOp) : Decidable op.IsOverlay := by
-  cases op <;> simp [IsOverlay] <;> infer_instance
-
-/-- The op writes bytes (zeroout + relocation writes). -/
-def IsWrite : MemoryOp → Prop
-  | .zeroout .. => True
-  | .write   .. => True
-  | _           => False
-
-instance (op : MemoryOp) : Decidable op.IsWrite := by
-  cases op <;> simp [IsWrite] <;> infer_instance
-
-/-- The op changes page protection. -/
-def IsMprotect : MemoryOp → Prop
-  | .mprotect .. => True
-  | _            => False
-
-instance (op : MemoryOp) : Decidable op.IsMprotect := by
-  cases op <;> simp [IsMprotect] <;> infer_instance
+namespace Mprotect
+def run (m : Mprotect) : IO Unit :=
+  Runtime.mprotect m.addr m.len m.prot
+end Mprotect
 
 -- ============================================================================
 -- Range arithmetic — predicates over `[addr, addr + len)` in `Nat`
--- to dodge UInt64 wrap.
+-- to dodge UInt64 wrap. Consumed by the safety predicates in
+-- `Materialize/LoadOps.lean`.
 -- ============================================================================
+
+namespace Runtime
 
 /-- Two memory ranges don't overlap. -/
 def Disjoint (a₁ l₁ a₂ l₂ : UInt64) : Prop :=
@@ -196,64 +185,6 @@ instance (innerA innerL outerA outerL : UInt64) :
     Decidable (InRange innerA innerL outerA outerL) :=
   inferInstanceAs (Decidable (_ ∧ _))
 
-end MemoryOp
-
--- ============================================================================
--- Top-level safety predicates, parameterized by the reservation range
--- `[rsvAddr, rsvAddr + rsvLen)` returned by `Runtime.mmapAnonAlloc`.
--- Together they assert: file overlays don't collide with each other,
--- and every overlay / write / mprotect lies inside the reservation.
--- ============================================================================
-
-/-- File overlays are pairwise disjoint. -/
-def OverlaysDisjoint (ops : Array MemoryOp) : Prop :=
-  ∀ i, ∀ _ : i < ops.size, ∀ j, ∀ _ : j < ops.size, i < j →
-    ops[i].IsOverlay → ops[j].IsOverlay →
-    MemoryOp.Disjoint ops[i].addr ops[i].len ops[j].addr ops[j].len
-
-/-- Every overlay lies inside the reservation. -/
-def OverlaysContained (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) : Prop :=
-  ∀ i, ∀ _ : i < ops.size, ops[i].IsOverlay →
-    MemoryOp.InRange ops[i].addr ops[i].len rsvAddr rsvLen
-
-/-- Every write op lies inside the reservation. -/
-def WritesContained (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) : Prop :=
-  ∀ i, ∀ _ : i < ops.size, ops[i].IsWrite →
-    MemoryOp.InRange ops[i].addr ops[i].len rsvAddr rsvLen
-
-/-- Every mprotect op lies inside the reservation. -/
-def MprotectsContained (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) : Prop :=
-  ∀ i, ∀ _ : i < ops.size, ops[i].IsMprotect →
-    MemoryOp.InRange ops[i].addr ops[i].len rsvAddr rsvLen
-
-instance (ops : Array MemoryOp) : Decidable (OverlaysDisjoint ops) := by
-  unfold OverlaysDisjoint; infer_instance
-
-instance (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) :
-    Decidable (OverlaysContained rsvAddr rsvLen ops) := by
-  unfold OverlaysContained; infer_instance
-
-instance (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) :
-    Decidable (WritesContained rsvAddr rsvLen ops) := by
-  unfold WritesContained; infer_instance
-
-instance (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) :
-    Decidable (MprotectsContained rsvAddr rsvLen ops) := by
-  unfold MprotectsContained; infer_instance
-
-namespace MemoryOp
-
-/-- Interpret a safety-witnessed op list, given the reservation
-    range that bounds every op. The witness fields are erased; the
-    IO behaviour is identical to a plain `forM` over the array. -/
-def runSafe (rsvAddr rsvLen : UInt64)
-    (ops : { ops : Array MemoryOp //
-      OverlaysDisjoint ops ∧
-      OverlaysContained rsvAddr rsvLen ops ∧
-      WritesContained rsvAddr rsvLen ops ∧
-      MprotectsContained rsvAddr rsvLen ops }) :
-    IO Unit := runAllUnsafe ops.val
-
-end MemoryOp
+end Runtime
 
 end LeanLoad

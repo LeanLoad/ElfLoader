@@ -7,10 +7,10 @@ the materialize stage (`Materialize`) to the IO layer
 (`Runtime`, `Discover.IO`).
 
 The IO bookend `realize` (below) is a thin wrapper:
-`Materialize.safe` flattens the LoadOps tree + runs the decidable
-safety check, `MemoryOp.runSafe` dispatches to externs, then the
-one-shot finalizers (`mmapAnonAlloc` + `execAndJump`) transfer
-control. Doesn't return.
+`Materialize.safe` runs the decidable safety check over the
+structured `LoadOps` tree, `LoadOps.runSafe` dispatches to externs,
+then the one-shot finalizers (`mmapAnon` for the stack +
+`execAndJump`) transfer control. Doesn't return.
 -/
 
 import LeanLoad
@@ -23,14 +23,14 @@ open LeanLoad.Elaborate (Elf)
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024
 
-/-- Run all planned `MemoryOp`s inside the kernel-picked
-    reservation, allocate the kernel-style stack, and `execAndJump`
-    to entry. **Does not return.** -/
+/-- Run all planned slots inside the kernel-picked reservation,
+    allocate the kernel-style stack, and `execAndJump` to entry.
+    **Does not return.** -/
 private def realize (rsvAddr rsvLen : UInt64)
     (lo : Materialize.LoadOps) (mainElf : Elf)
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
-  let ops ← IO.ofExcept (Materialize.safe rsvAddr rsvLen lo)
-  MemoryOp.runSafe rsvAddr rsvLen ops
+  let witnessed ← IO.ofExcept (Materialize.safe rsvAddr rsvLen lo)
+  Materialize.LoadOps.runSafe rsvAddr rsvLen witnessed
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
@@ -38,7 +38,7 @@ private def realize (rsvAddr rsvLen : UInt64)
     | some eo => pure eo
     | none    => throw (IO.userError "realize: empty load tree")
   let mainBase := mainEo.base
-  let stackVa ← Runtime.mmapAnonAlloc stackBytes
+  let stackVa ← Runtime.mmapAnon stackBytes
   let entry  := mainBase + mainElf.entry
   let phdrVa := mainBase + mainElf.phoff
   let phnum  := mainElf.phnum.toUInt64
@@ -78,21 +78,22 @@ def load (path : String) : IO Unit := do
   let elfs    := g.val.map (·.elf)
   let handles := g.val.map (·.handle)
   have h_size : handles.size = elfs.size := by simp [elfs, handles]
-  have h_pos  : 0 < elfs.size := by simp [elfs]; exact g.property
+  have _h_pos  : 0 < elfs.size := by simp [elfs]; exact g.property
   let mainElf := g.main.elf
   let resTable := Resolve.buildTable elfs
   if let some u := resTable.missing[0]? then
     throw (IO.userError s!"load: {resTable.missing.size} unresolved strong symbol(s); first: {u.name}")
   -- Pure base-free planning.
-  let lp := Plan.LoadPlan.ofElfs elfs
-  have h_lp : elfs.size = lp.elfs.size := (Plan.LoadPlan.ofElfs_size elfs).symm
+  let lpW ← IO.ofExcept (Plan.LoadPlan.ofElfs elfs)
+  let lp := lpW.val
+  have h_lp : elfs.size = lp.elfs.size := lpW.property.symm
   let relocPlan := Reloc.planAll elfs resTable
   let initOrder := Init.order g
   -- Kernel-picked reservation covering every loaded object.
-  let rsvAddr ← Runtime.mmapAnonAlloc lp.totalSpan
-  let layouts ← IO.ofExcept (Plan.layouts rsvAddr lp)
-  let bases := layouts.val
-  have h_bases : bases.size = elfs.size := h_lp ▸ layouts.property.left
+  let rsvAddr ← Runtime.mmapAnon lp.totalSpan
+  let bases := Plan.assignBases rsvAddr lp
+  have h_bases : bases.size = elfs.size :=
+    (Plan.assignBases_size rsvAddr lp).trans h_lp.symm
   let formula := Elaborate.formulaFor mainElf.machine
   let lo ← IO.ofExcept (Materialize.build lp elfs h_lp handles h_size
     bases h_bases formula relocPlan)
@@ -109,7 +110,7 @@ def debug (path : String) : IO Unit := do
   let elfs    := g.val.map (·.elf)
   let handles := g.val.map (·.handle)
   have h_size : handles.size = elfs.size := by simp [elfs, handles]
-  have h_pos  : 0 < elfs.size := by simp [elfs]; exact g.property
+  have _h_pos  : 0 < elfs.size := by simp [elfs]; exact g.property
   let mainElf := g.main.elf
 
   IO.eprintln "\n== 2. Parse + Elaborate (per-object Elf views) =="
@@ -169,13 +170,14 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"strong missing: {resTable.missing.size}, weak missing: {resTable.weakMissing.size}"
 
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
-  let lp := Plan.LoadPlan.ofElfs elfs
-  have h_lp : elfs.size = lp.elfs.size := (Plan.LoadPlan.ofElfs_size elfs).symm
-  let rsvAddr ← Runtime.mmapAnonAlloc lp.totalSpan
+  let lpW ← IO.ofExcept (Plan.LoadPlan.ofElfs elfs)
+  let lp := lpW.val
+  have h_lp : elfs.size = lp.elfs.size := lpW.property.symm
+  let rsvAddr ← Runtime.mmapAnon lp.totalSpan
   IO.eprintln s!"  reservation = [0x{Nat.hex rsvAddr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
-  let layouts ← IO.ofExcept (Plan.layouts rsvAddr lp)
-  let bases := layouts.val
-  have h_bases : bases.size = elfs.size := h_lp ▸ layouts.property.left
+  let bases := Plan.assignBases rsvAddr lp
+  have h_bases : bases.size = elfs.size :=
+    (Plan.assignBases_size rsvAddr lp).trans h_lp.symm
   for h : i in [:g.val.size] do
     let base := bases[i]'(by rw [h_bases]; simp [elfs]; exact h.upper)
     let obj := g.val[i]
@@ -189,7 +191,7 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"init order: {initOrder}"
   IO.eprintln s!"fini order: {initOrder.reverse}"
 
-  IO.eprintln "\n== 5. Reloc (planned 4/8-byte write ops, per-arch formula) =="
+  IO.eprintln "\n== 5. Reloc (planned 4/8-byte stores, per-arch formula) =="
   let formula := Elaborate.formulaFor mainElf.machine
   let relocPlan := Reloc.planAll elfs resTable
   let labelW := 16
@@ -197,7 +199,6 @@ def debug (path : String) : IO Unit := do
     let obj  := g.val[i]
     let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW
-    have hi : i < elfs.size := by simp [elfs]; exact h.upper
     let elfRelocs := (relocPlan[i]?).getD #[]
     for h2 : segI in [:obj.elf.segments.size] do
       let segRelocs := (elfRelocs[segI]?).getD #[]
@@ -205,10 +206,12 @@ def debug (path : String) : IO Unit := do
         let symValue : UInt64 := match entry.target with
           | none => 0
           | some ref =>
-            let some provBase := bases[ref.objectIdx.val]? | 0
-            match elfs[ref.objectIdx]'(h_eq ▸ ref.objectIdx.isLt) |>.symtab[ref.symIdx]? with
-            | none     => 0
-            | some sym => provBase + sym.value
+            match bases[ref.objectIdx.val]? with
+            | none => 0
+            | some provBase =>
+              match elfs[ref.objectIdx].symtab[ref.symIdx]? with
+              | none     => 0
+              | some sym => provBase + sym.value
         let inputs : Elaborate.FormulaInputs :=
           { symValue, addend := entry.addend, base, place := base + entry.r_offset }
         match formula entry.type inputs with
@@ -217,22 +220,22 @@ def debug (path : String) : IO Unit := do
           let symName : String := match entry.target with
             | none => ""
             | some ref =>
-              let elf := elfs[ref.objectIdx]'(h_eq ▸ ref.objectIdx.isLt)
-              (elf.symtab[ref.symIdx]?.bind (·.name)).getD "?"
+              (elfs[ref.objectIdx].symtab[ref.symIdx]?.bind (·.name)).getD "?"
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + entry.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
   let lo ← IO.ofExcept
     (Materialize.build lp elfs h_lp handles h_size bases h_bases formula relocPlan)
-  let totalOps := lo.foldl (init := 0) fun acc eo =>
-    eo.segments.foldl (init := acc) fun acc so => acc + so.ops.size
-  IO.eprintln s!"planned {totalOps} ops across {lo.size} elfs"
+  IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
+    {lo.zeros.size} zeros, \
+    {lo.stores.size} stores, \
+    {lo.mprotects.size} mprotects across {lo.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
   let ctorAddrs := Materialize.initAddrs lp bases initOrder
   IO.eprintln s!"planned {ctorAddrs.size} constructor address(es)"
 
-  IO.eprintln "\n== 7. Materialize.safe → MemoryOp.runSafe → callCtors → execAndJump (does not return) =="
+  IO.eprintln "\n== 7. Materialize.safe → LoadOps.runSafe → callCtors → execAndJump (does not return) =="
   realize rsvAddr lp.totalSpan lo mainElf ctorAddrs path
 
 end LeanLoad.Main

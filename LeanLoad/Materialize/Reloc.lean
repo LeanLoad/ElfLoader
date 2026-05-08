@@ -1,23 +1,23 @@
 /-
-Bake base-free `RelocEntry`s into `MemoryOp.write`s once a
+Bake base-free `RelocEntry`s into typed `Write` ops once a
 reservation base is known.
 
 For each entry: look up the symbol's absolute value `S = base[target]
 + symtab[target].value` (or 0 when `target = none`), feed
 `(S, A, base, place)` into the per-arch `Formula`, and emit a
-4- or 8-byte write at `base + r_offset`. 32-bit writes are
+4- or 8-byte `Write` at `base + r_offset`. 32-bit writes are
 overflow-checked (psABI per-relocation `OVERFLOW_CHECK`); see the
 banner in this file.
 
 Entry points:
-  • `bakeReloc` — one entry → `Option MemoryOp` (none for `R_*_NONE`).
-  • `bakeSegmentRelocs` — one segment's relas → flat `Array MemoryOp`.
+  • `bakeReloc` — one entry → `Option Write` (none for `R_*_NONE`).
+  • `bakeSegmentRelocs` — one segment's relas → flat `Array Write`.
 
 Used by `Materialize.build` per segment.
 -/
 
 import LeanLoad.Plan.Reloc
-import LeanLoad.Runtime
+import LeanLoad.Materialize.LoadOps
 import LeanLoad.Elaborate.Reloc
 
 namespace LeanLoad.Materialize
@@ -71,7 +71,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     | some sym => provBase + sym.value
 
 -- ============================================================================
--- Bake one RelocEntry into an Option MemoryOp.
+-- Bake one RelocEntry into an Option Write.
 -- ============================================================================
 
 /-- Bake one entry. Returns `.ok none` for no-op relocations
@@ -80,7 +80,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
 private def bakeReloc (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (entry : RelocEntry elfs.size) :
-    Except String (Option MemoryOp) := do
+    Except String (Option Store) := do
   let symValue := symValueOf elfs bases h_bases entry.target
   let inputs : FormulaInputs :=
     { symValue, addend := entry.addend, base,
@@ -90,25 +90,25 @@ private def bakeReloc (formula : Formula) (elfs : Array Elf)
   | some res =>
     let addr := base + entry.r_offset
     match res.size with
-    | .b8 => .ok (some (.write addr 8 res.value))
+    | .b8 => .ok (some ({ addr, size := 8, value := res.value } : Store))
     | .b4 =>
       if fitsLow32 res.value then
-        .ok (some (.write addr 4 res.value))
+        .ok (some ({ addr, size := 4, value := res.value } : Store))
       else
         .error s!"reloc type {entry.type}: 32-bit overflow at \
           place=0x{addr.toNat} (value=0x{res.value.toNat} doesn't fit \
           signed-32 or unsigned-32)"
 
-/-- Bake every entry in one segment into a flat `Array MemoryOp`. -/
+/-- Bake every entry in one segment into a flat `Array Store`. -/
 def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (sr : SegmentRelocs elfs.size) :
-    Except String (Array MemoryOp) := do
-  let mut acc : Array MemoryOp := #[]
+    Except String (Array Store) := do
+  let mut acc : Array Store := #[]
   for entry in sr do
     match ← bakeReloc formula elfs bases h_bases base entry with
     | none    => pure ()
-    | some op => acc := acc.push op
+    | some w  => acc := acc.push w
   return acc
 
 end LeanLoad.Materialize
