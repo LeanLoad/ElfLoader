@@ -121,7 +121,35 @@ private def planRela (formula : Formula) (region : Region)
         .error s!"reloc type {r.type}: 32-bit overflow at place=0x{(region.base + r.r_offset).toNat} \
           (value=0x{res.value.toNat} doesn't fit signed-32 or unsigned-32)"
 
-/-- Plan all relocations for one elf. -/
+/-- Plan relocation writes for ONE segment of one elf. Returns the
+    flat list of `MemoryOp.write` ops for relas + jmprel attached
+    to this segment. Used by `Realize.buildLoadPlan` to bundle
+    writes per `SegmentPlan`. -/
+def planSegmentWrites (formula : Formula) (elfs : Array Elf)
+    (bases : Array UInt64) (hBases : bases.size = elfs.size)
+    (rt : Resolve.Table elfs.size) (objectIdx : Fin elfs.size)
+    (seg : Elaborate.Segment) (region : Region) :
+    Except String (Array MemoryOp) := do
+  let mut acc : Array MemoryOp := #[]
+  for entry in seg.rela do
+    let r := entry.val
+    let symValue : UInt64 :=
+      if r.sym == 0 then 0
+      else resolveSymValue elfs bases rt objectIdx.val r.sym.toNat
+    match ← planRela formula region symValue r with
+    | none    => pure ()
+    | some op => acc := acc.push op
+  for entry in seg.jmprel do
+    let r := entry.val
+    let symValue : UInt64 :=
+      if r.sym == 0 then 0
+      else resolveSymValue elfs bases rt objectIdx.val r.sym.toNat
+    match ← planRela formula region symValue r with
+    | none    => pure ()
+    | some op => acc := acc.push op
+  return acc
+
+/-- Plan all relocations for one elf — per-segment, then concatenate. -/
 def planObject (formula : Formula) (elfs : Array Elf) (bases : Array UInt64)
     (hBases : bases.size = elfs.size)
     (rt : Resolve.Table elfs.size) (objectIdx : Fin elfs.size) :
@@ -133,22 +161,7 @@ def planObject (formula : Formula) (elfs : Array Elf) (bases : Array UInt64)
     let segIdx : Fin elf.segments.size := ⟨segI, h.upper⟩
     let seg := elf.segments[segIdx]
     let region : Region := { base, seg }
-    for entry in seg.rela do
-      let r := entry.val
-      let symValue : UInt64 :=
-        if r.sym == 0 then 0
-        else resolveSymValue elfs bases rt objectIdx.val r.sym.toNat
-      match ← planRela formula region symValue r with
-      | none    => pure ()
-      | some op => acc := acc.push op
-    for entry in seg.jmprel do
-      let r := entry.val
-      let symValue : UInt64 :=
-        if r.sym == 0 then 0
-        else resolveSymValue elfs bases rt objectIdx.val r.sym.toNat
-      match ← planRela formula region symValue r with
-      | none    => pure ()
-      | some op => acc := acc.push op
+    acc := acc ++ (← planSegmentWrites formula elfs bases hBases rt objectIdx seg region)
   return acc
 
 /-- Plan relocations for every elf. -/

@@ -25,20 +25,17 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
     reservation, allocate the kernel-style stack, and `execAndJump`
     to entry. **Does not return.** -/
 private def realize (rsvAddr rsvLen : UInt64)
-    (elfs : Array Elf) (handles : Array Runtime.FileHandle)
-    (h_size : handles.size = elfs.size)
-    (h_pos : 0 < elfs.size) (mainElf : Elf)
-    (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (patches : Array MemoryOp)
-    (ctorAddrs : Array UInt64)
-    (path : String) : IO Unit := do
-  let ops ← IO.ofExcept
-    (Realize.planOps rsvAddr rsvLen elfs handles h_size bases h_bases patches)
+    (lp : Realize.LoadPlan) (mainElf : Elf)
+    (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
+  let ops ← IO.ofExcept (Realize.planOps rsvAddr rsvLen lp)
   MemoryOp.runSafe rsvAddr rsvLen ops
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
-  let mainBase := bases[0]'(by rw [h_bases]; exact h_pos)
+  let mainEp ← match lp[0]? with
+    | some ep => pure ep
+    | none    => throw (IO.userError "realize: empty load plan")
+  let mainBase := mainEp.base
   let stackVa ← Runtime.mmapAnonAlloc stackBytes
   let entry  := mainBase + mainElf.entry
   let phdrVa := mainBase + mainElf.phoff
@@ -88,11 +85,10 @@ def load (path : String) : IO Unit := do
   let rsvAddr ← Runtime.mmapAnonAlloc rsvLen
   let layouts ← IO.ofExcept (Layout.layouts rsvAddr elfs)
   let formula := Elaborate.formulaFor mainElf.machine
-  let patches ← IO.ofExcept
-    (Reloc.plan formula elfs layouts.val layouts.property.left resTable)
+  let lp ← IO.ofExcept (Realize.buildLoadPlan elfs handles h_size
+    layouts.val layouts.property.left formula resTable)
   let ctorAddrs := Init.plan elfs layouts.val (Init.order g)
-  realize rsvAddr rsvLen elfs handles h_size h_pos mainElf
-    layouts.val layouts.property.left patches ctorAddrs path
+  realize rsvAddr rsvLen lp mainElf ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
@@ -207,15 +203,18 @@ def debug (path : String) : IO Unit := do
       let seg := obj.elf.segments[segI]
       for entry in seg.rela do printOne segI entry.val
       for entry in seg.jmprel do printOne segI entry.val
-  let patches ← IO.ofExcept (Reloc.plan formula elfs bases h_bases resTable)
-  IO.eprintln s!"planned {patches.size} patches"
+  let lp ← IO.ofExcept
+    (Realize.buildLoadPlan elfs handles h_size bases h_bases formula resTable)
+  let totalOps := lp.foldl (init := 0) fun acc ep =>
+    ep.segments.foldl (init := acc) fun acc sp => acc + sp.ops.size
+  IO.eprintln s!"planned {totalOps} ops across {lp.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
   let ctorAddrs := Init.plan elfs bases initOrder
   IO.eprintln s!"planned {ctorAddrs.size} constructor address(es)"
 
   IO.eprintln "\n== 7. Realize: MemoryOp.runSafe → callCtors → execAndJump (does not return) =="
-  realize rsvAddr rsvLen elfs handles h_size h_pos mainElf bases h_bases patches ctorAddrs path
+  realize rsvAddr rsvLen lp mainElf ctorAddrs path
 
 end LeanLoad.Main
 

@@ -1,48 +1,49 @@
 /-
 Realize planner — pure.
 
-Reserve-then-overlay design (kernel-picked reservation):
+Hierarchical plan structure: each `RegionPlan` owns its setup ops
+(mmapFile/zeroout/mprotect) AND its reloc writes (patches that target
+this region's address range). Each `ObjectPlan` owns its
+`RegionPlan`s. A `LoadPlan` is the list of `ObjectPlan`s.
 
-The IO bookend (`Main.realize`) calls `Runtime.mmapAnonAlloc
-totalSpan` to get a kernel-picked anon block, then runs pure
-planning inside that reservation:
+Flat `Array MemoryOp` is recovered via `LoadPlan.flatten` for the
+runtime-side `MemoryOp.runSafe`. The hierarchy stays intact through
+the safety check, which decides over the flattened op list.
 
-  Per PT_LOAD segment:
-    • `mmapFile` overlay for the file-backed prefix (with PROT_WRITE
-       widened so reloc patches can write).
-    • `zeroout` for the partial-page tail past `filesz` (kernel
-       maps file content there, not zero).
-    • `mprotect` over the segment range, setting final perms.
-
-`planOps` concatenates `realizeOps` with reloc patches and gates
-the result through a decidable safety check parameterized on the
-reservation range.
+Layers:
+  • `Region.ops`   — per-region setup ops (mmapFile/zeroout/mprotect).
+  • `RegionPlan`   — region + setup ops + writes.
+  • `ObjectPlan`   — base + regions for one elf.
+  • `LoadPlan`     — list of objects.
+  • `buildLoadPlan` — constructs the tree.
+  • `planOps`      — flattens, runs decidable safety check.
 -/
 
 import LeanLoad.Plan.Layout
+import LeanLoad.Plan.Reloc
 import LeanLoad.Runtime
 
 namespace LeanLoad.Realize
 
 open LeanLoad
 open LeanLoad.Layout (Region)
-open LeanLoad.Elaborate (Elf)
+open LeanLoad.Elaborate (Elf Formula)
 
 -- ============================================================================
--- Per-region realize ops. Lives inside the kernel-picked reservation;
--- the reservation itself isn't in the op array.
+-- Per-region realize ops (setup only; writes live alongside in RegionPlan).
 -- ============================================================================
 
-/-- Ops to realize one `Region` inside the reservation:
+/-- Setup ops to materialize one `Region`'s memory:
 
       • `mmapFile` for the file-backed prefix (if any), widened
         with `PROT_WRITE` for reloc patches.
       • `zeroout` for the partial-page BSS (file overlay's tail
         past `filesz`).
       • `mprotect` over the whole segment range, setting final
-        perms. The reservation underneath is `PROT_READ | PROT_WRITE`,
-        so BSS pages start RW; this mprotect adjusts to the
-        segment's final perm. -/
+        permissions.
+
+    Reloc writes targeting this region are bundled separately in
+    `RegionPlan.writeOps`. -/
 def Region.ops (handle : Runtime.FileHandle) (r : Region) : Array MemoryOp :=
   (if r.hasFileBacked then
      #[.mmapFile handle r.absVaddr r.fileOverlayLen
@@ -54,45 +55,81 @@ def Region.ops (handle : Runtime.FileHandle) (r : Region) : Array MemoryOp :=
   #[.mprotect r.absVaddr r.length r.prot]
 
 -- ============================================================================
--- All-regions realize.
+-- Hierarchical plan: Segment → Elf → Load.
 -- ============================================================================
 
-/-- Realize ops for every elf, per segment in elf order. The
-    kernel-picked reservation is set up in IO before this runs;
-    every op here lives inside it. -/
-def realizeOps (elfs : Array Elf) (handles : Array Runtime.FileHandle)
+/-- Per-segment plan: every op (setup + reloc writes) targeting this
+    segment's address range, in execution order. The setup-vs-writes
+    distinction is captured at the op level (`IsOverlay` /
+    `IsWrite` / `IsMprotect`); structurally they live in one array. -/
+structure SegmentPlan where
+  region : Region
+  ops    : Array MemoryOp
+
+/-- Flatten a segment's plan — just the ops field. -/
+def SegmentPlan.flatten (sp : SegmentPlan) : Array MemoryOp := sp.ops
+
+/-- Per-elf plan: chosen base + per-segment plans. -/
+structure ElfPlan where
+  base     : UInt64
+  segments : Array SegmentPlan
+
+/-- Flatten an elf's plan to a flat op list (segment by segment). -/
+def ElfPlan.flatten (ep : ElfPlan) : Array MemoryOp :=
+  ep.segments.foldl (init := #[]) fun acc sp => acc ++ sp.flatten
+
+/-- Top-level plan: list of elf plans. -/
+abbrev LoadPlan := Array ElfPlan
+
+/-- Flatten a load plan to a flat op list (elf by elf). -/
+def LoadPlan.flatten (lp : LoadPlan) : Array MemoryOp :=
+  lp.foldl (init := #[]) fun acc ep => acc ++ ep.flatten
+
+-- ============================================================================
+-- Builder.
+-- ============================================================================
+
+/-- Build the hierarchical plan from elfs + handles + bases + reloc
+    inputs. Per segment of each elf, emits a `SegmentPlan` bundling
+    setup ops and writes; per elf, an `ElfPlan` bundling segment plans. -/
+def buildLoadPlan (elfs : Array Elf) (handles : Array Runtime.FileHandle)
     (h_size : handles.size = elfs.size)
-    (bases : Array UInt64) (h_bases : bases.size = elfs.size) :
-    Array MemoryOp := Id.run do
-  let mut ops : Array MemoryOp := #[]
+    (bases : Array UInt64) (h_bases : bases.size = elfs.size)
+    (formula : Formula) (rt : Resolve.Table elfs.size) :
+    Except String LoadPlan := do
+  let mut lp : Array ElfPlan := #[]
   for h : i in [:elfs.size] do
     let elf := elfs[i]
     let handle := handles[i]'(by rw [h_size]; exact h.upper)
     let base := bases[i]'(by rw [h_bases]; exact h.upper)
-    for seg in elf.segments do
-      ops := ops ++ Region.ops handle ⟨base, seg⟩
-  return ops
+    let mut segments : Array SegmentPlan := #[]
+    for h2 : segI in [:elf.segments.size] do
+      let segIdx : Fin elf.segments.size := ⟨segI, h2.upper⟩
+      let seg := elf.segments[segIdx]
+      let region : Region := { base, seg }
+      let setupOps := Region.ops handle region
+      let writeOps ← Reloc.planSegmentWrites formula elfs bases h_bases rt
+        ⟨i, h.upper⟩ seg region
+      segments := segments.push { region, ops := setupOps ++ writeOps }
+    lp := lp.push { base, segments }
+  return lp
 
 -- ============================================================================
--- Full op list: realize ++ patches, gated by a decidable safety
--- check parameterized on the reservation range.
+-- Full op list: flatten the LoadPlan and gate through a decidable
+-- safety check.
 -- ============================================================================
 
-/-- The full op list for a kernel-picked reservation `[rsvAddr,
-    rsvAddr + rsvLen)`. Returned subtype carries proofs that
-    overlays don't collide and every overlay / write / mprotect
-    lies inside the reservation. Planner bugs surface as `.error`. -/
-def planOps (rsvAddr rsvLen : UInt64)
-    (elfs : Array Elf) (handles : Array Runtime.FileHandle)
-    (h_size : handles.size = elfs.size)
-    (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (patches : Array MemoryOp) :
+/-- Flatten the LoadPlan and check safety. The hierarchical structure
+    of `LoadPlan` makes the disjointness intent clear (each region
+    owns its writes; each object owns its regions); the dynamic
+    `decide` confirms it on the actual op array. -/
+def planOps (rsvAddr rsvLen : UInt64) (lp : LoadPlan) :
     Except String { ops : Array MemoryOp //
       OverlaysDisjoint ops ∧
       OverlaysContained rsvAddr rsvLen ops ∧
       WritesContained rsvAddr rsvLen ops ∧
       MprotectsContained rsvAddr rsvLen ops } :=
-  let ops := realizeOps elfs handles h_size bases h_bases ++ patches
+  let ops := lp.flatten
   if h : OverlaysDisjoint ops ∧
          OverlaysContained rsvAddr rsvLen ops ∧
          WritesContained rsvAddr rsvLen ops ∧
