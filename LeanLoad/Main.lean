@@ -39,7 +39,7 @@ private def realize (rsvAddr rsvLen : UInt64)
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
   let mainBase := bases[0]'(by rw [h_bases]; exact h_pos)
-  let stackVa ← Runtime.mmapStack stackBytes
+  let stackVa ← Runtime.mmapAnonAlloc stackBytes
   let entry  := mainBase + mainElf.entry
   let phdrVa := mainBase + mainElf.phoff
   let phnum  := mainElf.phnum.toUInt64

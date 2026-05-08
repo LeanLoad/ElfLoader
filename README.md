@@ -27,7 +27,7 @@ that "planning" was trivial (a function of segment shape) and only
 Targets AArch64 + x86-64 with musl libc. The verified core is pure
 Lean.
 
-https://github.com/ShawnZhong/LeanLoad/blob/7db77ebd080827228f5376478ee5db3e3f12c0a5/run.log#L1-L320
+https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c32116342/run.log#L1-L319
 
 ## Quick start
 

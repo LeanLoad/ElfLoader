@@ -17,7 +17,7 @@ jobs:
       # restore/save so the build steps can be guarded on cache-miss.
       - name: Restore build/ cache
         id: cache-build
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: build
           key: build-${{ runner.os }}-${{ hashFiles('Makefile', 'examples/**', '.gitmodules') }}
@@ -33,7 +33,7 @@ jobs:
 
       - name: Save build/ cache
         if: steps.cache-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: build
           key: ${{ steps.cache-build.outputs.cache-primary-key }}

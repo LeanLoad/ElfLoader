@@ -49,18 +49,15 @@ opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 opaque mmap (h : FileHandle) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
-/-- Kernel-picked anon reservation. `mmap(NULL, len, PROT_READ |
+/-- Kernel-picked anon mapping. `mmap(NULL, len, PROT_READ |
     PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, …)` — kernel returns
     the chosen base, guaranteed disjoint from any existing mapping
-    in the host process. Called once at the IO boundary before any
-    planned op runs. -/
+    in the host process. Used both for the per-load reservation
+    (called once at the IO boundary before planning) and for the
+    loaded program's stack (`MAP_STACK` on Linux is a no-op so we
+    don't bother distinguishing). -/
 @[extern "leanload_mmap_alloc"]
 opaque mmapAnonAlloc (len : UInt64) : IO UInt64
-
-/-- Anonymous `MAP_STACK` mapping for the loaded program's stack;
-    kernel chooses the address. -/
-@[extern "leanload_mmap_stack"]
-opaque mmapStack (len : UInt64) : IO UInt64
 
 @[extern "leanload_mprotect"]
 opaque mprotect (addr : UInt64) (len : UInt64) (prot : UInt32) : IO Unit

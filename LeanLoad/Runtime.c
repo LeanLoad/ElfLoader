@@ -84,26 +84,14 @@ LEAN_EXPORT lean_object * leanload_mmap_file(uint32_t fd,
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* Kernel-picked anon reservation, `len` bytes. Kernel returns the
- * chosen base; caller threads it into pure planning. */
+/* Kernel-picked anon mapping, `len` bytes. Kernel returns the
+ * chosen base; caller threads it into pure planning (per-load
+ * reservation) or into `exec_run` (loaded program's stack). */
 LEAN_EXPORT lean_object * leanload_mmap_alloc(uint64_t len,
                                               lean_object * /* w */) {
     void * p = mmap(NULL, (size_t)len,
                     PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) {
-        return leanload_io_err(strerror(errno));
-    }
-    return lean_io_result_mk_ok(lean_box_uint64((uint64_t)(uintptr_t)p));
-}
-
-/* Anonymous `MAP_STACK` mapping; kernel chooses the address. Returns
- * the chosen base — caller threads it to `exec_run`. */
-LEAN_EXPORT lean_object * leanload_mmap_stack(uint64_t len,
-                                              lean_object * /* w */) {
-    void * p = mmap(NULL, (size_t)len,
-                    PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
     if (p == MAP_FAILED) {
         return leanload_io_err(strerror(errno));
     }
