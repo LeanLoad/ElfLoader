@@ -1,18 +1,24 @@
 /-
 Trust seam: every `@[extern]` declaration that crosses into the C
-shims under `runtime/`, the four typed slot records (`Mmap` / `Zero`
-/ `Store` / `Mprotect`) that wrap each FFI signature, the per-slot
-`run` dispatchers, and the `Disjoint` / `InRange` range predicates
-the safety witness consumes.
+shims under `runtime/`, the five typed records (`Mmap` / `Zero` /
+`Store` / `Mprotect` / `Reserve`) that wrap each FFI signature,
+the per-record `run` dispatchers, and the `Disjoint` / `InRange`
+range predicates the safety witness consumes.
+
+The five kernel operations (`mmapFile`, `mprotect`, `store`, `zero`,
+`mmapAnon`) are *private* externs — callers must go through the
+typed records' `run` methods. That keeps the address-arithmetic
+preconditions (the safety witnesses) in front of every FFI call.
 
 `Materialize/LoadOps.lean` orchestrates the structured op tree
 (`SegmentOps` / `ElfOps` / `LoadOps`) on top of these slot records
 and exposes the witnessed entry point `LoadOps.runSafe`.
 
 Reserve-then-overlay design:
-  • At the IO boundary, `mmapAnon` requests a kernel-picked anon
-    block large enough to hold every loaded object. The returned
-    base is threaded into pure planning.
+  • At the IO boundary, `Reserve.run` requests a kernel-picked
+    anon block large enough to hold every loaded object. The
+    returned reservation carries the address + length + the no-wrap
+    proof every safety predicate consumes.
   • Structured slots in `LoadOps` only operate INSIDE that
     reservation. The reservation itself is not in the tree — it's a
     one-shot IO call before any planned slot runs.
@@ -39,43 +45,44 @@ opaque openFile (path : @& String) : IO FileHandle
 opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 
 -- ============================================================================
--- FFI primitives — one Lean signature per C shim.
+-- FFI primitives — one Lean signature per C shim. *Private*: the
+-- public path is via the typed slot records below (`Mmap.run` /
+-- `Zero.run` / `Store.run` / `Mprotect.run` / `Reserve.run`).
 -- ============================================================================
 
 /-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap at `vaddr`.
     Replaces whatever was at `[vaddr, vaddr+len)` (intentionally — in
     our design that's the kernel-picked anon reservation). -/
 @[extern "leanload_mmap_file"]
-opaque mmapFile (h : FileHandle) (vaddr : UInt64) (len : UInt64)
+private opaque mmapFile (h : FileHandle) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
 /-- Kernel-picked anon mapping. `mmap(NULL, len, PROT_READ |
     PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, …)` — kernel returns
     the chosen base, guaranteed disjoint from any existing mapping
-    in the host process. Used both for the per-load reservation
-    (called once at the IO boundary before planning) and for the
-    loaded program's stack (`MAP_STACK` on Linux is a no-op so we
-    don't bother distinguishing). -/
+    in the host process. Callers go through `Reserve.run`,
+    which wraps this with the no-wrap validation. -/
 @[extern "leanload_mmap_anon"]
-opaque mmapAnon (len : UInt64) : IO UInt64
+private opaque mmapAnon (len : UInt64) : IO UInt64
 
 @[extern "leanload_mprotect"]
-opaque mprotect (addr : UInt64) (len : UInt64) (prot : UInt32) : IO Unit
+private opaque mprotect (addr : UInt64) (len : UInt64) (prot : UInt32) : IO Unit
 
 /-- Store the low 4 or 8 little-endian bytes of `value` at `addr`,
     selected by `size` (4 or 8). Used for relocation patches; the
     formula computes a `UInt64` and we truncate at memcpy time. -/
 @[extern "leanload_store"]
-opaque store (addr : UInt64) (size : UInt8) (value : UInt64) : IO Unit
+private opaque store (addr : UInt64) (size : UInt8) (value : UInt64) : IO Unit
 
 /-- Zero `len` bytes starting at `addr`. Used for the partial-page
     BSS tail past `filesz` on a file mmap's last page (kernel maps
     file content there, not zero). -/
 @[extern "leanload_zero"]
-opaque zero (addr : UInt64) (len : UInt64) : IO Unit
+private opaque zero (addr : UInt64) (len : UInt64) : IO Unit
 
 -- ============================================================================
--- Control transfer (does not return).
+-- Control transfer (does not return). Kept public — callers (Main)
+-- need to invoke them after the LoadOps tree has been realized.
 -- ============================================================================
 
 @[extern "leanload_exec_call_ctor"]
@@ -101,8 +108,9 @@ end Runtime
 
 -- ============================================================================
 -- Typed slot records — each wraps the FFI signature of one of the
--- four kernel-state mutations we plan. `Materialize/LoadOps.lean`
--- assembles arrays of these into the per-segment tree.
+-- five kernel operations. `Materialize/LoadOps.lean` assembles the
+-- four slot kinds into the per-segment tree; `Reserve` is the
+-- one-shot anon allocation that bounds every slot.
 -- ============================================================================
 
 /-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap. -/
@@ -133,11 +141,24 @@ structure Mprotect where
 /-- Width of a `Store` as a `UInt64`, for range arithmetic. -/
 @[inline] def Store.byteLen (s : Store) : UInt64 := s.size.toUInt64
 
+/-- Anon reservation: address + length + the no-wrap proof every
+    downstream safety predicate relies on. Used both for the per-load
+    object reservation and for the loaded program's stack.
+
+    A successful `mmap(MAP_ANONYMOUS)` on Linux always satisfies
+    `addr + len < 2^64` (userspace VM is 48-bit), but the FFI layer
+    can't prove that to Lean — so `Reserve.run` validates at
+    runtime and converts the kernel's guarantee into a Lean proof. -/
+structure Reserve where
+  addr   : UInt64
+  len    : UInt64
+  noWrap : addr.toNat + len.toNat < 2 ^ 64
+
 -- ============================================================================
--- Per-slot dispatchers — bridge a typed slot to its FFI primitive.
--- *Internal*: meant to be invoked only from
--- `Materialize.LoadOps.runSafe`, which has discharged the safety
--- witness. Direct use bypasses every safety check.
+-- Per-record `run` dispatchers — bridge a typed record to its FFI
+-- primitive. The only path from Lean to the FFI: every external
+-- call goes through one of these. The four slot `run`s execute
+-- pre-planned data; `Reserve.run` requests a fresh allocation.
 -- ============================================================================
 
 namespace Mmap
@@ -159,6 +180,22 @@ namespace Mprotect
 def run (m : Mprotect) : IO Unit :=
   Runtime.mprotect m.addr m.len m.prot
 end Mprotect
+
+namespace Reserve
+/-- Allocate a reservation of `len` bytes. Calls the private
+    `Runtime.mmapAnon` extern and validates the no-wrap property at
+    runtime. The validation is essentially free (one comparison) and
+    the `.error` branch is unreachable on Linux (userspace addresses
+    fit in 48 bits) — kept as a safety net so a non-Linux kernel
+    returning a wrapping address fails loud. -/
+def run (len : UInt64) : IO Reserve := do
+  let addr ← Runtime.mmapAnon len
+  if h : addr.toNat + len.toNat < 2 ^ 64 then
+    return ⟨addr, len, h⟩
+  else
+    throw (IO.userError s!"Runtime.mmapAnon returned wrapping reservation \
+      (addr=0x{addr.toNat}, len=0x{len.toNat})")
+end Reserve
 
 -- ============================================================================
 -- Range arithmetic — predicates over `[addr, addr + len)` in `Nat`

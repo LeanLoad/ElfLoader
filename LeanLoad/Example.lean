@@ -275,11 +275,13 @@ private def slotCount (seg : Option Segment) : Option Nat :=
 
 -- ---- 4c. End-to-end Materialize.safe gating an empty LoadOps. ----------
 --
--- `Materialize.safe rsvAddr rsvLen lo` returns `Except String { lo //
--- safety predicates wrt [rsvAddr, +rsvLen) }`. The empty `LoadOps`
--- tree has no slots, and the predicates vacuously hold for any
--- reservation range.
+-- `Materialize.safe rsv lo` returns `Except String { lo // safety
+-- predicates wrt the reservation }`. The empty `LoadOps` tree has no
+-- slots, and the predicates vacuously hold for any reservation.
 
-#guard (Materialize.safe exampleAnchor 0 #[]).toOption.map (·.val.size) = some 0
+private def exampleReserve : Reserve :=
+  { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
+
+#guard (Materialize.safe exampleReserve #[]).toOption.map (·.val.size) = some 0
 
 end LeanLoad.Example
