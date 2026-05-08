@@ -10,21 +10,25 @@ stages plus boundary-rejection cases that span more than one file:
      synthesize partial Elfs for the compile-time `#guard`s.
 
   2. **Elaborate boundary** — `RawElf → Except String Elf`. The
-     rejection paths a malformed binary takes through `elaborate`,
-     in one place so a reader can see every case `elaborate` guards
-     against without grepping the codebase.
+     rejection paths a malformed binary takes through `elaborate`.
 
-  3. **Plan walkthrough** — symbol resolution (`Plan/Resolve`) and
-     base assignment + page-aligned stacking (`Plan/Layout`) over
-     hand-built `Array Elf` graphs.
+  3. **Plan walkthrough** — symbol resolution (`Plan/Resolve`),
+     base assignment (`Plan/Layout`), and the `Region` view over a
+     segment with a chosen base.
+
+  4. **Realize plan** — the `Array RuntimeOp` that `Exec.realize`
+     interprets. Shows how `Region.ops` shapes change with BSS-only
+     vs file+BSS segments, and how `Realize.planOps` concatenates
+     mmap + patch + ctor ops into one list.
 
 `LeanLoad/Test.lean` exercises the real `examples/build/main`
-end-to-end through `Ops.inMemory`; that remains the authoritative
-"the loader copes with musl-gcc's actual output" check. This file
-trades fidelity for synthesis-driven readability.
+end-to-end; that remains the authoritative "the loader copes with
+musl-gcc's actual output" check. This file trades fidelity for
+synthesis-driven readability.
 -/
 
 import LeanLoad.Plan.Layout
+import LeanLoad.Plan.Realize
 import LeanLoad.Plan.Resolve
 import LeanLoad.Elaborate.Elf
 
@@ -158,5 +162,76 @@ private def stackingExample : Option (Array UInt64) := do
   some (assignBases #[ synthElf (elfType := .exec), libElf, libElf ])
 
 #guard stackingExample = some #[0, dynAnchor, dynAnchor + 0x2000]
+
+-- ============================================================================
+-- 4. Realize plan: `Region` views and `Array RuntimeOp` shapes.
+--
+-- `Region` (a Segment with chosen base) is the unit `Realize` plans
+-- around. `Region.ops` emits the per-region kernel calls; the shape
+-- of the emitted list depends on the segment's BSS profile.
+-- ============================================================================
+
+-- ---- 4a. Region view: absolute addresses derive from base + segment. -------
+
+/-- A 0x2000-byte BSS-only segment at vaddr 0 (page-aligned). With
+    `filesz = 0` and `memsz = 0x2000`, this is two pages of pure BSS
+    with no file backing. -/
+private def bssOnlySeg : Option Segment :=
+  let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
+    p_type := Parse.PT_LOAD,
+    p_vaddr := 0, p_memsz := 0x2000,
+    p_filesz := 0, p_offset := 0, p_align := 0x1000 }
+  (Segment.ofPhdr phdr #[] #[]).toOption
+
+-- A region with the BSS-only segment placed at `dynAnchor`.
+private def bssOnlyRegion : Option Region :=
+  bssOnlySeg.map fun seg => { base := dynAnchor, seg }
+
+-- The region's mmap'd range is `[base, base + 0x2000)`.
+#guard bssOnlyRegion.map (·.absVaddr) = some dynAnchor
+#guard bssOnlyRegion.map (·.length)   = some 0x2000
+
+-- BSS-only: no file backing, no partial-page zero (everything covered
+-- by the anon reservation, which is kernel-zero-filled).
+#guard bssOnlyRegion.map (·.hasFileBacked) = some false
+#guard bssOnlyRegion.map (·.hasPartialBss) = some false
+
+-- ---- 4b. Region.ops shape — `#guard`-able since `RuntimeOp` is pure. ------
+--
+-- `Realize.Region.ops fileIdx r` emits ops shaped per the segment's
+-- BSS profile. Sizes:
+--
+--   BSS-only  (filesz=0):              [mmapAnon, mprotect]              (2)
+--   file-only (filesz=memsz, aligned): [mmapAnon, mmapFile, mprotect]    (3)
+--   file+BSS  (filesz<memsz, partial): [mmapAnon, mmapFile,
+--                                       zeroout, mprotect]               (4)
+
+/-- A more general synth helper that lets us vary `filesz` to land in
+    each profile. -/
+private def synthSeg? (vaddr memsz filesz : UInt64) : Option Segment :=
+  let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
+    p_type := Parse.PT_LOAD,
+    p_vaddr := vaddr, p_memsz := memsz,
+    p_filesz := filesz, p_offset := 0, p_align := 0x1000 }
+  (Segment.ofPhdr phdr #[] #[]).toOption
+
+private def fileOnlySeg : Option Segment := synthSeg? 0 0x1000 0x1000  -- one page, fully file
+private def mixedSeg    : Option Segment := synthSeg? 0 0x2000 0x800   -- file then BSS
+
+private def regionOps (seg : Option Segment) : Option (Array (RuntimeOp 1)) :=
+  seg.map fun s => Realize.Region.ops ⟨0, by simp⟩ ({ base := dynAnchor, seg := s } : Region)
+
+#guard (regionOps bssOnlySeg).map (·.size)  = some 2
+#guard (regionOps fileOnlySeg).map (·.size) = some 3
+#guard (regionOps mixedSeg).map (·.size)    = some 4
+
+-- ---- 4c. End-to-end planOps: realize ++ patches ++ ctors. -----------------
+
+-- An empty graph: no elfs, no patches, no ctors → empty op list.
+-- (`elfs.size = 0`, so `RuntimeOp elfs.size = RuntimeOp 0`.)
+#guard (Realize.planOps #[] #[] (by decide) #[] #[]).size = 0
+
+-- One ctor address: just one `.callCtor` op.
+#guard (Realize.planOps #[] #[] (by decide) #[] #[0xc0ffee]).size = 1
 
 end LeanLoad.Example

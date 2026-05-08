@@ -3,7 +3,12 @@ LeanLoad CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is
 glue that ties the verified core (`Parse`, plus the pure top-level
-`Plan` modules) to the IO layer (`Runtime`, `Discover.IO`, `Exec`).
+`Plan` modules) to the IO layer (`Runtime`, `Discover.IO`).
+
+The IO bookend `realize` (below) is a thin wrapper: planner-side
+(`Realize.planOps`) builds an `Array RuntimeOp`, `RuntimeOp.runAll`
+dispatches to externs, then the one-shot finalizers (`mmapStack` +
+`execAndJump`) transfer control. Doesn't return.
 -/
 
 import LeanLoad
@@ -11,6 +16,33 @@ import LeanLoad
 namespace LeanLoad.Main
 
 open LeanLoad
+open LeanLoad.Elaborate (Elf)
+
+/-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
+private def stackBytes : UInt64 := 8 * 1024 * 1024
+
+/-- Run all planned `RuntimeOp`s, allocate the kernel-style stack,
+    and `execAndJump` to entry. **Does not return.** -/
+private def realize (elfs : Array Elf) (handles : Array Runtime.FileHandle)
+    (h_size : handles.size = elfs.size)
+    (h_pos : 0 < elfs.size) (mainElf : Elf)
+    (layouts : { a : Array Layout.ObjectLayout // a.size = elfs.size })
+    (patches : Array (RuntimeOp elfs.size))
+    (ctorAddrs : Array UInt64)
+    (path : String) : IO Unit := do
+  let bases := layouts.val.map (·.base)
+  have h_bases : bases.size = elfs.size := by simp [bases, layouts.property]
+  let ops := Realize.planOps elfs bases h_bases patches ctorAddrs
+  RuntimeOp.runAll handles h_size ops
+  let mainBase := bases[0]'(by rw [h_bases]; exact h_pos)
+  let mainEntry :=
+    (layouts.val[0]'(by rw [layouts.property]; exact h_pos)).entry.getD 0
+  let stackVa ← Runtime.mmapStack stackBytes
+  let entry  := mainBase + mainEntry
+  let phdrVa := mainBase + mainElf.phoff
+  let phnum  := mainElf.phnum.toUInt64
+  let phent  := Parse.RawPhdrSize.toUInt64
+  Runtime.execAndJump entry phdrVa phent phnum 0 stackVa stackBytes path
 
 /-- Right-pad a string to `n` chars with `c`. -/
 private def padR (s : String) (n : Nat) (c : Char := ' ') : String :=
@@ -55,7 +87,7 @@ def load (path : String) : IO Unit := do
   let formula := Elaborate.formulaFor mainElf.machine
   let patches := Reloc.plan formula elfs sizedLayouts resTable
   let ctorAddrs := Init.plan elfs layouts.val (Init.order g)
-  Exec.realize elfs handles h_size h_pos mainElf sizedLayouts patches ctorAddrs path
+  realize elfs handles h_size h_pos mainElf sizedLayouts patches ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
@@ -178,7 +210,7 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"planned {ctorAddrs.size} constructor(s)"
 
   IO.eprintln "\n== Realize =="
-  Exec.realize elfs handles h_size h_pos mainElf sizedLayouts patches ctorAddrs path
+  realize elfs handles h_size h_pos mainElf sizedLayouts patches ctorAddrs path
 
 end LeanLoad.Main
 

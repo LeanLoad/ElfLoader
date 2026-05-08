@@ -1,60 +1,61 @@
 /-
 Trust seam: every `@[extern]` declaration that crosses into the C
-shims under `runtime/`. A grep for `@[extern]` outside this file is
-a smell.
+shims under `runtime/`, plus the `RuntimeOp` abstraction over those
+externs and the IO interpreter that dispatches each constructor.
 
-Three topic groups:
-  1. Files (`runtime/file.c`) — opaque `FileHandle` wrapping a kernel
-     fd. Used by `Parse.RawElf.parse` (per-section pread) and by
-     `Exec.realizeSegment` (file-backed mmap from the already-open fd).
-  2. Memory ops (`runtime/region.c`) — mmap variants, mprotect, raw
-     writes. All addresses are `UInt64`; the kernel address space is
-     the lookup table. There is no Lean-side region handle.
-  3. Control transfer (`runtime/exec.c`) — call individual ctors and
-     the does-not-return jump that hands control to the loaded image.
+Three layers in this file:
 
-The C side picks the `MAP_*` flag set per usage pattern (anonymous,
-fixed, stack), so Lean callers don't reason about flag bitmasks.
-`PROT_*` bits *do* cross the boundary because the planner reasons
-per-segment about R/W/X (gabi 07 § Segment Permissions).
+  1. Externs (top half) — opaque `FileHandle`, mmap variants,
+     mprotect, raw writes, ctor calls, exec/jump. A grep for
+     `@[extern]` outside this file is a smell.
 
-The semantics of each operation match Linux `mmap(2)` /
-`mprotect(2)`. Mappings live for the process lifetime; the kernel
-reclaims at exit. Audited by inspection (~150 lines of C), not
-proven.
+  2. `RuntimeOp` — pure data type describing every kernel call the
+     loader makes, modulo the value-returning `mmapStack` and the
+     no-return `execAndJump` (one-shot finalizers, called inline
+     from `Main.realize`).
+
+  3. `RuntimeOp.run` / `runAll` — IO interpreters; the only place
+     in the codebase that calls externs.
+
+The semantics of each extern match Linux `mmap(2)` / `mprotect(2)`.
+Mappings live for the process lifetime; the kernel reclaims at exit.
+Audited by inspection (~150 lines of C), not proven.
 
 Bounds proofs live entirely on the Lean side (`Layout.patch_inRange`
 etc.); externs take raw `UInt64` addresses and trust the caller has
-done the math correctly. Discipline is enforced in Lean by typed
-wrappers in `Layout.Region` (a pure `Segment + base` view) — those
-are the "safe" entry points; this module exposes the raw externs.
+done the math correctly. Pure planners (`Plan/Realize`,
+`Plan/Reloc`, `Plan/Init`) emit `Array RuntimeOp`; the IO bookend
+calls `RuntimeOp.runAll`.
 -/
 
-namespace LeanLoad.Runtime
+namespace LeanLoad
+
+namespace Runtime
 
 -- ============================================================================
--- FileHandle — opaque kernel fd. Wraps an `open(2)`'d read-only fd.
+-- FileHandle — a transparent kernel fd. The fd is held until process
+-- exit; we never `close(2)` because `execAndJump` is non-returning
+-- and the kernel reclaims at exit. Tests can construct arbitrary
+-- handles (e.g. for synthetic fixtures); the kernel rejects invalid
+-- fds at the syscall.
 -- ============================================================================
 
-private opaque FileHandlePointed : NonemptyType
-def FileHandle : Type := FileHandlePointed.type
-instance : Nonempty FileHandle := FileHandlePointed.property
+def FileHandle : Type := UInt32
+instance : Inhabited FileHandle := inferInstanceAs (Inhabited UInt32)
 
 @[extern "leanload_open"]
 opaque openFile (path : @& String) : IO FileHandle
 
 @[extern "leanload_pread"]
-opaque pread (h : @& FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
+opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 
-/-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `vaddr`. Writes
-    to that absolute address range from the file at `offset` with
-    final protection `prot`. Returns Unit; the mapping just exists. -/
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `vaddr`. -/
 @[extern "leanload_mmap_file"]
-opaque mmap (h : @& FileHandle) (vaddr : UInt64) (len : UInt64)
+opaque mmap (h : FileHandle) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
 -- ============================================================================
--- Memory ops — raw `UInt64` addresses. Caller has done the math.
+-- Memory ops — raw `UInt64` addresses.
 -- ============================================================================
 
 /-- Anonymous `MAP_FIXED` reservation at `vaddr` for `len` bytes. -/
@@ -99,12 +100,70 @@ opaque execAndJump
   (argv0  : @& String) : IO Unit
 
 -- ============================================================================
--- PROT_* constants (Linux). Kept here because the planner uses
--- `PROT_WRITE` to widen a file-backed segment's initial protection
--- so partial-last-page BSS can be zeroed before `mprotect` drops the
--- bit for read-only segments.
+-- PROT_* constants (Linux). The planner uses `PROT_WRITE` to widen
+-- a file-backed segment's initial protection so partial-last-page
+-- BSS can be zeroed before `mprotect` drops the bit for read-only
+-- segments.
 -- ============================================================================
 
 def PROT_WRITE : UInt32 := 2
 
-end LeanLoad.Runtime
+end Runtime
+
+-- ============================================================================
+-- RuntimeOp — pure abstraction over every fire-and-forget kernel
+-- call. Pure planners emit `Array RuntimeOp`; `RuntimeOp.runAll`
+-- dispatches each to the corresponding extern.
+--
+-- `mmapStack` (kernel-chosen address) and `execAndJump` (no-return
+-- control transfer) stay outside this set — they don't fit the
+-- fire-and-forget Unit-return shape and are one-shot finalizers
+-- called inline from `Main.realize`.
+-- ============================================================================
+
+/-- One operation the loader asks the kernel to perform.
+    Parameterised by `n`, the number of file handles available at IO
+    time — `mmapFile`'s `fileIdx : Fin n` indexes into the
+    caller-supplied handle table totally (no out-of-bounds failure
+    mode at apply time). Other constructors don't use `n`, but the
+    type still threads it for uniform `Array (RuntimeOp n)`. -/
+inductive RuntimeOp (n : Nat) where
+  /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `addr` for
+      `len` bytes from `handles[fileIdx]`, file offset `offset`,
+      protection `prot`. -/
+  | mmapFile (fileIdx : Fin n) (addr len : UInt64)
+             (prot : UInt32) (offset : UInt64)
+  /-- Anonymous `MAP_FIXED` reservation at `addr` for `len` bytes. -/
+  | mmapAnon (addr len : UInt64)
+  /-- Zero `len` bytes at `addr`. -/
+  | zeroout (addr len : UInt64)
+  /-- Set protection on `[addr, addr+len)` to `prot`. -/
+  | mprotect (addr len : UInt64) (prot : UInt32)
+  /-- Write 8 little-endian bytes of `value` at `addr`. -/
+  | patch64 (addr value : UInt64)
+  /-- Write 4 little-endian bytes of `value` at `addr`. -/
+  | patch32 (addr value : UInt64)
+  /-- Call the constructor function at `addr`. -/
+  | callCtor (addr : UInt64)
+
+namespace RuntimeOp
+
+/-- Interpret an op list in order. The `h_size` proof makes
+    `handles[fileIdx]` total — no out-of-bounds case to handle. -/
+def runAll {n : Nat} (handles : Array Runtime.FileHandle)
+    (h_size : handles.size = n) (ops : Array (RuntimeOp n)) :
+    IO Unit := ops.forM fun op =>
+  match op with
+  | .mmapFile idx addr len prot offset =>
+    let h := handles[idx.val]'(h_size.symm ▸ idx.isLt)
+    Runtime.mmap h addr len prot offset
+  | .mmapAnon addr len      => Runtime.mmapReserve addr len
+  | .zeroout addr len       => Runtime.zeroout addr len
+  | .mprotect addr len prot => Runtime.mprotect addr len prot
+  | .patch64 addr value     => Runtime.patch64 addr value
+  | .patch32 addr value     => Runtime.patch32 addr value
+  | .callCtor addr          => Runtime.callCtor addr
+
+end RuntimeOp
+
+end LeanLoad

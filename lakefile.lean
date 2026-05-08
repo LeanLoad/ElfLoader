@@ -5,12 +5,11 @@ package leanload where
   testDriver := "test"
 
 -- ============================================================================
--- Native runtime (FFI shims under runtime/).
---
--- Per-source object targets, archived into a static lib that is linked
--- into the AOT binaries (`leanload`, `test`). No shared library: nothing
--- in this project calls FFI from the Lean interpreter (`#eval` / LSP),
--- so the `.so` would be unused.
+-- Native runtime (FFI shim — `LeanLoad/Runtime.c`, sibling of
+-- `LeanLoad/Runtime.lean`). Single C file → object file → static lib
+-- linked into the AOT binaries (`leanload`, `test`). No shared library:
+-- nothing in this project calls FFI from the Lean interpreter
+-- (`#eval` / LSP), so the `.so` would be unused.
 -- ============================================================================
 
 def cFlags : Array String := #["-O2", "-fPIC", "-Wall", "-Wextra"]
@@ -20,13 +19,11 @@ def runtimeLinkArgs : Array String :=
 
 target libleanload_runtime (pkg : NPackage __name__) : FilePath := do
   let lean ← getLeanInstall
-  let buildRuntimeObj (name : String) := do
-    let oFile := pkg.buildDir / "runtime" / s!"{name}.o"
-    let src ← inputFile (pkg.dir / "runtime" / s!"{name}.c") false
-    buildO oFile src (weakArgs := #[s!"-I{lean.includeDir}"])
-      (traceArgs := cFlags) (compiler := "cc")
-  let objs ← #["io", "exec"].mapM buildRuntimeObj
-  buildStaticLib (pkg.staticLibDir / nameToStaticLib "leanload_runtime") objs
+  let oFile := pkg.buildDir / "LeanLoad" / "Runtime.o"
+  let src ← inputFile (pkg.dir / "LeanLoad" / "Runtime.c") false
+  let obj ← buildO oFile src (weakArgs := #[s!"-I{lean.includeDir}"])
+              (traceArgs := cFlags) (compiler := "cc")
+  buildStaticLib (pkg.staticLibDir / nameToStaticLib "leanload_runtime") #[obj]
 
 -- ============================================================================
 -- Lean libraries and executables
