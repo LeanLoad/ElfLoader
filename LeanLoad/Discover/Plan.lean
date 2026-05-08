@@ -4,7 +4,7 @@ Discover planner — pure.
 The graph-construction logic plus the search-path resolution rules,
 separated from the IO loop. Given the current `(objs, work)` state,
 decides what to do next; given a just-parsed dep, integrates it. No
-file IO, no parsing — those live in `LeanLoad.Discover`.
+file IO, no parsing — those live in `LeanLoad.Discover.IO`.
 
 Mirrors the `Reloc.plan` / `Init.plan` / `Exec.realize` pattern:
 pure decision + state update, IO bookend orchestrator.
@@ -68,19 +68,17 @@ def searchCandidates (soname : String) (ctx : SearchContext) : Array String :=
 #guard searchCandidates "libfoo.so" { runpath := some "/a:/b" } = #["/a/libfoo.so", "/b/libfoo.so"]
 
 /-- One loaded object. Identified by its `DT_SONAME` if present (else
-    by the `DT_NEEDED` string we resolved through), and by the file
-    path we read it from. -/
+    by the `DT_NEEDED` string we resolved through). -/
 structure LoadedObject where
   /-- Canonical name (`DT_SONAME` if defined; otherwise the path
       basename or the resolving `DT_NEEDED` string). Used for
       deduplication. -/
   name : String
-  /-- Filesystem path the bytes came from. -/
-  path : String
   /-- Open read-only file handle, kept for `pread` (parsing extras)
-      and `mmap` (Map stage). `none` for synthetic objects built by
-      `LeanLoad.Fixtures` that have no backing file. -/
-  handle : Option Runtime.FileHandle := none
+      and `mmap` (Map stage). Synthetic objects built by
+      `LeanLoad.Example` use a `FileHandle.mock` with empty bytes;
+      production paths always carry a real fd. -/
+  handle : Runtime.FileHandle
   /-- Elaborated ELF — output of `Elaborate.elaborate` after
       `Parse.parse`. The type itself is the witness that PT_LOAD
       well-formedness held and every dynamic relocation was located
@@ -118,10 +116,16 @@ end ObjectList
 -- Pure helpers
 -- ============================================================================
 
-/-- The canonical name we use to deduplicate an elaborated ELF. Prefer
-    `DT_SONAME`; fall back to the original `DT_NEEDED` string. -/
-def canonicalName (needed : String) (elf : Elaborate.Elf) : String :=
-  elf.soname.getD needed
+/-- The canonical name we use to deduplicate an elaborated ELF.
+    Prefer `DT_SONAME`; fall back to the path's basename. The path
+    fallback gives a *file-canonical* dedup key — two `DT_NEEDED`
+    strings that resolve to the same file get the same key even
+    when `DT_SONAME` is absent. Basename (rather than full path)
+    keeps the name short for diagnostics; collisions only occur
+    when loading two different files with the same filename, which
+    is unusual. -/
+def canonicalName (path : String) (elf : Elaborate.Elf) : String :=
+  elf.soname.getD ((path.splitOn "/").getLast?.getD path)
 
 /-- The dedup primitive: is some object already loaded under this name?
     Pure; the BFS loop calls it before resolving / parsing each
@@ -158,19 +162,19 @@ def step (objs : Array LoadedObject) (work : List WorkItem) : StepResult :=
 
 /-- Pure integration: given a freshly resolved + parsed + elaborated
     dep, update `(objs, work)`. Performs the *post-canonicalisation*
-    dedup (the post-parse `DT_SONAME` may differ from the
-    `DT_NEEDED` string we resolved through); a hit returns the
-    unchanged state. -/
+    dedup using `elf.soname.getD path` — the post-parse soname may
+    differ from the `DT_NEEDED` string we resolved through, and the
+    path fallback dedups multiple aliases of the same file. -/
 def integrate (objs : Array LoadedObject) (rest : List WorkItem)
-    (sn : String) (path : String) (handle : Runtime.FileHandle)
+    (path : String) (handle : Runtime.FileHandle)
     (elf : Elaborate.Elf) :
     Array LoadedObject × List WorkItem :=
-  let canonical := canonicalName sn elf
+  let canonical := canonicalName path elf
   if alreadyLoaded objs canonical then
     (objs, rest)
   else
     let obj : LoadedObject :=
-      { name := canonical, path, handle := some handle, elf }
+      { name := canonical, handle, elf }
     let newPairs : List WorkItem :=
       elf.needed.toList.map (fun n => (elf.runpath, n))
     (objs.push obj, rest ++ newPairs)
@@ -179,10 +183,10 @@ def integrate (objs : Array LoadedObject) (rest : List WorkItem)
     `0 < .size` lower bound that `ObjectList` carries. Used by
     `discoverLoop` to thread the non-emptiness invariant. -/
 theorem integrate_size_pos (objs : Array LoadedObject) (rest : List WorkItem)
-    (sn : String) (path : String) (handle : Runtime.FileHandle)
+    (path : String) (handle : Runtime.FileHandle)
     (elf : Elaborate.Elf) (h : 0 < objs.size) :
-    0 < (integrate objs rest sn path handle elf).fst.size := by
-  by_cases hh : alreadyLoaded objs (canonicalName sn elf) <;>
+    0 < (integrate objs rest path handle elf).fst.size := by
+  by_cases hh : alreadyLoaded objs (canonicalName path elf) <;>
     simp [integrate, hh, Array.size_push, h]
 
 -- ============================================================================

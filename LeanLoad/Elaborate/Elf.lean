@@ -12,7 +12,7 @@ returns an `Elaborate.Elf`:
     `Elaborate.Segment.{rela, jmprel}`.
   - Per-segment relocation grouping built into `Array Elaborate.Segment`.
   - PT_LOAD well-formedness witness (`segmentsWf : WellFormed segments`)
-    carried for downstream consumers.
+    carried for downstream consumers — defined in this file.
   - Symbol names pre-resolved against the dynamic string table.
 
 Constants and per-section semantics live in:
@@ -21,7 +21,6 @@ Constants and per-section semantics live in:
   - `Symbol.lean` — `STB/STT/SHN_*`, `RawSym` predicates, `Symbol`
   - `Reloc.lean` — `RawRela.sym/type` + relocation formulas
   - `Segment.lean` — single-segment containment + bundle
-  - `WellFormed.lean` — gabi-07 array invariants
 
 Failures are `Except String`: malformed ELF class/endianness,
 malformed PT_LOAD shape, or any rela whose write window doesn't fit
@@ -33,12 +32,43 @@ import LeanLoad.Elaborate.Header
 import LeanLoad.Elaborate.Strtab
 import LeanLoad.Elaborate.Symbol
 import LeanLoad.Elaborate.Segment
-import LeanLoad.Elaborate.WellFormed
 
 namespace LeanLoad.Elaborate
 
 open LeanLoad
 open LeanLoad.Parse (RawElf RawPhdr RawRela RawSym)
+
+-- ============================================================================
+-- PT_LOAD-array well-formedness — the per-pair gabi-07 invariants on
+-- `Array Segment`. Per-segment invariants (`fileszLeMemsz`,
+-- `alignPow2`, `alignCong`, `addrBound`) live as fields on `Segment`
+-- itself.
+--
+-- Spec: gabi 07 § Program Loading. These are *spec-level* (gabi
+-- vaddr/memsz ordering); page-aligned non-overlap is a separate
+-- runtime check on `ObjectLayout` (`Layout.segmentsSorted`).
+--
+-- The two predicates live as standalone defs (not bundled in a
+-- `WellFormed` wrapper) so `Elf` can carry them as direct fields.
+-- Bound the index in front of the quantifier so each Prop is decidable
+-- via `Nat.decidableBAllLT`.
+-- ============================================================================
+
+/-- gabi 07 § Program Loading: PT_LOAD entries appear in `p_vaddr` order. -/
+def Sorted (segs : Array Segment) : Prop :=
+  ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
+    i < j → segs[i].vaddr ≤ segs[j].vaddr
+
+/-- *De facto*, not gabi-mandated: PT_LOAD `[p_vaddr, p_vaddr +
+    p_memsz)` ranges are pairwise disjoint. -/
+def NonOverlap (segs : Array Segment) : Prop :=
+  ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
+    i < j → segs[i].vaddr + segs[i].memsz ≤ segs[j].vaddr
+
+instance (segs : Array Segment) : Decidable (Sorted segs) := by
+  unfold Sorted; infer_instance
+instance (segs : Array Segment) : Decidable (NonOverlap segs) := by
+  unfold NonOverlap; infer_instance
 
 -- ============================================================================
 -- The elaborated ELF.
@@ -77,21 +107,10 @@ structure Elf where
   /-- One bundle per PT_LOAD, in phdr order, with relas grouped by
       the segment they target. -/
   segments : Array Segment
-  /-- gabi-07 well-formedness witness, established by `elaborate`.
-      Phrased on the spec-level `RawSegment` view (since `WellFormed`
-      lives at that layer) — `Segment extends RawSegment`, so each
-      loader-stage segment projects via `.toRawSegment`. -/
-  segmentsWf : WellFormed (segments.map (·.toRawSegment))
-
-instance : Inhabited Elf where
-  default :=
-    { elfType := .none, machine := .x86_64,
-      entry := 0, phoff := 0, phnum := 0,
-      symtab := #[], needed := #[],
-      soname := Option.none, runpath := Option.none, initArr := #[],
-      segments := #[],
-      segmentsWf := by simpa using WellFormed_nil }
-
+  /-- gabi 07: PT_LOAD entries are in `p_vaddr` order. -/
+  segmentsSorted     : Sorted segments
+  /-- De-facto: PT_LOAD ranges are pairwise disjoint. -/
+  segmentsNonOverlap : NonOverlap segments
 
 -- ============================================================================
 -- elaborate: RawElf → Except String Elf
@@ -101,7 +120,8 @@ instance : Inhabited Elf where
     window, with its containment witness. Returns `none` if no
     segment covers the write range. -/
 private def locateRela (segs : Array RawPhdr) (r : RawRela) :
-    Option (Σ' (i : Fin segs.size), segs[i].containsRela r) := Id.run do
+    Option (Σ' (i : Fin segs.size),
+              coversRela segs[i].p_vaddr segs[i].p_memsz r.r_offset) := Id.run do
   for h : i in [:segs.size] do
     let s := segs[i]
     if h_lo : s.p_vaddr.toNat ≤ r.r_offset.toNat then
@@ -121,7 +141,9 @@ def elaborate (raw : RawElf) : Except String Elf := do
       (got ei_data={raw.header.ident.ei_data})"
   let loadable := raw.phdrs.filter (·.p_type == Parse.PT_LOAD)
   -- Per-rela "tagged with its segment index" (Sigma — destructurable).
-  let GEntry := Σ i : Fin loadable.size, { r : RawRela // loadable[i].containsRela r }
+  let GEntry := Σ i : Fin loadable.size,
+                  { r : RawRela //
+                    coversRela loadable[i].p_vaddr loadable[i].p_memsz r.r_offset }
   let groupOne (label : String) (rs : Array RawRela) :
       Except String (Array (Array GEntry)) := do
     let mut buckets : Array (Array GEntry) := Array.replicate loadable.size #[]
@@ -137,7 +159,8 @@ def elaborate (raw : RawElf) : Except String Elf := do
   let relaBuckets   ← groupOne "DT_RELA"   raw.rela
   let jmprelBuckets ← groupOne "DT_JMPREL" raw.jmprel
   let buildBucket (bucketIdx : Fin loadable.size) (bucket : Array GEntry) :
-      Array { r : RawRela // loadable[bucketIdx].containsRela r } :=
+      Array { r : RawRela //
+        coversRela loadable[bucketIdx].p_vaddr loadable[bucketIdx].p_memsz r.r_offset } :=
     bucket.filterMap fun ⟨i, ⟨r, h_in⟩⟩ =>
       if h_eq : i = bucketIdx then some ⟨r, h_eq ▸ h_in⟩
       else none
@@ -163,7 +186,7 @@ def elaborate (raw : RawElf) : Except String Elf := do
   let needed  := raw.needed.filterMap (raw.strtab.lookup ·.toNat)
   let soname  := raw.soname.bind (raw.strtab.lookup ·.toNat)
   let runpath := raw.runpath.bind (raw.strtab.lookup ·.toNat)
-  if h : WellFormed (segments.map (·.toRawSegment)) then
+  if h : Sorted segments ∧ NonOverlap segments then
     return {
       elfType, machine,
       entry := raw.header.e_entry,
@@ -172,7 +195,7 @@ def elaborate (raw : RawElf) : Except String Elf := do
       symtab,
       needed, soname, runpath,
       initArr := raw.initArr, segments,
-      segmentsWf := h }
+      segmentsSorted := h.left, segmentsNonOverlap := h.right }
   else
     .error "elaborate: PT_LOAD segments not sorted or overlap \
       (gabi-07 § Program Loading: sort by p_vaddr; non-overlap is \

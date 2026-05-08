@@ -25,7 +25,7 @@ target libleanload_runtime (pkg : NPackage __name__) : FilePath := do
     let src ← inputFile (pkg.dir / "runtime" / s!"{name}.c") false
     buildO oFile src (weakArgs := #[s!"-I{lean.includeDir}"])
       (traceArgs := cFlags) (compiler := "cc")
-  let objs ← #["region", "file", "exec"].mapM buildRuntimeObj
+  let objs ← #["io", "exec"].mapM buildRuntimeObj
   buildStaticLib (pkg.staticLibDir / nameToStaticLib "leanload_runtime") objs
 
 -- ============================================================================

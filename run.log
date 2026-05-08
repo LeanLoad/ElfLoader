@@ -1,12 +1,12 @@
 == Discover ==
-build/main  (build/main)
-libfoo.so  (/home/szhong/LeanLoad/build/libfoo.so)
-libbar.so  (/home/szhong/LeanLoad/build/libbar.so)
-libc.so  (/home/szhong/LeanLoad/build/lib/libc.so)
-libbaz.so  (/home/szhong/LeanLoad/build/libbaz.so)
+main
+libfoo.so
+libbar.so
+libc.so
+libbaz.so
 
 == Parse ==
-[0] build/main
+[0] main
   elfType    = LeanLoad.Elaborate.ElfType.dyn
   machine    = LeanLoad.Elaborate.Machine.x86_64
   entry      = 0x10e0
@@ -79,7 +79,7 @@ libbaz.so  (/home/szhong/LeanLoad/build/libbaz.so)
     [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=rw-  rela=7  jmprel=3
 
 == Resolve ==
-build/main:
+main:
   printf                       ←  libc.so      [sym 555 @0x6014d]
   pthread_create               ←  libc.so      [sym 647 @0x341a0]
   strerror                     ←  libc.so      [sym 447 @0x3e415]
@@ -116,54 +116,54 @@ libbaz.so:
 strong missing: 0, weak missing: 8
 
 == Layout ==
-[0] build/main (4 segments)
+[0] main (4 segments)
   entry: 0x10e0
-  vaddr=0x0 len=0x1000 prot=1
-  vaddr=0x1000 len=0x1000 prot=5
-  vaddr=0x2000 len=0x1000 prot=1
-  vaddr=0x3000 len=0x2000 prot=3
+  vaddr=0x80000000 len=0x1000 prot=1
+  vaddr=0x80001000 len=0x1000 prot=5
+  vaddr=0x80002000 len=0x1000 prot=1
+  vaddr=0x80003000 len=0x2000 prot=3
 [1] libfoo.so (4 segments)
-  vaddr=0x0 len=0x1000 prot=1
-  vaddr=0x1000 len=0x1000 prot=5
-  vaddr=0x2000 len=0x1000 prot=1
-  vaddr=0x3000 len=0x2000 prot=3
+  vaddr=0x80005000 len=0x1000 prot=1
+  vaddr=0x80006000 len=0x1000 prot=5
+  vaddr=0x80007000 len=0x1000 prot=1
+  vaddr=0x80008000 len=0x2000 prot=3
 [2] libbar.so (4 segments)
-  vaddr=0x0 len=0x1000 prot=1
-  vaddr=0x1000 len=0x1000 prot=5
-  vaddr=0x2000 len=0x1000 prot=1
-  vaddr=0x3000 len=0x2000 prot=3
+  vaddr=0x8000a000 len=0x1000 prot=1
+  vaddr=0x8000b000 len=0x1000 prot=5
+  vaddr=0x8000c000 len=0x1000 prot=1
+  vaddr=0x8000d000 len=0x2000 prot=3
 [3] libc.so (4 segments)
-  vaddr=0x0 len=0x14000 prot=1
-  vaddr=0x14000 len=0x56000 prot=5
-  vaddr=0x6a000 len=0x36000 prot=1
-  vaddr=0xa0000 len=0x4000 prot=3
+  vaddr=0x8000f000 len=0x14000 prot=1
+  vaddr=0x80023000 len=0x56000 prot=5
+  vaddr=0x80079000 len=0x36000 prot=1
+  vaddr=0x800af000 len=0x4000 prot=3
 [4] libbaz.so (4 segments)
-  vaddr=0x0 len=0x1000 prot=1
-  vaddr=0x1000 len=0x1000 prot=5
-  vaddr=0x2000 len=0x1000 prot=1
-  vaddr=0x3000 len=0x2000 prot=3
+  vaddr=0x800b3000 len=0x1000 prot=1
+  vaddr=0x800b4000 len=0x1000 prot=5
+  vaddr=0x800b5000 len=0x1000 prot=1
+  vaddr=0x800b6000 len=0x2000 prot=3
 init order: #[3, 1, 4, 2, 0]
 fini order: #[0, 2, 4, 1, 3]
 
 == Reloc ==
-[0] build/main    type=8   seg=3  @0x000080003d48 ← 0x0000800011d0 (8B)  sym=''
-[0] build/main    type=8   seg=3  @0x000080003d50 ← 0x0000800011d9 (8B)  sym=''
-[0] build/main    type=8   seg=3  @0x000080003d58 ← 0x000080001190 (8B)  sym=''
-[0] build/main    type=8   seg=3  @0x000080004000 ← 0x000080004000 (8B)  sym=''
-[0] build/main    type=6   seg=3  @0x000080003fd8 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
-[0] build/main    type=6   seg=3  @0x000080003fe0 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
-[0] build/main    type=6   seg=3  @0x000080003fe8 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
-[0] build/main    type=7   seg=3  @0x000080003f80 ← 0x00008006f14d (8B)  sym='printf'
-[0] build/main    type=7   seg=3  @0x000080003f88 ← 0x0000800431a0 (8B)  sym='pthread_create'
-[0] build/main    type=7   seg=3  @0x000080003f90 ← 0x00008004d415 (8B)  sym='strerror'
-[0] build/main    type=7   seg=3  @0x000080003f98 ← 0x00008006f470 (8B)  sym='puts'
-[0] build/main    type=7   seg=3  @0x000080003fa0 ← 0x00008000b119 (8B)  sym='libbar_step'
-[0] build/main    type=7   seg=3  @0x000080003fa8 ← 0x00008006c778 (8B)  sym='fflush'
-[0] build/main    type=7   seg=3  @0x000080003fb0 ← 0x00008004cfdc (8B)  sym='__stack_chk_fail'
-[0] build/main    type=7   seg=3  @0x000080003fb8 ← 0x0000800060f9 (8B)  sym='libfoo_print'
-[0] build/main    type=7   seg=3  @0x000080003fc0 ← 0x00008002308c (8B)  sym='exit'
-[0] build/main    type=7   seg=3  @0x000080003fc8 ← 0x00008004ced0 (8B)  sym='__libc_start_main'
-[0] build/main    type=7   seg=3  @0x000080003fd0 ← 0x0000800742b0 (8B)  sym='pthread_join'
+[0] main          type=8   seg=3  @0x000080003d48 ← 0x0000800011d0 (8B)  sym=''
+[0] main          type=8   seg=3  @0x000080003d50 ← 0x0000800011d9 (8B)  sym=''
+[0] main          type=8   seg=3  @0x000080003d58 ← 0x000080001190 (8B)  sym=''
+[0] main          type=8   seg=3  @0x000080004000 ← 0x000080004000 (8B)  sym=''
+[0] main          type=6   seg=3  @0x000080003fd8 ← 0x00008004d652 (8B)  sym='__cxa_finalize'
+[0] main          type=6   seg=3  @0x000080003fe0 ← 0x000000000000 (8B)  sym='_ITM_registerTMCloneTable'
+[0] main          type=6   seg=3  @0x000080003fe8 ← 0x000000000000 (8B)  sym='_ITM_deregisterTMCloneTable'
+[0] main          type=7   seg=3  @0x000080003f80 ← 0x00008006f14d (8B)  sym='printf'
+[0] main          type=7   seg=3  @0x000080003f88 ← 0x0000800431a0 (8B)  sym='pthread_create'
+[0] main          type=7   seg=3  @0x000080003f90 ← 0x00008004d415 (8B)  sym='strerror'
+[0] main          type=7   seg=3  @0x000080003f98 ← 0x00008006f470 (8B)  sym='puts'
+[0] main          type=7   seg=3  @0x000080003fa0 ← 0x00008000b119 (8B)  sym='libbar_step'
+[0] main          type=7   seg=3  @0x000080003fa8 ← 0x00008006c778 (8B)  sym='fflush'
+[0] main          type=7   seg=3  @0x000080003fb0 ← 0x00008004cfdc (8B)  sym='__stack_chk_fail'
+[0] main          type=7   seg=3  @0x000080003fb8 ← 0x0000800060f9 (8B)  sym='libfoo_print'
+[0] main          type=7   seg=3  @0x000080003fc0 ← 0x00008002308c (8B)  sym='exit'
+[0] main          type=7   seg=3  @0x000080003fc8 ← 0x00008004ced0 (8B)  sym='__libc_start_main'
+[0] main          type=7   seg=3  @0x000080003fd0 ← 0x0000800742b0 (8B)  sym='pthread_join'
 [1] libfoo.so     type=8   seg=3  @0x000080008df8 ← 0x0000800060f0 (8B)  sym=''
 [1] libfoo.so     type=8   seg=3  @0x000080008e00 ← 0x000080006113 (8B)  sym=''
 [1] libfoo.so     type=8   seg=3  @0x000080008e08 ← 0x0000800060b0 (8B)  sym=''
@@ -312,8 +312,8 @@ planned 8 constructor(s)
 [libbaz] step=0
 [main] pthread test start
 [main] tls=42, &tls=0x800b05dc
-[thread] tls=0, &tls=0x7ffffe456b34
-[thread] tls=99, &tls=0x7ffffe456b34
+[thread] tls=0, &tls=0x7ffffe455b34
+[thread] tls=99, &tls=0x7ffffe455b34
 [main] tls=42, &tls=0x800b05dc
 [main] pthread test completed
 [main] exit

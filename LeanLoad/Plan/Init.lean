@@ -23,7 +23,7 @@ The dep edges are re-derived here from `obj.elf.needed` rather than
 stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
 -/
 
-import LeanLoad.Plan.Discover
+import LeanLoad.Discover.Plan
 import LeanLoad.Plan.Layout
 import LeanLoad.Elaborate.Elf
 import Std.Data.HashMap
@@ -126,26 +126,21 @@ end Example
 -- ============================================================================
 
 /-- Constructor function addresses to call, in init order. Walks
-    `order` forward (init); fini callers walk `(plan g layouts order).reverse`.
+    `order` forward (init); fini callers walk
+    `(plan elfs layouts order).reverse`.
 
-    For each object, walks `elf.initArr`: ET_DYN entries are relative
+    For each elf, walks `elf.initArr`: ET_DYN entries are relative
     (add base); ET_EXEC are absolute. Zero entries are skipped — gabi
     leaves them unspecified, but historical practice (and the table
-    layout where zero-terminators are common) treats them as no-ops.
-
-    Pure: takes `layouts` (per-object base + segments) directly, not
-    a `ProcessImage`. The base is the only thing this function needs
-    from the post-Map state, and bases come from Layout deterministically.
-    Threading layouts instead of an image keeps Init.plan free of any
-    IO dependency. -/
-def plan (g : ObjectList) (layouts : Array ObjectLayout)
+    layout where zero-terminators are common) treats them as no-ops. -/
+def plan (elfs : Array Elaborate.Elf) (layouts : Array ObjectLayout)
     (order : Array Nat) : Array UInt64 := Id.run do
   let mut addrs : Array UInt64 := #[]
   for objectIdx in order do
-    let some obj := g.val[objectIdx]?  | continue
+    let some elf := elfs[objectIdx]?    | continue
     let some lyt := layouts[objectIdx]? | continue
-    let isExec := obj.elf.elfType == .exec
-    for entry in obj.elf.initArr do
+    let isExec := elf.elfType == .exec
+    for entry in elf.initArr do
       let fnAddr := if isExec then entry else lyt.base + entry
       if fnAddr != 0 then addrs := addrs.push fnAddr
   return addrs

@@ -2,74 +2,297 @@
 Layout — per-object segment arrangement, pure.
 
 Spec: gabi 07 § Program Header (positional concerns — base
-assignment, span over loadable segments).
+assignment, span over loadable segments, page-aligned mmap views).
 
-Layout consumes the elaborated PT_LOAD phdrs from
-`obj.elf.loadablePhdrs` and assigns each object an mmap base + builds
-the per-object plan that Reloc / Apply / Exec consume. Validation
-that the page-aligned segments are sorted and non-overlapping happens
-at the boundary in `g.layouts`, which returns a sized subtype carrying
-the witness.
+After Layout, every absolute address Realize and Apply need is
+derivable from a `Region` (Segment + chosen base). Layout.Region is
+the loader's view; `Elaborate.Segment` is gabi-only.
 
-Init/fini ordering lives in `LeanLoad.Plan.Init` (gabi 08); this
-file is purely gabi-07.
+`Region` exposes the four mmap-time spans separately:
+  - file-backed overlay   → `mmap(handle, ...)` from the open fd
+  - partial-page BSS      → existing overlay page bytes that need
+                            explicit zeroing (file mapping past EOF
+                            isn't guaranteed zero in the partial-page
+                            slot — toolchains place arbitrary bytes
+                            after `filesz` on the same page)
+  - full-page BSS         → fresh anonymous pages past the overlay
+  - mprotect target       → final permissions for the whole region
+
+Init/fini ordering lives in `LeanLoad.Plan.Init` (gabi 08).
 -/
 
 import LeanLoad.Elaborate.Segment
 import LeanLoad.Elaborate.Elf
-import LeanLoad.Plan.Discover
 import LeanLoad.Parse.Structs
 
 namespace LeanLoad.Layout
 
 open LeanLoad
 open LeanLoad.Parse
-open LeanLoad.Elaborate (Prot Segment alignDown alignUp)
-open LeanLoad.Discover
+open LeanLoad.Elaborate (Elf Segment)
 
 -- ============================================================================
--- Prot → PROT_* translation (loader-level: typed `Prot` → POSIX `PROT_*`)
+-- Page-arithmetic helpers — UInt64-saturating align{Down,Up} and the
+-- two soundness theorems the per-region proofs consume.
 -- ============================================================================
 
-/-- Translate typed segment permissions to POSIX `PROT_*` bits for
-    `mprotect`. -/
-def protOfPerm (p : Prot) : UInt32 :=
-  (if p.read  then (1 : UInt32) else 0) |||
-  (if p.write then (2 : UInt32) else 0) |||
-  (if p.exec  then (4 : UInt32) else 0)
+/-- Round `x` down to a multiple of `align`. `align = 0` is treated
+    as alignment 1 (identity). -/
+def alignDown (x align : UInt64) : UInt64 :=
+  if align == 0 then x else x - (x % align)
 
-#guard protOfPerm { read := true,  write := false, exec := true  } = 5
-#guard protOfPerm { read := true,  write := true,  exec := false } = 3
-#guard protOfPerm { read := true,  write := false, exec := false } = 1
+/-- Round `x` up to a multiple of `align`. `align = 0` is identity. -/
+def alignUp (x align : UInt64) : UInt64 :=
+  if align == 0 then x else alignDown (x + align - 1) align
 
-end LeanLoad.Layout
+#guard alignDown 0x1234 0x1000 == 0x1000
+#guard alignUp 0x1234 0x1000 == 0x2000
+#guard alignDown 0x1000 0x1000 == 0x1000
+#guard alignUp   0x1000 0x1000 == 0x1000
+#guard alignDown 0x1234 0 == 0x1234
+#guard alignUp   0x1234 0 == 0x1234
 
-namespace LeanLoad.Layout
+/-- `alignDown` rounds toward zero. -/
+theorem alignDown_le (x align : UInt64) : alignDown x align ≤ x := by
+  unfold alignDown
+  split
+  · exact UInt64.le_refl _
+  · have h_mod_le : x % align ≤ x := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    exact UInt64.sub_le h_mod_le
 
-open LeanLoad
-open LeanLoad.Parse
-open LeanLoad.Elaborate (Segment alignUp)
-open LeanLoad.Discover
+private theorem toNat_pos_of_ne_zero {a : UInt64} (h : a ≠ 0) : 0 < a.toNat := by
+  rcases Nat.eq_zero_or_pos a.toNat with h0 | hp
+  · exfalso; apply h; exact UInt64.toNat_inj.mp (h0.trans rfl.symm)
+  · exact hp
+
+/-- `alignUp` rounds away from zero. -/
+theorem alignUp_ge (x align : UInt64)
+    (h_align_ne : align ≠ 0)
+    (h_bound : x.toNat + align.toNat < 2^64) : x ≤ alignUp x align := by
+  unfold alignUp
+  rw [if_neg (by intro h; exact h_align_ne (by simpa using h))]
+  unfold alignDown
+  rw [if_neg (by intro h; exact h_align_ne (by simpa using h))]
+  have h_align_pos : 0 < align.toNat := toNat_pos_of_ne_zero h_align_ne
+  have h_xa : (x + align).toNat = x.toNat + align.toNat := by
+    rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_bound
+  have h_one_le : (1 : UInt64) ≤ x + align := by
+    rw [UInt64.le_iff_toNat_le]; show 1 ≤ _; rw [h_xa]; omega
+  have h_y : (x + align - 1).toNat = x.toNat + align.toNat - 1 := by
+    rw [UInt64.toNat_sub_of_le _ _ h_one_le, h_xa]; rfl
+  have h_mod_le : (x + align - 1) % align ≤ (x + align - 1) := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  rw [UInt64.le_iff_toNat_le, UInt64.toNat_sub_of_le _ _ h_mod_le,
+      UInt64.toNat_mod, h_y]
+  have h_mod_lt : (x.toNat + align.toNat - 1) % align.toNat < align.toNat :=
+    Nat.mod_lt _ h_align_pos
+  omega
+
+/-- Effective alignment: `align`, with `0` lifted to `1` so every
+    page-arithmetic def below is total. -/
+def effectiveAlign (align : UInt64) : UInt64 :=
+  if align == 0 then 1 else align
+
+theorem effectiveAlign_ne_zero (align : UInt64) :
+    effectiveAlign align ≠ 0 := by
+  unfold effectiveAlign
+  split
+  · decide
+  · intro h; rename_i hne; apply hne; simp [h]
+
+private theorem ea_no_wrap (vaddr memsz align : UInt64)
+    (h_addr : vaddr.toNat + memsz.toNat + align.toNat < 2 ^ 48) :
+    vaddr.toNat + memsz.toNat + (effectiveAlign align).toNat < 2^64 := by
+  have h_2_48 : (2:Nat)^48 + 1 < 2^64 := by decide
+  unfold effectiveAlign
+  split <;> rename_i h
+  · have : align.toNat = 0 := by simp at h; rw [h]; rfl
+    have h_one : (1 : UInt64).toNat = 1 := rfl
+    rw [h_one]; omega
+  · omega
+
+-- ============================================================================
+-- Bounds predicate. Pure — about UInt64 arithmetic.
+-- ============================================================================
+
+/-- An offset+length window fits inside `[0, size)`. Uses UInt64
+    comparisons (saturating subtraction) to sidestep wrap. -/
+def InRange (size offset length : UInt64) : Prop :=
+  offset ≤ size ∧ length ≤ size - offset
+
+instance (size offset length : UInt64) : Decidable (InRange size offset length) :=
+  inferInstanceAs (Decidable (_ ∧ _))
+
+-- ============================================================================
+-- Region — a `Segment` with a chosen mmap base.
+-- All loader semantics (page math, BSS split, POSIX prot) live here.
+-- ============================================================================
+
+/-- A PT_LOAD segment with its chosen mmap base. After Layout, every
+    absolute address Realize and Apply need is derivable from this
+    struct alone. Pure data; IO that consumes Regions lives in
+    `Exec`. -/
+structure Region where
+  base : UInt64
+  seg  : Segment
+
+namespace Region
+
+-- ----------------------------------------------------------------------------
+-- Page math (relative to the segment's vaddr).
+-- ----------------------------------------------------------------------------
+
+/-- Page-aligned segment-relative base. -/
+def pageVaddr (r : Region) : UInt64 :=
+  alignDown r.seg.vaddr (effectiveAlign r.seg.align)
+
+/-- Page-aligned mmap length — the full reservation span. -/
+def pageLength (r : Region) : UInt64 :=
+  alignUp (r.seg.vaddr + r.seg.memsz) (effectiveAlign r.seg.align) - r.pageVaddr
+
+/-- One past the last byte of the mmap'd range, segment-relative. -/
+def pageEndAddr (r : Region) : UInt64 := r.pageVaddr + r.pageLength
+
+/-- Offset within the mapped region for copied bytes (vaddr − pageVaddr). -/
+def pageInset (r : Region) : UInt64 := r.seg.vaddr - r.pageVaddr
+
+/-- Page-aligned length of the file-backed overlay. -/
+def fileOverlayLen (r : Region) : UInt64 :=
+  alignUp (r.pageInset + r.seg.filesz) (effectiveAlign r.seg.align)
+
+/-- Page-aligned file offset for the overlay's `mmap(2)`. -/
+def fileOffset (r : Region) : UInt64 :=
+  alignDown r.seg.offset (effectiveAlign r.seg.align)
+
+-- ----------------------------------------------------------------------------
+-- Absolute addresses (post-base) — what Realize and Apply consume.
+-- ----------------------------------------------------------------------------
+
+/-- Absolute mmap base address (page-aligned). -/
+def absVaddr (r : Region) : UInt64 := r.base + r.pageVaddr
+
+/-- Length of the entire region — same as `pageLength`. -/
+abbrev length (r : Region) : UInt64 := r.pageLength
+
+/-- POSIX `PROT_*` bits derived from gabi `PF_*`. -/
+def prot (r : Region) : UInt32 :=
+  (if r.seg.perm.read  then (1 : UInt32) else 0) |||
+  (if r.seg.perm.write then (2 : UInt32) else 0) |||
+  (if r.seg.perm.exec  then (4 : UInt32) else 0)
+
+-- ----------------------------------------------------------------------------
+-- BSS split — two regimes:
+--
+--   • Partial-page BSS: bytes from `filesz` to the end of the
+--     overlay's last partial page. These pages are file-backed
+--     (mmap'd from the file), and the bytes past EOF are *not*
+--     guaranteed to be zero — the linker might leave non-zero data
+--     there. We zero them explicitly via `partialBssAddr/Len`.
+--
+--   • Anon BSS: bytes past the file overlay, i.e. full pages of BSS
+--     that have no file backing. These are anonymous mappings; the
+--     kernel zero-fills `MAP_ANONYMOUS` pages, so `mmapReserve` over
+--     this span is sufficient — no explicit zero needed.
+-- ----------------------------------------------------------------------------
+
+/-- True when the segment has any file-backed bytes. -/
+def hasFileBacked (r : Region) : Bool := r.fileOverlayLen > 0
+
+/-- Absolute start of the partial-page BSS zero-fill window. Inside
+    the file overlay, between `filesz` and the overlay's page-aligned
+    end. -/
+def partialBssAddr (r : Region) : UInt64 :=
+  r.absVaddr + r.pageInset + r.seg.filesz
+
+/-- Length of the partial-page BSS. -/
+def partialBssLen (r : Region) : UInt64 :=
+  r.fileOverlayLen - (r.pageInset + r.seg.filesz)
+
+/-- True iff there are partial-page BSS bytes to zero. -/
+def hasPartialBss (r : Region) : Bool := r.partialBssLen > 0
+
+/-- Absolute start of the full-page BSS region (past the overlay). -/
+def anonBssAddr (r : Region) : UInt64 := r.absVaddr + r.fileOverlayLen
+
+/-- Length of the full-page BSS region. -/
+def anonBssLen (r : Region) : UInt64 := r.length - r.fileOverlayLen
+
+/-- True iff the segment has full-page BSS past the file overlay. -/
+def hasAnonBss (r : Region) : Bool := r.anonBssLen > 0
+
+-- ----------------------------------------------------------------------------
+-- Structural-soundness theorems for the page math.
+-- ----------------------------------------------------------------------------
+
+/-- Page-aligned vaddr is ≤ raw vaddr. -/
+theorem pageVaddr_le_vaddr (r : Region) : r.pageVaddr ≤ r.seg.vaddr :=
+  alignDown_le _ _
+
+/-- The BSS / patch write window fits inside the page-aligned mmap
+    region. Discharged from `Segment.addrBound`. -/
+theorem insetMemszLePageLength (r : Region) :
+    r.pageInset.toNat + r.seg.memsz.toNat ≤ r.pageLength.toNat := by
+  let ea := effectiveAlign r.seg.align
+  have h_ea_ne : ea ≠ 0 := effectiveAlign_ne_zero r.seg.align
+  have h_pv_le_v : r.pageVaddr ≤ r.seg.vaddr := r.pageVaddr_le_vaddr
+  have h_pv_le_v_nat : r.pageVaddr.toNat ≤ r.seg.vaddr.toNat :=
+    UInt64.le_iff_toNat_le.mp h_pv_le_v
+  have h_vmea : (r.seg.vaddr + r.seg.memsz).toNat + ea.toNat < 2^64 := by
+    have h_vm_no_wrap : r.seg.vaddr.toNat + r.seg.memsz.toNat < 2^64 := by
+      have := ea_no_wrap r.seg.vaddr r.seg.memsz r.seg.align r.seg.addrBound; omega
+    have h_vm_eq : (r.seg.vaddr + r.seg.memsz).toNat
+        = r.seg.vaddr.toNat + r.seg.memsz.toNat := by
+      rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_vm_no_wrap
+    rw [h_vm_eq]; exact ea_no_wrap _ _ _ r.seg.addrBound
+  have h_au_ge : r.seg.vaddr + r.seg.memsz ≤ alignUp (r.seg.vaddr + r.seg.memsz) ea :=
+    alignUp_ge _ _ h_ea_ne h_vmea
+  have h_au_ge_nat :
+      r.seg.vaddr.toNat + r.seg.memsz.toNat ≤
+        (alignUp (r.seg.vaddr + r.seg.memsz) ea).toNat := by
+    have h_vm_eq : (r.seg.vaddr + r.seg.memsz).toNat
+        = r.seg.vaddr.toNat + r.seg.memsz.toNat := by
+      have h_vm_no_wrap : r.seg.vaddr.toNat + r.seg.memsz.toNat < 2^64 := by
+        have := ea_no_wrap r.seg.vaddr r.seg.memsz r.seg.align r.seg.addrBound; omega
+      rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_vm_no_wrap
+    have := UInt64.le_iff_toNat_le.mp h_au_ge; rw [h_vm_eq] at this; exact this
+  have h_au_le_pv :
+      r.pageVaddr ≤ alignUp (r.seg.vaddr + r.seg.memsz) ea := by
+    apply UInt64.le_iff_toNat_le.mpr; omega
+  have h_pl_nat : r.pageLength.toNat =
+      (alignUp (r.seg.vaddr + r.seg.memsz) ea).toNat - r.pageVaddr.toNat := by
+    show (alignUp _ _ - r.pageVaddr).toNat = _
+    rw [UInt64.toNat_sub_of_le _ _ h_au_le_pv]
+  have h_pi_nat : r.pageInset.toNat = r.seg.vaddr.toNat - r.pageVaddr.toNat := by
+    show (r.seg.vaddr - r.pageVaddr).toNat = _
+    rw [UInt64.toNat_sub_of_le _ _ h_pv_le_v]
+  rw [h_pi_nat, h_pl_nat]; omega
+
+/-- Two regions are disjoint when their `[pageVaddr, pageEndAddr)`
+    ranges don't overlap. -/
+def disjoint (r₁ r₂ : Region) : Prop :=
+  r₁.pageEndAddr ≤ r₂.pageVaddr ∨ r₂.pageEndAddr ≤ r₁.pageVaddr
+
+end Region
 
 -- ============================================================================
 -- ObjectLayout — per-object plan with chosen base.
 -- ============================================================================
 
-/-- Layout for a single loaded object.
-
-    `base` is the absolute mmap address at which the object's
-    segments will be placed. For `ET_EXEC` (vaddrs already absolute)
-    `base = 0`. For `ET_DYN`, Layout picks `base = dynAnchor +
-    cumulative_offset` so each object lives in its own non-overlapping
-    slot starting at `dynAnchor`. -/
+/-- Layout for a single loaded object. `base` is the absolute mmap
+    address at which the object's segments will be placed. For
+    `ET_EXEC` (vaddrs already absolute) `base = 0`. For `ET_DYN`,
+    Layout picks `base = dynAnchor + cumulative_offset` so each
+    object lives in its own non-overlapping slot starting at
+    `dynAnchor`. -/
 structure ObjectLayout where
-  /-- Absolute mmap base address chosen by Layout. -/
-  base      : UInt64
-  segments  : Array Elaborate.Segment
+  base   : UInt64
   /-- The `e_entry` field. `none` for objects we never enter. -/
-  entry     : Option UInt64
+  entry  : Option UInt64
   /-- True for the main executable. -/
-  isMain    : Bool
+  isMain : Bool
 
 /-- Hardcoded anchor for the first `ET_DYN` object. Picked to avoid
     colliding with the host process's typical mappings on x86-64 /
@@ -78,240 +301,138 @@ def dynAnchor : UInt64 := 0x80000000
 
 /-- The contiguous span an array of segments needs (relative to the
     object's base). -/
-def objectSpan (segments : Array Elaborate.Segment) : UInt64 :=
-  segments.foldl (init := 0) fun acc s => max acc s.pageEndAddr
-
-/-- The contiguous span of one object's segments. -/
-def ObjectLayout.span (lyt : ObjectLayout) : UInt64 :=
-  objectSpan lyt.segments
+def objectSpan (base : UInt64) (segments : Array Segment) : UInt64 :=
+  segments.foldl (init := 0) fun acc s =>
+    max acc (Region.mk base s).pageEndAddr
 
 /-- Layout for a single elaborated ELF. -/
-def objectLayout (isMain : Bool) (base : UInt64) (elf : Elaborate.Elf) : ObjectLayout :=
+def objectLayout (isMain : Bool) (base : UInt64) (elf : Elf) : ObjectLayout :=
   let entry := if isMain then some elf.entry else none
-  { base, segments := elf.segments, entry, isMain }
+  { base, entry, isMain }
 
 /-- Segments are pairwise disjoint. -/
-def ObjectLayout.segmentsPairwiseDisjoint (lyt : ObjectLayout) : Prop :=
-  ∀ i j (_ : i < lyt.segments.size) (_ : j < lyt.segments.size),
-    i ≠ j → Elaborate.Segment.disjoint lyt.segments[i] lyt.segments[j]
+def segmentsPairwiseDisjoint (base : UInt64) (segs : Array Segment) : Prop :=
+  ∀ i j (_ : i < segs.size) (_ : j < segs.size),
+    i ≠ j → Region.disjoint (Region.mk base segs[i]) (Region.mk base segs[j])
 
 /-- Segments are sorted by page-aligned vaddr with each one's end ≤
-    the next one's start. Bounded ∀ so Lean derives `Decidable`
-    automatically. -/
-def ObjectLayout.segmentsSorted (lyt : ObjectLayout) : Prop :=
-  ∀ i, ∀ _ : i < lyt.segments.size, ∀ j, ∀ _ : j < lyt.segments.size,
-    i < j → lyt.segments[i].pageEndAddr ≤ lyt.segments[j].pageVaddr
+    the next one's start. -/
+def segmentsSorted (base : UInt64) (segs : Array Segment) : Prop :=
+  ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
+    i < j → (Region.mk base segs[i]).pageEndAddr ≤
+            (Region.mk base segs[j]).pageVaddr
 
-instance (lyt : ObjectLayout) : Decidable lyt.segmentsSorted := by
-  unfold ObjectLayout.segmentsSorted; infer_instance
-
-/-- Decidable Bool mirror of `segmentsSorted`. -/
-def ObjectLayout.segmentsSortedB (lyt : ObjectLayout) : Bool :=
-  decide lyt.segmentsSorted
-
-/-- Forward bridge: the runtime check decides the proof-level invariant. -/
-theorem ObjectLayout.segmentsSorted_of_segmentsSortedB
-    (lyt : ObjectLayout) (h : lyt.segmentsSortedB = true) :
-    lyt.segmentsSorted := of_decide_eq_true h
+instance (base : UInt64) (segs : Array Segment) :
+    Decidable (segmentsSorted base segs) := by
+  unfold segmentsSorted; infer_instance
 
 -- ============================================================================
--- Layout-stage entry point.
+-- Layout-stage entry points.
 -- ============================================================================
 
-/-- Assign an mmap base to each object in BFS order. `.exec`
-    objects keep `0`; `.dyn` (and others) start at `dynAnchor` and
-    stack by `alignUp objectSpan 0x1000`. -/
-def assignBases (g : ObjectList) : Array UInt64 :=
-  let f : (Array UInt64 × UInt64) → LoadedObject → (Array UInt64 × UInt64) :=
-    fun (bases, cursor) obj =>
-      if obj.elf.elfType == .exec then
+/-- Assign an mmap base to each elf in BFS order. `.exec` objects
+    keep `0`; `.dyn` (and others) start at `dynAnchor` and stack by
+    `alignUp objectSpan 0x1000`. -/
+def assignBases (elfs : Array Elf) : Array UInt64 :=
+  let f : (Array UInt64 × UInt64) → Elf → (Array UInt64 × UInt64) :=
+    fun (bases, cursor) elf =>
+      if elf.elfType == .exec then
         (bases.push 0, cursor)
       else
-        let advance := alignUp (objectSpan obj.elf.segments) 0x1000
+        let advance := alignUp (objectSpan 0 elf.segments) 0x1000
         (bases.push cursor, cursor + advance)
-  (g.val.foldl (init := (Array.mkEmpty g.val.size, dynAnchor)) f).fst
+  (elfs.foldl (init := (Array.mkEmpty elfs.size, dynAnchor)) f).fst
 
-/-- `assignBases` produces one base per object — the size matches the
-    input dep graph by construction. Lets downstream consumers index
-    `bases[i]` totally instead of falling back to `?.getD 0`. -/
-theorem assignBases_size (g : ObjectList) : (assignBases g).size = g.val.size := by
+theorem assignBases_size (elfs : Array Elf) : (assignBases elfs).size = elfs.size := by
   unfold assignBases
   let motive : Nat → Array UInt64 × UInt64 → Prop := fun n p => p.fst.size = n
-  show motive g.val.size _
+  show motive elfs.size _
   refine Array.foldl_induction motive ?_ ?_
-  · show (Array.mkEmpty g.val.size).size = 0; simp
+  · show (Array.mkEmpty elfs.size).size = 0; simp
   · intro idx ⟨bases, cursor⟩ ih
     have ih' : bases.size = idx.val := ih
-    show (if (g.val[idx.val].elf.elfType == Elaborate.ElfType.exec) = true
+    show (if (elfs[idx.val].elfType == Elaborate.ElfType.exec) = true
             then (bases.push 0, cursor)
             else (bases.push cursor, cursor + _)).fst.size = idx.val + 1
-    by_cases hExec : (g.val[idx.val].elf.elfType == Elaborate.ElfType.exec) = true
+    by_cases hExec : (elfs[idx.val].elfType == Elaborate.ElfType.exec) = true
     · rw [if_pos hExec]; simp [ih']
     · rw [if_neg hExec]; simp [ih']
 
-section Example
-
-/-- Synthetic segment at `vaddr` of `memsz` bytes (page-aligned 0x1000),
-    built via `Segment.ofPhdr`. The `Except` is unwrapped to `Option`;
-    callers use `synthEt` (below) which threads the Option through to
-    a possibly-empty `segments` array. Used by the `assignBases`
-    examples to produce objects with non-zero spans so the stacking
-    arithmetic is actually exercised. -/
-private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
-  let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
-    p_type := Parse.PT_LOAD,
-    p_vaddr := vaddr, p_memsz := memsz,
-    p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Elaborate.Segment.ofPhdr phdr #[] #[]).toOption
-
-/-- Vacuous well-formedness for a singleton segments array: the
-    quantifiers are over `i < j` with both `< 1`, which is unsatisfiable.
-    Phrased on the spec view (`segments.map (·.toRawSegment)`) since
-    `Elaborate.WellFormed` takes `Array RawSegment`. -/
-private theorem WellFormed_singleton (s : Elaborate.Segment) :
-    Elaborate.WellFormed (#[s].map (·.toRawSegment)) := by
-  refine ⟨?_, ?_⟩
-  all_goals intro i hi j hj hij; simp at hi hj; omega
-
-private def synthEt (name : String) (et : Elaborate.ElfType)
-    (segments : Array Elaborate.Segment := #[])
-    (segmentsWf : Elaborate.WellFormed (segments.map (·.toRawSegment)) := by
-       simpa using Elaborate.WellFormed_nil) :
-    Discover.LoadedObject :=
-  let elf : Elaborate.Elf :=
-    { (default : Elaborate.Elf) with elfType := et, segments, segmentsWf }
-  { name, path := s!"<synth:{name}>", handle := none, elf }
-
-private def synthList (objs : Array Discover.LoadedObject) (h : 0 < objs.size) :
-    Discover.ObjectList := ⟨objs, h⟩
-
-#guard assignBases (synthList #[synthEt "main" .exec] (by simp)) = #[0]
-#guard assignBases (synthList #[synthEt "lib" .dyn] (by simp)) = #[dynAnchor]
-
--- Stacking test: each .dyn lib has a 0x2000-byte span (one PT_LOAD at
--- vaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
--- alignUp 0x2000 0x1000 = 0x2000`. So libfoo gets dynAnchor, libbar
--- gets dynAnchor + 0x2000. The .exec keeps base 0 and doesn't move
--- the cursor.
-private def stackingExample : Option (Array UInt64) := do
-  let seg ← synthSegment? 0 0x2000
-  let libObj (n : String) := synthEt n .dyn (segments := #[seg])
-                                            (segmentsWf := WellFormed_singleton seg)
-  some (assignBases (synthList #[synthEt "main" .exec, libObj "libfoo", libObj "libbar"]
-                                (by simp)))
-
-#guard stackingExample = some #[0, dynAnchor, dynAnchor + 0x2000]
-end Example
-
-end LeanLoad.Layout
-
-namespace LeanLoad.Discover.ObjectList
-
-open LeanLoad.Layout
-
-/-- Build the per-object layouts for a discovered dep graph. `bases`
-    has provably one entry per object (`assignBases_size`), so the
-    in-loop `bases[i]` is total — no `?.getD` fallback. -/
-def layouts (g : ObjectList) :
+/-- Build the per-elf layouts. The `segmentsSorted` witness is on the
+    *base-zero* segments view; that's a vaddr-only check (page math
+    is invariant under base translation). -/
+def layouts (elfs : Array Elf) :
     Except String { a : Array ObjectLayout //
-      a.size = g.val.size ∧
-      ∀ (i : Nat) (h : i < a.size), a[i].segmentsSorted } :=
-  let bases := assignBases g
-  have hBases : bases.size = g.val.size := assignBases_size g
-  let arr := g.val.mapFinIdx fun i obj h =>
-    objectLayout (i == 0) (bases[i]'(hBases ▸ h)) obj.elf
-  match harr : arr.findIdx? (fun lyt => lyt.segmentsSortedB == false) with
+      a.size = elfs.size ∧
+      ∀ (i : Nat) (h : i < elfs.size), segmentsSorted 0 elfs[i].segments } :=
+  let bases := assignBases elfs
+  have hBases : bases.size = elfs.size := assignBases_size elfs
+  let arr := elfs.mapFinIdx fun i elf h =>
+    objectLayout (i == 0) (bases[i]'(hBases ▸ h)) elf
+  match harr : elfs.findIdx? (fun elf => ¬ segmentsSorted 0 elf.segments) with
   | some i =>
-    let name := (g.val[i]?.map (·.name)).getD "?"
-    .error s!"layouts: object[{i}] ({name}) has malformed PT_LOAD segments"
+    .error s!"layouts: object[{i}] has malformed PT_LOAD segments"
   | none =>
     .ok ⟨arr, by
       refine ⟨by simp [arr], ?_⟩
       intro i hi
-      have hall : ∀ x ∈ arr, (x.segmentsSortedB == false) = false :=
+      have hall : ∀ x ∈ elfs, decide (¬ segmentsSorted 0 x.segments) = false :=
         Array.findIdx?_eq_none_iff.mp harr
-      have hi_in : arr[i] ∈ arr := Array.getElem_mem hi
-      have hb : arr[i].segmentsSortedB = true := by
-        have := hall arr[i] hi_in
-        simp at this
-        exact this
-      exact ObjectLayout.segmentsSorted_of_segmentsSortedB _ hb⟩
-
-end LeanLoad.Discover.ObjectList
+      have hi_in : elfs[i] ∈ elfs := Array.getElem_mem hi
+      have := hall elfs[i] hi_in
+      simp at this
+      exact this⟩
 
 -- ============================================================================
--- Layout-stage spec theorems and runtime-bound proofs.
+-- Bounds proofs consumed by Apply.
 -- ============================================================================
 
-namespace LeanLoad.Layout
-
-open LeanLoad.Discover
-open LeanLoad.Elaborate
-
-theorem segment_endAddr_le_objectSpan
-    (lyt : ObjectLayout) (i : Nat) (h : i < lyt.segments.size) :
-    lyt.segments[i].pageEndAddr ≤ objectSpan lyt.segments := by
-  let motive : Nat → UInt64 → Prop := fun n acc =>
-    ∀ k (_ : k < n) (_ : k < lyt.segments.size),
-      lyt.segments[k].pageEndAddr ≤ acc
-  suffices motive lyt.segments.size (objectSpan lyt.segments) from this i h h
-  unfold objectSpan
-  refine Array.foldl_induction motive ?_ ?_
-  · intros _ hk _; omega
-  · intro idx b ih k hk hk'
-    by_cases hkj : k = idx.val
-    · have hindex : lyt.segments[k] = lyt.segments[idx] := by congr 1
-      rw [hindex]
-      show _ ≤ ite _ _ _
-      split
-      · exact UInt64.le_refl _
-      · rename_i hnle; exact (UInt64.le_total b _).resolve_left hnle
-    · have hk_lt : k < idx.val :=
-        Nat.lt_of_le_of_ne (Nat.le_of_lt_succ hk) hkj
-      have prev_le : lyt.segments[k].pageEndAddr ≤ b := ih k hk_lt hk'
-      show _ ≤ ite _ _ _
-      split
-      · rename_i hb_le; exact UInt64.le_trans prev_le hb_le
-      · exact prev_le
-
-theorem bss_inRange (s : Segment) :
-    Runtime.Region.InRange s.pageLength
-      (s.pageInset + s.filesz) (s.memsz - s.filesz) := by
-  have h_fm := s.fileszLeMemsz
-  have h_inset := s.insetMemszLePageLength
-  have h_fm_nat : s.filesz.toNat ≤ s.memsz.toNat := UInt64.le_iff_toNat_le.mp h_fm
-  have h_pif_no_wrap : s.pageInset.toNat + s.filesz.toNat < 2^64 := by
-    have h_2_64 : s.pageLength.toNat < 2^64 := s.pageLength.toNat_lt
+/-- The BSS write window fits inside the segment's page-aligned mmap
+    range. -/
+theorem bss_inRange (r : Region) :
+    InRange r.pageLength
+      (r.pageInset + r.seg.filesz) (r.seg.memsz - r.seg.filesz) := by
+  have h_fm := r.seg.fileszLeMemsz
+  have h_inset := r.insetMemszLePageLength
+  have h_fm_nat : r.seg.filesz.toNat ≤ r.seg.memsz.toNat := UInt64.le_iff_toNat_le.mp h_fm
+  have h_pif_no_wrap : r.pageInset.toNat + r.seg.filesz.toNat < 2^64 := by
+    have h_2_64 : r.pageLength.toNat < 2^64 := r.pageLength.toNat_lt
     omega
-  have h_pif_nat : (s.pageInset + s.filesz).toNat = s.pageInset.toNat + s.filesz.toNat := by
+  have h_pif_nat : (r.pageInset + r.seg.filesz).toNat
+      = r.pageInset.toNat + r.seg.filesz.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_pif_no_wrap
-  have h_mf_nat : (s.memsz - s.filesz).toNat = s.memsz.toNat - s.filesz.toNat := by
+  have h_mf_nat : (r.seg.memsz - r.seg.filesz).toNat
+      = r.seg.memsz.toNat - r.seg.filesz.toNat := by
     rw [UInt64.toNat_sub_of_le _ _ h_fm]
   refine ⟨?_, ?_⟩
   · rw [UInt64.le_iff_toNat_le, h_pif_nat]; omega
-  · have h_le1 : s.pageInset + s.filesz ≤ s.pageLength := by
+  · have h_le1 : r.pageInset + r.seg.filesz ≤ r.pageLength := by
       rw [UInt64.le_iff_toNat_le, h_pif_nat]; omega
     rw [UInt64.le_iff_toNat_le, h_mf_nat,
         UInt64.toNat_sub_of_le _ _ h_le1, h_pif_nat]
     omega
 
-theorem patch_inRange (s : Segment) (r : LeanLoad.Parse.RawRela)
-    (h_cov : Elaborate.coversRela s.vaddr s.memsz r) :
-    Runtime.Region.InRange s.pageLength (r.r_offset - s.pageVaddr) 8 := by
+/-- A rela's 8-byte write window fits inside the segment's mmap
+    range. -/
+theorem patch_inRange (r : Region) (r_offset : UInt64)
+    (h_cov : Elaborate.coversRela r.seg.vaddr r.seg.memsz r_offset) :
+    InRange r.pageLength (r_offset - r.pageVaddr) 8 := by
   obtain ⟨h_lo, h_hi⟩ := h_cov
-  have h_inset := s.insetMemszLePageLength
-  have h_pv_le_v : s.pageVaddr ≤ s.vaddr := s.pageVaddr_le_vaddr
-  have h_pv_le_v_nat : s.pageVaddr.toNat ≤ s.vaddr.toNat :=
+  have h_inset := r.insetMemszLePageLength
+  have h_pv_le_v : r.pageVaddr ≤ r.seg.vaddr := r.pageVaddr_le_vaddr
+  have h_pv_le_v_nat : r.pageVaddr.toNat ≤ r.seg.vaddr.toNat :=
     UInt64.le_iff_toNat_le.mp h_pv_le_v
-  have h_pi_nat : s.pageInset.toNat = s.vaddr.toNat - s.pageVaddr.toNat := by
-    rw [s.pageInset_eq, UInt64.toNat_sub_of_le _ _ h_pv_le_v]
-  have h_pv_le_ro : s.pageVaddr ≤ r.r_offset := by
+  have h_pi_nat : r.pageInset.toNat = r.seg.vaddr.toNat - r.pageVaddr.toNat := by
+    show (r.seg.vaddr - r.pageVaddr).toNat = _
+    rw [UInt64.toNat_sub_of_le _ _ h_pv_le_v]
+  have h_pv_le_ro : r.pageVaddr ≤ r_offset := by
     apply UInt64.le_iff_toNat_le.mpr; omega
-  have h_off_nat : (r.r_offset - s.pageVaddr).toNat = r.r_offset.toNat - s.pageVaddr.toNat := by
+  have h_off_nat : (r_offset - r.pageVaddr).toNat
+      = r_offset.toNat - r.pageVaddr.toNat := by
     rw [UInt64.toNat_sub_of_le _ _ h_pv_le_ro]
   refine ⟨?_, ?_⟩
   · rw [UInt64.le_iff_toNat_le, h_off_nat]; omega
-  · have h_le1 : r.r_offset - s.pageVaddr ≤ s.pageLength := by
+  · have h_le1 : r_offset - r.pageVaddr ≤ r.pageLength := by
       rw [UInt64.le_iff_toNat_le, h_off_nat]; omega
     rw [UInt64.le_iff_toNat_le, UInt64.toNat_sub_of_le _ _ h_le1, h_off_nat]
     show (8 : UInt64).toNat ≤ _
@@ -319,8 +440,7 @@ theorem patch_inRange (s : Segment) (r : LeanLoad.Parse.RawRela)
     rw [h_eight]; omega
 
 theorem inRange_4_of_8 {size offset : UInt64}
-    (h : Runtime.Region.InRange size offset 8) :
-    Runtime.Region.InRange size offset 4 := by
+    (h : InRange size offset 8) : InRange size offset 4 := by
   refine ⟨h.1, ?_⟩
   have h_eight : (8 : UInt64).toNat = 8 := rfl
   have h_four  : (4 : UInt64).toNat = 4 := rfl
@@ -328,26 +448,5 @@ theorem inRange_4_of_8 {size offset : UInt64}
   rw [h_eight] at this
   apply UInt64.le_iff_toNat_le.mpr
   rw [h_four]; omega
-
-theorem segmentsPairwiseDisjoint_of_segmentsSorted
-    (lyt : ObjectLayout) (h : lyt.segmentsSorted) :
-    lyt.segmentsPairwiseDisjoint := by
-  intro i j hi hj hne
-  rcases Nat.lt_or_ge i j with hlt | hge
-  · exact Or.inl (h i hi j hj hlt)
-  · have hgt : j < i := Nat.lt_of_le_of_ne hge (Ne.symm hne)
-    exact Or.inr (h j hj i hi hgt)
-
-theorem ObjectLayout.segmentsSortedB_iff_segmentsSorted (lyt : ObjectLayout) :
-    lyt.segmentsSortedB = true ↔ lyt.segmentsSorted :=
-  ⟨of_decide_eq_true, decide_eq_true⟩
-
-theorem ObjectList.layouts_segmentsPairwiseDisjoint
-    (g : ObjectList)
-    {a : Array ObjectLayout}
-    (h : a.size = g.val.size ∧ ∀ (i : Nat) (hi : i < a.size), a[i].segmentsSorted)
-    (i : Nat) (hi : i < a.size) :
-    a[i].segmentsPairwiseDisjoint :=
-  segmentsPairwiseDisjoint_of_segmentsSorted _ (h.right i hi)
 
 end LeanLoad.Layout

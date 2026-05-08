@@ -22,17 +22,17 @@ import LeanLoad.Parse.RawElf
 import LeanLoad.Elaborate.Header
 import LeanLoad.Elaborate.Strtab
 import LeanLoad.Elaborate.Symbol
-import LeanLoad.Elaborate.RawSegment
 import LeanLoad.Elaborate.Segment
-import LeanLoad.Elaborate.WellFormed
 import LeanLoad.Elaborate.Reloc
 import LeanLoad.Elaborate.Elf
 
+import LeanLoad.Runtime
+import LeanLoad.MemoryOp
+
 import LeanLoad.Plan.Layout
-import LeanLoad.Plan.Discover
-import LeanLoad.Discover
+import LeanLoad.Discover.Plan
+import LeanLoad.Discover.IO
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Init
 import LeanLoad.Exec
-import LeanLoad.Runtime

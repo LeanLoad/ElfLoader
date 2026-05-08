@@ -123,9 +123,9 @@ open LeanLoad
 open LeanLoad.Parse
 
 /-- `pread` `len` bytes at `offset` and run `parser` from the start. -/
-private def parseSection {α} (rt : Runtime.Ops) (h : Runtime.FileHandle)
+private def parseSection {α} (h : Runtime.FileHandle)
     (label : String) (offset : UInt64) (len : UInt64) (parser : Parser α) : IO α := do
-  let bytes ← rt.pread h offset len
+  let bytes ← Runtime.pread h offset len
   match Parser.run bytes parser with
   | .ok v    => pure v
   | .error e => throw (IO.userError s!"parse {label}: {e}")
@@ -143,65 +143,65 @@ private def vaToOffsetIO (phdrs : Array RawPhdr) (label : String)
 -- actually needs (no shared state), so each is testable in isolation.
 -- ============================================================================
 
-private def parseEhdr (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawEhdr :=
-  parseSection rt h "ehdr" 0 64 (BytesDecode.decode : Parser RawEhdr)
+private def parseEhdr (h : Runtime.FileHandle) : IO RawEhdr :=
+  parseSection h "ehdr" 0 64 (BytesDecode.decode : Parser RawEhdr)
 
-private def parsePhdrs (rt : Runtime.Ops) (h : Runtime.FileHandle)
+private def parsePhdrs (h : Runtime.FileHandle)
     (header : RawEhdr) : IO (Array RawPhdr) :=
   let nbytes := (header.e_phnum.toNat * RawPhdrSize).toUInt64
-  parseSection rt h "phdrs" header.e_phoff nbytes
+  parseSection h "phdrs" header.e_phoff nbytes
     (decodeArray (α := RawPhdr) 0 header.e_phnum.toNat)
 
-private def parseDynamic (rt : Runtime.Ops) (h : Runtime.FileHandle)
+private def parseDynamic (h : Runtime.FileHandle)
     (phdrs : Array RawPhdr) : IO (Array RawDyn) :=
   match phdrs.find? (·.p_type == PT_DYNAMIC) with
   | none    => pure #[]
   | some ph =>
-    parseSection rt h "dynamic" ph.p_offset ph.p_filesz
+    parseSection h "dynamic" ph.p_offset ph.p_filesz
       (Parse.Dynamic.parseTable 0 ph.p_filesz.toNat)
 
-private def parseStrtab (rt : Runtime.Ops) (h : Runtime.FileHandle)
+private def parseStrtab (h : Runtime.FileHandle)
     (phdrs : Array RawPhdr) (dyn : Array RawDyn) : IO RawStrtab :=
   match Parse.Dynamic.pair? dyn DT_STRTAB DT_STRSZ with
   | none             => pure (ByteArray.mk #[])
   | some (vaddr, sz) => do
     let off ← vaToOffsetIO phdrs "DT_STRTAB" vaddr
-    rt.pread h off.toUInt64 sz
+    Runtime.pread h off.toUInt64 sz
 
 /-- Read `nchain` from `DT_HASH` to derive the dynsym count. The
     build's `--hash-style=both` guarantees `DT_HASH` is present;
     GNU-only outputs would require chain walking we don't model. -/
-private def parseSymCount (rt : Runtime.Ops) (h : Runtime.FileHandle)
+private def parseSymCount (h : Runtime.FileHandle)
     (phdrs : Array RawPhdr) (dyn : Array RawDyn) : IO Nat :=
   match Parse.Dynamic.val? dyn DT_HASH with
   | none => pure 0
   | some hashVa => do
     let off ← vaToOffsetIO phdrs "DT_HASH" hashVa
-    parseSection rt h "DT_HASH" off.toUInt64 8
+    parseSection h "DT_HASH" off.toUInt64 8
       (do let _ ← u32le; let nchain ← u32le; return nchain.toNat)
 
-private def parseSymtab (rt : Runtime.Ops) (h : Runtime.FileHandle)
+private def parseSymtab (h : Runtime.FileHandle)
     (phdrs : Array RawPhdr) (dyn : Array RawDyn) (symCount : Nat) : IO (Array RawSym) :=
   if symCount == 0 then pure #[]
   else match Parse.Dynamic.val? dyn DT_SYMTAB with
     | none       => pure #[]
     | some vaddr => do
       let off ← vaToOffsetIO phdrs "DT_SYMTAB" vaddr
-      parseSection rt h "DT_SYMTAB" off.toUInt64 (symCount * RawSymSize).toUInt64
+      parseSection h "DT_SYMTAB" off.toUInt64 (symCount * RawSymSize).toUInt64
         (decodeArray (α := RawSym) 0 symCount)
 
 /-- Read a fixed-size sized table from a `(addrTag, sizeTag)` pair in
     `.dynamic`: `addrTag` gives the table's vaddr, `sizeTag` its byte
     size. Returns `#[]` if either tag is absent. -/
 private def parseSizedTable {α} [BytesDecode α] (entrySize : Nat)
-    (rt : Runtime.Ops) (h : Runtime.FileHandle)
+    (h : Runtime.FileHandle)
     (phdrs : Array RawPhdr) (dyn : Array RawDyn)
     (addrTag sizeTag : UInt64) (label : String) : IO (Array α) := do
   match Parse.Dynamic.pair? dyn addrTag sizeTag with
   | none             => pure #[]
   | some (vaddr, sz) =>
     let off ← vaToOffsetIO phdrs label vaddr
-    parseSection rt h label off.toUInt64 sz
+    parseSection h label off.toUInt64 sz
       (decodeArray (α := α) 0 (sz.toNat / entrySize))
 
 -- ============================================================================
@@ -213,21 +213,21 @@ private def parseSizedTable {α} [BytesDecode α] (entrySize : Nat)
 /-- Parse an ELF file via per-section `pread`s on a `FileHandle`.
     Each section's bytes live in their own small `ByteArray` and are
     GC'd after parsing — no whole-file `ByteArray` is constructed. -/
-def parse (rt : Runtime.Ops) (h : Runtime.FileHandle) : IO RawElf := do
-  let header   ← parseEhdr rt h
-  let phdrs    ← parsePhdrs rt h header
-  let dyn      ← parseDynamic rt h phdrs
-  let strtab   ← parseStrtab rt h phdrs dyn
-  let symCount ← parseSymCount rt h phdrs dyn
-  let symtab   ← parseSymtab rt h phdrs dyn symCount
+def parse (h : Runtime.FileHandle) : IO RawElf := do
+  let header   ← parseEhdr h
+  let phdrs    ← parsePhdrs h header
+  let dyn      ← parseDynamic h phdrs
+  let strtab   ← parseStrtab h phdrs dyn
+  let symCount ← parseSymCount h phdrs dyn
+  let symtab   ← parseSymtab h phdrs dyn symCount
 
   let needed   := (Parse.Dynamic.findAll dyn DT_NEEDED).map (·.d_un)
   let soname   := Parse.Dynamic.val? dyn DT_SONAME
   let runpath  := Parse.Dynamic.val? dyn DT_RUNPATH <|> Parse.Dynamic.val? dyn DT_RPATH
 
-  let rela     ← parseSizedTable RawRelaSize rt h phdrs dyn DT_RELA       DT_RELASZ       "DT_RELA"
-  let jmprel   ← parseSizedTable RawRelaSize rt h phdrs dyn DT_JMPREL     DT_PLTRELSZ     "DT_JMPREL"
-  let initArr  ← parseSizedTable 8           rt h phdrs dyn DT_INIT_ARRAY DT_INIT_ARRAYSZ "DT_INIT_ARRAY"
+  let rela     ← parseSizedTable RawRelaSize h phdrs dyn DT_RELA       DT_RELASZ       "DT_RELA"
+  let jmprel   ← parseSizedTable RawRelaSize h phdrs dyn DT_JMPREL     DT_PLTRELSZ     "DT_JMPREL"
+  let initArr  ← parseSizedTable 8           h phdrs dyn DT_INIT_ARRAY DT_INIT_ARRAYSZ "DT_INIT_ARRAY"
 
   return {
     header, phdrs, dyn, strtab, symtab, needed, soname, runpath,

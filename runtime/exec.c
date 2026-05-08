@@ -79,14 +79,13 @@ LEAN_EXPORT lean_object * leanload_exec_run(
     uint64_t phent,
     uint64_t phnum,
     uint64_t base_va,
-    b_lean_obj_arg stack_region,
+    uint64_t stack_va,
+    uint64_t stack_len,
     b_lean_obj_arg argv0_str,
     lean_object * /* world */) {
 
     if (entry == 0) return leanload_io_err("exec: null entry");
-
-    leanload_region * sr = (leanload_region *)lean_get_external_data(stack_region);
-    if (!sr->addr || sr->length < 4096) {
+    if (!stack_va || stack_len < 4096) {
         return leanload_io_err("exec: stack region missing or too small");
     }
 
@@ -94,7 +93,7 @@ LEAN_EXPORT lean_object * leanload_exec_run(
     size_t argv0_len = strlen(argv0) + 1;
 
     /* Strings near the top of the region. */
-    char * top = (char *)sr->addr + sr->length;
+    char * top = (char *)(uintptr_t)stack_va + stack_len;
     char * argv0_dst = top - argv0_len;
     memcpy(argv0_dst, argv0, argv0_len);
 

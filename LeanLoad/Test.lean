@@ -62,25 +62,26 @@ private def discoverTest (g : ObjectList) : Except String Unit := do
     check (occurrences ≤ 1) s!"{nm} appears {occurrences} times — dedup failed"
 
 private def resolveTest (g : ObjectList) : Except String Unit := do
-  let table := Resolve.buildTable g
+  let elfs := g.val.map (·.elf)
+  let table := Resolve.buildTable elfs
   let firstMissing := (table.missing[0]?.map (·.name)).getD ""
   check (table.missing.size == 0)
     s!"expected 0 missing, got {table.missing.size}; first: {firstMissing}"
   for (sym, expectedProvider) in [("libfoo_print", "libfoo.so"),
                                    ("libbar_step",  "libbar.so"),
                                    ("libbaz_step",  "libbaz.so")] do
-    match Resolve.resolveByName g sym with
+    match Resolve.resolveByName elfs sym with
     | none => .error s!"{sym} did not resolve"
     | some r =>
-      let provider := (g.val[r.objectIdx]?.map (·.name)).getD "?"
+      let provider := (g.val[r.objectIdx.val]?.map (·.name)).getD "?"
       check (provider == expectedProvider)
         s!"{sym} resolved to {provider}, expected {expectedProvider}"
 
 private def layoutTest (g : ObjectList) : Except String Unit := do
-  -- `g.layouts` succeeds → returns a sized subtype; the size proof is
-  -- the second component, so this test now only checks that the
+  -- `Layout.layouts` succeeds → returns a sized subtype; the size
+  -- proof is the second component, so this test only checks that the
   -- well-formedness validation succeeds (size match is by construction).
-  let _ ← g.layouts
+  let _ ← Layout.layouts (g.val.map (·.elf))
   .ok ()
 
 private def orderTest (g : ObjectList) : Except String Unit := do
@@ -91,10 +92,11 @@ private def orderTest (g : ObjectList) : Except String Unit := do
     s!"main (idx 0) should be last in order; got {order}"
 
 private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
-  let layouts ← g.layouts
-  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = g.val.size } :=
+  let elfs := g.val.map (·.elf)
+  let layouts ← Layout.layouts elfs
+  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = elfs.size } :=
     ⟨layouts.val, layouts.property.left⟩
-  let patches := Reloc.plan formula g sizedLayouts (Resolve.buildTable g)
+  let patches := Reloc.plan formula elfs sizedLayouts (Resolve.buildTable elfs)
   check (patches.size > 0) "expected nonzero relocation writes"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +
@@ -118,8 +120,7 @@ def main : IO UInt32 := do
   -- Pure-stage tests own their computations. Only IO state (image)
   -- is captured at the harness level. Stop on first failure.
 
-  let rt := Runtime.Ops.real
-  let g ← Discover.discover rt path
+  let g ← Discover.discover path
   unless ← runStage "Discover" (discoverTest g) do return 1
 
   let main := g.main
