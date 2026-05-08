@@ -84,17 +84,17 @@ LEAN_EXPORT lean_object * leanload_mmap_file(uint32_t fd,
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* Anonymous private mapping pinned at `vaddr` (`MAP_FIXED`). */
-LEAN_EXPORT lean_object * leanload_mmap_reserve(uint64_t vaddr,
-                                                uint64_t len,
-                                                lean_object * /* w */) {
-    void * p = mmap((void *)(uintptr_t)vaddr, (size_t)len,
+/* Kernel-picked anon reservation, `len` bytes. Kernel returns the
+ * chosen base; caller threads it into pure planning. */
+LEAN_EXPORT lean_object * leanload_mmap_alloc(uint64_t len,
+                                              lean_object * /* w */) {
+    void * p = mmap(NULL, (size_t)len,
                     PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) {
         return leanload_io_err(strerror(errno));
     }
-    return lean_io_result_mk_ok(lean_box(0));
+    return lean_io_result_mk_ok(lean_box_uint64((uint64_t)(uintptr_t)p));
 }
 
 /* Anonymous `MAP_STACK` mapping; kernel chooses the address. Returns
@@ -125,20 +125,14 @@ LEAN_EXPORT lean_object * leanload_mprotect(uint64_t addr,
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-/* Write 8 little-endian bytes of `value` at `addr`. */
-LEAN_EXPORT lean_object * leanload_patch64(uint64_t addr,
-                                           uint64_t value,
-                                           lean_object * /* w */) {
-    memcpy((void *)(uintptr_t)addr, &value, 8);
-    return lean_io_result_mk_ok(lean_box(0));
-}
-
-/* Write the low 4 little-endian bytes of `value` at `addr`. */
-LEAN_EXPORT lean_object * leanload_patch32(uint64_t addr,
-                                           uint64_t value,
-                                           lean_object * /* w */) {
-    uint32_t lo = (uint32_t)value;
-    memcpy((void *)(uintptr_t)addr, &lo, 4);
+/* Write the low `size` (4 or 8) little-endian bytes of `value` at
+ * `addr`. The relocation formula computes a uint64; we truncate to
+ * `size` bytes by memcpy'ing only the low ones. */
+LEAN_EXPORT lean_object * leanload_write(uint64_t addr,
+                                         uint8_t size,
+                                         uint64_t value,
+                                         lean_object * /* w */) {
+    memcpy((void *)(uintptr_t)addr, &value, (size_t)size);
     return lean_io_result_mk_ok(lean_box(0));
 }
 

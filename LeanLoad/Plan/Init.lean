@@ -133,15 +133,15 @@ end Example
     (add base); ET_EXEC are absolute. Zero entries are skipped — gabi
     leaves them unspecified, but historical practice (and the table
     layout where zero-terminators are common) treats them as no-ops. -/
-def plan (elfs : Array Elaborate.Elf) (layouts : Array ObjectLayout)
+def plan (elfs : Array Elaborate.Elf) (bases : Array UInt64)
     (order : Array Nat) : Array UInt64 := Id.run do
   let mut addrs : Array UInt64 := #[]
   for objectIdx in order do
-    let some elf := elfs[objectIdx]?    | continue
-    let some lyt := layouts[objectIdx]? | continue
+    let some elf  := elfs[objectIdx]?  | continue
+    let some base := bases[objectIdx]? | continue
     let isExec := elf.elfType == .exec
     for entry in elf.initArr do
-      let fnAddr := if isExec then entry else lyt.base + entry
+      let fnAddr := if isExec then entry else base + entry
       if fnAddr != 0 then addrs := addrs.push fnAddr
   return addrs
 

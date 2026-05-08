@@ -58,15 +58,12 @@ namespace LeanLoad.Elaborate
 
 /-- Width of a relocation write: ELF dynamic relocations write either
     a 32-bit or a 64-bit value at the target. Encoding the choice as
-    a 2-element type means `Exec.applyPatch` dispatches structurally —
-    no `if size = 8 ...` runtime check, no width-validity lookup. -/
+    a 2-element type means `Plan.Reloc.planRela` dispatches
+    structurally — no `if size = 8 …` runtime check, no
+    width-validity lookup. Converted to `UInt8` (4 or 8) at the
+    `MemoryOp.write` boundary. -/
 inductive PatchSize where | b4 | b8
   deriving Repr, BEq
-
-/-- Width as a `Nat`, for diagnostics / `inRange` arithmetic. -/
-def PatchSize.toNat : PatchSize → Nat
-  | .b4 => 4
-  | .b8 => 8
 
 /-- Inputs to a single relocation formula. Notation follows gabi 06. -/
 structure FormulaInputs where

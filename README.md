@@ -34,7 +34,6 @@ https://github.com/ShawnZhong/LeanLoad/blob/7db77ebd080827228f5376478ee5db3e3f12
 ```sh
 ./setup.sh               # one-shot: install system C toolchain, init submodules
 ./run.sh                 # build leanload + examples, run on build/main
-./run.sh build/static    # run on the static fixture
 ./test.sh                # build examples + run the Lean test suite
 ```
 
@@ -47,17 +46,18 @@ https://github.com/ShawnZhong/LeanLoad/blob/7db77ebd080827228f5376478ee5db3e3f12
 
 The audit surface inside the code is `LeanLoad/Parse/` (byte-level
 gabi/abi transcriptions) and `LeanLoad/Elaborate/` (typed views with
-gabi-mandated invariants carried as `Segment` fields). Cross-stage
-theorems (`bss_inRange`, `patch_inRange`, `inRange_4_of_8`,
-`assignBases_size`, `segment_endAddr_le_objectSpan`,
-`segmentsPairwiseDisjoint_of_segmentsSorted`) live alongside the
-constructions they discharge in `LeanLoad/Plan/Layout.lean`.
+gabi-mandated invariants carried as `Segment` fields). Safety
+predicates over the planned `Array MemoryOp`
+(`OverlaysDisjoint` / `OverlaysContained` / `WritesContained` /
+`MprotectsContained`) are decidable and checked at the
+`Realize.planOps` boundary; `MemoryOp.runSafe` only accepts
+witnessed op arrays.
 
 ## Status
 
-- Static binary (no libc): runs end-to-end via `leanload examples/build/static`.
-- Dynamic binary (musl-linked, multi-shared-object closure): runs
-  end-to-end against `examples/build/main`.
+- Dynamic binary (musl-linked, multi-shared-object closure, PIE):
+  runs end-to-end against `examples/build/main`. ET_DYN-only —
+  ET_EXEC inputs are rejected at elaborate time.
 - Differential tests against `ld.so` are not yet wired up.
 
 ## Module layout
@@ -76,34 +76,35 @@ LeanLoad/
     Strtab.lean            NUL-terminated UTF-8 lookup by offset
     Symbol.lean            SymBind / ShnIdx enums + `Symbol` (name pre-resolved)
     Reloc.lean             PatchSize (b4/b8); per-arch formula tables; `formulaFor` dispatch
-    RawSegment.lean        gabi-07 spec-level segment: byte-fields + per-segment invariants
-                           (fileszLeMemsz / alignPow2 / alignCong) + 48-bit addrBound +
-                           per-segment rela arrays
-    Segment.lean           extends `RawSegment` with loader-stage page-aligned views
-                           (pageVaddr / pageLength / fileLenPaged / …) + pre-discharged
-                           arithmetic invariants (`pageVaddr_le_vaddr`, `insetMemszLePageLength`)
-    WellFormed.lean        multi-segment Sorted + NonOverlap, decidable
-    Elf.lean               `Elf` aggregate + `elaborate : RawElf → Except String Elf`
+    Segment.lean           gabi-07 segment with per-segment invariants
+                           (fileszLeMemsz / alignPow2 / alignCong / addrBound) +
+                           page-aligned views + per-segment rela arrays
+    Elf.lean               `Elf` aggregate (with Sorted/NonOverlap PT_LOAD witnesses);
+                           `elaborate : RawElf → Except String Elf` (rejects ET_EXEC)
   Plan/                    pure middle — every stage that produces abstract data
-                           (theorems for the IO-bookend live alongside their construction)
-    Discover.lean          BFS dedup + LoadedObject + ObjectList (non-empty subtype)
     Resolve.lean           SymRef n / Unresolved n / Table n with O(1) HashMap index
-    Layout.lean            ObjectLayout; assignBases (sized output); `g.layouts` validator;
-                           bss_inRange / patch_inRange / segmentsPairwiseDisjoint
-    Reloc.lean             Patch g (Fin segIdx + coversRela witness) + PatchSize dispatch
+    Layout.lean            assignBases (base parameter, kernel-picked in production);
+                           totalSpan; per-Region page math; segmentsSorted validation
+    Reloc.lean             planRela / planObject / plan emit `MemoryOp.write` ops
+                           (4 or 8 bytes) with psABI 32-bit overflow check
     Init.lean              buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
-  Discover.lean            walk DT_NEEDED via IO; thread non-emptiness witness through the loop
-  Exec.lean                IO bookend — realize all plans (mmap + zeroout + mprotect + patch
-                           writes + ctor calls + stack + execAndJump). Does not return.
-  Runtime.lean             @[extern] trust seam (FileHandle, Region, mmap*, patch{32,64}, …)
-  Main.lean                CLI + load / debug orchestration
-  Test.lean                test exe entry — drives every stage except Exec
-  Fixtures.lean            shared synthObj for `#guard` blocks
-runtime/                   C shims (unverified)
-  runtime.h                shared header (decls + helpers)
-  region.c                 mmap / mprotect / write
-  exec.c                   ctor invocation + transfer of control
+    Realize.lean           Region.ops (per-segment mmapFile/zeroout/mprotect);
+                           realizeOps + planOps with decidable safety predicates
+  Discover/
+    Plan.lean              ObjectList non-empty subtype; LoadedObject; BFS dedup
+    IO.lean                walk DT_NEEDED via IO; resolve filenames against runpath
+  Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
+                           mmapAnonAlloc (kernel-picked reservation), mprotect,
+                           write, zeroout, mmapStack, callCtor, execAndJump;
+                           MemoryOp inductive + safety predicates + runSafe
+  Main.lean                CLI + load / debug orchestration; calls mmapAnonAlloc once,
+                           threads base into pure planning, dispatches via runSafe
+  Example.lean             cross-stage `#guard` walkthrough (synthetic fixtures)
+  Test.lean                test exe entry — runs every pure stage on the real fixture
+runtime/
+  Runtime.c                C shims (open / pread / mmap variants / mprotect /
+                           write / zeroout / mmapStack / callCtor / execAndJump)
 docs/                      design.md · plan.md
-examples/                  C sources for showcase binaries
-third_party/               submodules (musl, nolibc, gabi, …)
+examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)
+third_party/               submodules (musl, gabi, …)
 ```

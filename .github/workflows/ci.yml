@@ -22,13 +22,13 @@ jobs:
           path: build
           key: build-${{ runner.os }}-${{ hashFiles('Makefile', 'examples/**', '.gitmodules') }}
 
-      # Init the build deps (musl + nolibc; reference submodules
-      # like gabi/x86-64-ABI are not needed here) and build the
+      # Init the build deps (musl; reference submodules like
+      # gabi/x86-64-ABI are not needed here) and build the
       # fixtures. Skipped on cache hit. Reference docs aren't init'd.
       - name: Build fixtures (musl + examples)
         if: steps.cache-build.outputs.cache-hit != 'true'
         run: |
-          git submodule update --init third_party/musl third_party/nolibc
+          git submodule update --init third_party/musl
           make
 
       - name: Save build/ cache

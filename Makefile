@@ -47,7 +47,7 @@ LDFLAGS := -Wl,-rpath,$(abspath $(BUILD_DIR))/lib \
            -Wl,--hash-style=both
 
 .PHONY: examples
-examples: $(BUILD_DIR)/main $(BUILD_DIR)/static
+examples: $(BUILD_DIR)/main
 $(BUILD_DIR)/main: $(wildcard $(EX_DIR)/*.c $(EX_DIR)/*.h) $(MUSL_CC) | $(BUILD_DIR)
 	$(MUSL_CC) $(LDFLAGS) -fPIC -shared -Wl,-soname,libfoo.so -o $(BUILD_DIR)/libfoo.so $(EX_DIR)/libfoo.c
 	$(MUSL_CC) $(LDFLAGS) -fPIC -shared -Wl,-soname,libbar.so -o $(BUILD_DIR)/libbar.bootstrap.so $(EX_DIR)/libbar.c
@@ -55,27 +55,3 @@ $(BUILD_DIR)/main: $(wildcard $(EX_DIR)/*.c $(EX_DIR)/*.h) $(MUSL_CC) | $(BUILD_
 	$(MUSL_CC) $(LDFLAGS) -fPIC -shared -Wl,-soname,libbar.so $(EX_DIR)/libbar.c -L$(BUILD_DIR) -lbaz -o $(BUILD_DIR)/libbar.so
 	$(MUSL_CC) $(LDFLAGS) -fPIC -shared -Wl,-soname,libunused.so -o $(BUILD_DIR)/libunused.so $(EX_DIR)/libunused.c
 	$(MUSL_CC) $(LDFLAGS) $(EX_DIR)/main.c -pthread -L$(BUILD_DIR) -lfoo -lbar -Wl,-rpath-link,$(BUILD_DIR) -o $(BUILD_DIR)/main
-
-# Statically linked, non-PIE, no-libc binary for Phase 2. Absolute
-# addresses, no dynamic relocations, custom entry callable via the
-# ordinary C ABI. Syscalls come from nolibc (header-only, in tree).
-# Use plain `cc` (system) here, not musl-gcc — nolibc pulls in
-# `<linux/types.h>` etc. from the system kernel headers, and musl-gcc
-# isolates them.
-#
-# Install nolibc's headers via its own `headers` target (which copies
-# the canonical file set listed in third_party/nolibc/Makefile to
-# $(OUTPUT)sysroot/include/). Order-only prereq: make doesn't re-run
-# on mtime changes (the submodule SHA is pinned, so source changes
-# are deliberate — re-run `make clean` if you bump it). The cached
-# build/ carries the installed headers, so CI cache hits don't need
-# the nolibc submodule checked out.
-NOLIBC_SRC     := third_party/nolibc
-NOLIBC_INSTALL := $(BUILD_DIR)/sysroot/include
-
-$(NOLIBC_INSTALL): | $(BUILD_DIR)
-	$(MAKE) -C $(NOLIBC_SRC) headers OUTPUT=$(abspath $(BUILD_DIR))/
-
-$(BUILD_DIR)/static: $(EX_DIR)/static.c | $(BUILD_DIR) $(NOLIBC_INSTALL)
-	cc -static -no-pie -nostdlib -I$(NOLIBC_INSTALL) \
-	    $(EX_DIR)/static.c -o $(BUILD_DIR)/static

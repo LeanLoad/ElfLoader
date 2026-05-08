@@ -29,6 +29,6 @@ else
   export PATH="$HOME/.elan/bin:$PATH"
 fi
 
-# Build-dep submodules only (musl libc + nolibc for the static
-# fixture). Matches what CI inits.
-git submodule update --init third_party/musl third_party/nolibc
+# Build-dep submodules only (musl libc for the example fixtures).
+# Matches what CI inits.
+git submodule update --init third_party/musl

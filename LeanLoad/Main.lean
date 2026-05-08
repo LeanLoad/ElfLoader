@@ -21,27 +21,26 @@ open LeanLoad.Elaborate (Elf)
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024
 
-/-- Run all planned `MemoryOp`s, allocate the kernel-style stack,
-    and `execAndJump` to entry. **Does not return.** -/
-private def realize (elfs : Array Elf) (handles : Array Runtime.FileHandle)
+/-- Run all planned `MemoryOp`s inside the kernel-picked
+    reservation, allocate the kernel-style stack, and `execAndJump`
+    to entry. **Does not return.** -/
+private def realize (rsvAddr rsvLen : UInt64)
+    (elfs : Array Elf) (handles : Array Runtime.FileHandle)
     (h_size : handles.size = elfs.size)
     (h_pos : 0 < elfs.size) (mainElf : Elf)
-    (layouts : { a : Array Layout.ObjectLayout // a.size = elfs.size })
+    (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (patches : Array MemoryOp)
     (ctorAddrs : Array UInt64)
     (path : String) : IO Unit := do
-  let bases := layouts.val.map (·.base)
-  have h_bases : bases.size = elfs.size := by simp [bases, layouts.property]
-  let ops := Realize.planOps elfs handles h_size bases h_bases patches
-  MemoryOp.runAll ops
+  let ops ← IO.ofExcept
+    (Realize.planOps rsvAddr rsvLen elfs handles h_size bases h_bases patches)
+  MemoryOp.runSafe rsvAddr rsvLen ops
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
   let mainBase := bases[0]'(by rw [h_bases]; exact h_pos)
-  let mainEntry :=
-    (layouts.val[0]'(by rw [layouts.property]; exact h_pos)).entry.getD 0
   let stackVa ← Runtime.mmapStack stackBytes
-  let entry  := mainBase + mainEntry
+  let entry  := mainBase + mainElf.entry
   let phdrVa := mainBase + mainElf.phoff
   let phnum  := mainElf.phnum.toUInt64
   let phent  := Parse.RawPhdrSize.toUInt64
@@ -72,8 +71,8 @@ private def Nat.hex12 (n : Nat) : String :=
 #guard padR "abc" 6 '.' = "abc..."
 #guard padL "abc" 6 '.' = "...abc"
 
-/-- Discover (IO) → pure planning (Layout, Reloc, Init) →
-    Exec.realize. **Does not return.** -/
+/-- Discover (IO) → kernel-picked reservation → pure planning
+    (Layout, Reloc, Init) → realize. **Does not return.** -/
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
   let elfs    := g.val.map (·.elf)
@@ -84,28 +83,31 @@ def load (path : String) : IO Unit := do
   let resTable := Resolve.buildTable elfs
   if let some u := resTable.missing[0]? then
     throw (IO.userError s!"load: {resTable.missing.size} unresolved strong symbol(s); first: {u.name}")
-  let layouts ← IO.ofExcept (Layout.layouts elfs)
-  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = elfs.size } :=
-    ⟨layouts.val, layouts.property.left⟩
+  -- Kernel-picked reservation covering every loaded object.
+  let rsvLen := Layout.totalSpan elfs
+  let rsvAddr ← Runtime.mmapAnonAlloc rsvLen
+  let layouts ← IO.ofExcept (Layout.layouts rsvAddr elfs)
   let formula := Elaborate.formulaFor mainElf.machine
-  let patches := Reloc.plan formula elfs sizedLayouts resTable
+  let patches ← IO.ofExcept
+    (Reloc.plan formula elfs layouts.val layouts.property.left resTable)
   let ctorAddrs := Init.plan elfs layouts.val (Init.order g)
-  realize elfs handles h_size h_pos mainElf sizedLayouts patches ctorAddrs path
+  realize rsvAddr rsvLen elfs handles h_size h_pos mainElf
+    layouts.val layouts.property.left patches ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
 def debug (path : String) : IO Unit := do
-  IO.eprintln "== Discover =="
+  IO.eprintln "== 1. Discover (BFS over DT_NEEDED) =="
   let g ← Discover.discover path
   for obj in g.val do
-    IO.eprintln s!"{obj.name}"
+    IO.eprintln s!"  {obj.name}"
   let elfs    := g.val.map (·.elf)
   let handles := g.val.map (·.handle)
   have h_size : handles.size = elfs.size := by simp [elfs, handles]
   have h_pos  : 0 < elfs.size := by simp [elfs]; exact g.property
   let mainElf := g.main.elf
 
-  IO.eprintln "\n== Parse =="
+  IO.eprintln "\n== 2. Parse + Elaborate (per-object Elf views) =="
   for h : i in [:g.val.size] do
     let obj := g.val[i]
     let elf := obj.elf
@@ -130,7 +132,7 @@ def debug (path : String) : IO Unit := do
         memsz=0x{Nat.hex seg.memsz.toNat} \
         prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
 
-  IO.eprintln "\n== Resolve =="
+  IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
   let resTable := Resolve.buildTable elfs
   have h_eq : elfs.size = g.val.size := by simp [elfs]
   let providerName (r : Resolve.SymRef elfs.size) : String :=
@@ -161,30 +163,31 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
   IO.eprintln s!"strong missing: {resTable.missing.size}, weak missing: {resTable.weakMissing.size}"
 
-  IO.eprintln "\n== Layout =="
-  let layouts ← IO.ofExcept (Layout.layouts elfs)
+  IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
+  let rsvLen := Layout.totalSpan elfs
+  let rsvAddr ← Runtime.mmapAnonAlloc rsvLen
+  IO.eprintln s!"  reservation = [0x{Nat.hex rsvAddr.toNat}, +0x{Nat.hex rsvLen.toNat})"
+  let layouts ← IO.ofExcept (Layout.layouts rsvAddr elfs)
+  let bases := layouts.val
+  have h_bases : bases.size = elfs.size := layouts.property.left
   for h : i in [:g.val.size] do
-    let lyt := layouts.val[i]'(by
-      rw [layouts.property.left, Array.size_map]; exact h.upper)
+    let base := bases[i]'(by
+      rw [h_bases, Array.size_map]; exact h.upper)
     let obj := g.val[i]
-    IO.eprintln s!"[{i}] {obj.name} ({obj.elf.segments.size} segments)"
-    if let some e := lyt.entry then
-      IO.eprintln s!"  entry: 0x{Nat.hex e.toNat}"
+    IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
     for s in obj.elf.segments do
-      let r : Layout.Region := { base := lyt.base, seg := s }
+      let r : Layout.Region := { base, seg := s }
       IO.eprintln s!"  vaddr=0x{Nat.hex r.absVaddr.toNat} len=0x{Nat.hex r.length.toNat} prot={r.prot}"
   let initOrder := Init.order g
   IO.eprintln s!"init order: {initOrder}"
   IO.eprintln s!"fini order: {initOrder.reverse}"
 
-  IO.eprintln "\n== Reloc =="
+  IO.eprintln "\n== 5. Reloc (planned 4/8-byte write ops, per-arch formula) =="
   let formula := Elaborate.formulaFor mainElf.machine
   let labelW := 16
-  let bases := layouts.val.map (·.base)
   for h : i in [:g.val.size] do
     let obj  := g.val[i]
-    let some lyt := layouts.val[i]? | continue
-    let base := lyt.base
+    let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW
     let printOne (segI : Nat) (r : Parse.RawRela) : IO Unit := do
       let symValue : UInt64 := if r.sym == 0 then 0
@@ -198,22 +201,21 @@ def debug (path : String) : IO Unit := do
           if r.sym == 0 then ""
           else (obj.elf.symtab[r.sym.toNat]?.bind (·.name)).getD "?"
         let typeStr := padR (toString r.type) 2
-        IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({res.size.toNat}B)  sym='{symName}'"
+        let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
+        IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + r.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
     for h2 : segI in [:obj.elf.segments.size] do
       let seg := obj.elf.segments[segI]
       for entry in seg.rela do printOne segI entry.val
       for entry in seg.jmprel do printOne segI entry.val
-  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = elfs.size } :=
-    ⟨layouts.val, layouts.property.left⟩
-  let patches := Reloc.plan formula elfs sizedLayouts resTable
+  let patches ← IO.ofExcept (Reloc.plan formula elfs bases h_bases resTable)
   IO.eprintln s!"planned {patches.size} patches"
 
-  IO.eprintln "\n== InitPlan =="
-  let ctorAddrs := Init.plan elfs layouts.val initOrder
-  IO.eprintln s!"planned {ctorAddrs.size} constructor(s)"
+  IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
+  let ctorAddrs := Init.plan elfs bases initOrder
+  IO.eprintln s!"planned {ctorAddrs.size} constructor address(es)"
 
-  IO.eprintln "\n== Realize =="
-  realize elfs handles h_size h_pos mainElf sizedLayouts patches ctorAddrs path
+  IO.eprintln "\n== 7. Realize: MemoryOp.runSafe → callCtors → execAndJump (does not return) =="
+  realize rsvAddr rsvLen elfs handles h_size h_pos mainElf bases h_bases patches ctorAddrs path
 
 end LeanLoad.Main
 

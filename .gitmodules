@@ -34,9 +34,6 @@
 [submodule "third_party/musl"]
 	path = third_party/musl
 	url = https://github.com/kraj/musl.git
-[submodule "third_party/nolibc"]
-	path = third_party/nolibc
-	url = https://github.com/wtarreau/nolibc.git
 [submodule "third_party/gnu-gabi"]
 	path = third_party/gnu-gabi
 	url = git://sourceware.org/git/gnu-gabi.git

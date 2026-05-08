@@ -147,21 +147,22 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
   (Elaborate.Segment.ofPhdr phdr #[] #[]).toOption
 
--- `.exec` objects keep base 0; `.dyn` ones start at `dynAnchor`.
-#guard assignBases #[synthElf (elfType := .exec)] = #[0]
-#guard assignBases #[synthElf (elfType := .dyn)]  = #[dynAnchor]
+-- ET_EXEC is rejected at elaborate time, so every elf reaching
+-- planning is ET_DYN. `assignBases` takes the reservation base
+-- as a parameter; production gets it from `Runtime.mmapAnonAlloc`,
+-- and tests/examples use `dynAnchor` as a synthetic constant.
+#guard assignBases dynAnchor #[synthElf (elfType := .dyn)] = #[dynAnchor]
 
 -- Stacking: each `.dyn` lib has a 0x2000-byte span (one PT_LOAD at
 -- vaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
--- alignUp 0x2000 0x1000 = 0x2000`. So libfoo gets `dynAnchor`,
--- libbar gets `dynAnchor + 0x2000`. The `.exec` keeps base 0 and
--- doesn't move the cursor.
+-- alignUp 0x2000 0x1000 = 0x2000`. So three libs get
+-- dynAnchor, dynAnchor + 0x2000, dynAnchor + 0x4000.
 private def stackingExample : Option (Array UInt64) := do
   let seg ← synthSegment? 0 0x2000
   let libElf := synthElf (elfType := .dyn) (segments := #[seg])
-  some (assignBases #[ synthElf (elfType := .exec), libElf, libElf ])
+  some (assignBases dynAnchor #[libElf, libElf, libElf])
 
-#guard stackingExample = some #[0, dynAnchor, dynAnchor + 0x2000]
+#guard stackingExample = some #[dynAnchor, dynAnchor + 0x2000, dynAnchor + 0x4000]
 
 -- ============================================================================
 -- 4. Realize plan: `Region` views and `Array MemoryOp` shapes.
@@ -191,20 +192,30 @@ private def bssOnlyRegion : Option Region :=
 #guard bssOnlyRegion.map (·.absVaddr) = some dynAnchor
 #guard bssOnlyRegion.map (·.length)   = some 0x2000
 
--- BSS-only: no file backing, no partial-page zero (everything covered
--- by the anon reservation, which is kernel-zero-filled).
+-- BSS-only: no file backing — the underlying object reservation
+-- already covers it (kernel zero-fills MAP_ANONYMOUS).
 #guard bssOnlyRegion.map (·.hasFileBacked) = some false
-#guard bssOnlyRegion.map (·.hasPartialBss) = some false
 
 -- ---- 4b. Region.ops shape — `#guard`-able since `MemoryOp` is pure. ------
 --
--- `Realize.Region.ops fileIdx r` emits ops shaped per the segment's
--- BSS profile. Sizes:
+-- Each region emits 1–3 ops inside the kernel-picked reservation:
+--   • mmapFile (if hasFileBacked) — file overlay (with PROT_WRITE widening)
+--   • zeroout  (if hasPartialBss) — clear file content past `filesz`
+--   • mprotect — final perms over the whole segment range
 --
---   BSS-only  (filesz=0):              [mmapAnon, mprotect]              (2)
---   file-only (filesz=memsz, aligned): [mmapAnon, mmapFile, mprotect]    (3)
---   file+BSS  (filesz<memsz, partial): [mmapAnon, mmapFile,
---                                       zeroout, mprotect]               (4)
+-- The reservation underneath (kernel-picked anon, RW) handles BSS;
+-- no per-region mmapAnon needed. The single mprotect covers both
+-- file overlay and BSS tail since they're all inside the reservation.
+--
+--   filesz=0          (BSS-only):              [mprotect]                       (1)
+--   filesz=memsz      (file-only, aligned):    [mmapFile, mprotect]             (2)
+--   file+anon         (file + full-page BSS):  [mmapFile, mprotect]             (2)
+--   file+partial      (partial-page BSS):      [mmapFile, zeroout, mprotect]    (3)
+--   file+both         (partial + full-page):   [mmapFile, zeroout, mprotect]    (3)
+--
+-- `FileHandle` is just a `UInt32` (transparent), so tests construct
+-- one with any number; the kernel rejects invalid fds at the syscall.
+private def dummyHandle : Runtime.FileHandle := 0
 
 /-- A more general synth helper that lets us vary `filesz` to land in
     each profile. -/
@@ -215,23 +226,27 @@ private def synthSeg? (vaddr memsz filesz : UInt64) : Option Segment :=
     p_filesz := filesz, p_offset := 0, p_align := 0x1000 }
   (Segment.ofPhdr phdr #[] #[]).toOption
 
-private def fileOnlySeg : Option Segment := synthSeg? 0 0x1000 0x1000  -- one page, fully file
-private def mixedSeg    : Option Segment := synthSeg? 0 0x2000 0x800   -- file then BSS
+private def fileOnlySeg     : Option Segment := synthSeg? 0 0x1000 0x1000  -- file fills page
+private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- partial-page BSS only
+private def fileAnonBss     : Option Segment := synthSeg? 0 0x2000 0x1000  -- full-page BSS only
+private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- partial + full-page
 
-private def regionOps (seg : Option Segment) : Option (Array (MemoryOp 1)) :=
-  seg.map fun s => Realize.Region.ops ⟨0, by simp⟩ ({ base := dynAnchor, seg := s } : Region)
+private def regionOps (seg : Option Segment) : Option (Array MemoryOp) :=
+  seg.map fun s => Realize.Region.ops dummyHandle ({ base := dynAnchor, seg := s } : Region)
 
-#guard (regionOps bssOnlySeg).map (·.size)  = some 2
-#guard (regionOps fileOnlySeg).map (·.size) = some 3
-#guard (regionOps mixedSeg).map (·.size)    = some 4
+#guard (regionOps bssOnlySeg).map (·.size)      = some 1  -- mprotect only
+#guard (regionOps fileOnlySeg).map (·.size)     = some 2  -- mmapFile, mprotect
+#guard (regionOps filePartialBss).map (·.size)  = some 3  -- mmapFile, zeroout, mprotect
+#guard (regionOps fileAnonBss).map (·.size)     = some 2  -- mmapFile, mprotect
+#guard (regionOps fileBothBss).map (·.size)     = some 3  -- mmapFile, zeroout, mprotect
 
--- ---- 4c. End-to-end planOps: realize ++ patches. -------------------------
+-- ---- 4c. End-to-end planOps: realize ++ patches, gated by safety check. --
 --
--- Ctors are user-code execution (not kernel ops); they run inline
--- in `Main.realize` after `MemoryOp.runAll`, so they're not in
--- `planOps`'s output.
+-- `Realize.planOps rsvAddr rsvLen ...` returns `Except String { ops //
+-- safety predicates wrt [rsvAddr, +rsvLen) }`. Empty input → empty
+-- op list, predicates vacuously hold for any reservation range.
 
--- An empty graph: no elfs, no patches → empty op list.
-#guard (Realize.planOps #[] #[] (by decide) #[]).size = 0
+-- Empty graph: no elfs, no handles, no patches → empty op list.
+#guard (Realize.planOps dynAnchor 0 #[] #[] (by decide) #[] (by decide) #[]).toOption.map (·.val.size) = some 0
 
 end LeanLoad.Example

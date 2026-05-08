@@ -40,13 +40,12 @@ open LeanLoad.Parse (RawElf RawPhdr RawRela RawSym)
 
 -- ============================================================================
 -- PT_LOAD-array well-formedness — the per-pair gabi-07 invariants on
--- `Array Segment`. Per-segment invariants (`fileszLeMemsz`,
--- `alignPow2`, `alignCong`, `addrBound`) live as fields on `Segment`
--- itself.
+-- `Array Segment`. Per-segment invariants are validated by
+-- `Segment.ofPhdr` and discarded (no proof field stored on `Segment`).
 --
 -- Spec: gabi 07 § Program Loading. These are *spec-level* (gabi
 -- vaddr/memsz ordering); page-aligned non-overlap is a separate
--- runtime check on `ObjectLayout` (`Layout.segmentsSorted`).
+-- runtime check via `Layout.segmentsSorted`.
 --
 -- The two predicates live as standalone defs (not bundled in a
 -- `WellFormed` wrapper) so `Elf` can carry them as direct fields.
@@ -179,6 +178,9 @@ def elaborate (raw : RawElf) : Except String Elf := do
   let segments := segmentsAcc
   let some elfType := ElfType.ofRaw raw.header.e_type
     | .error s!"elaborate: unknown e_type={raw.header.e_type}"
+  if elfType == .exec then
+    .error s!"elaborate: ET_EXEC not supported — LeanLoad expects PIE \
+      (ET_DYN) inputs only. Recompile with -fPIE -pie."
   let some machine := Machine.ofRaw raw.header.e_machine
     | .error s!"elaborate: unsupported e_machine={raw.header.e_machine} \
         (need 62=EM_X86_64 or 183=EM_AARCH64)"

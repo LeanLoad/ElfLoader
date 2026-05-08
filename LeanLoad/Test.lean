@@ -81,7 +81,7 @@ private def layoutTest (g : ObjectList) : Except String Unit := do
   -- `Layout.layouts` succeeds → returns a sized subtype; the size
   -- proof is the second component, so this test only checks that the
   -- well-formedness validation succeeds (size match is by construction).
-  let _ ← Layout.layouts (g.val.map (·.elf))
+  let _ ← Layout.layouts Layout.dynAnchor (g.val.map (·.elf))
   .ok ()
 
 private def orderTest (g : ObjectList) : Except String Unit := do
@@ -93,10 +93,9 @@ private def orderTest (g : ObjectList) : Except String Unit := do
 
 private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
   let elfs := g.val.map (·.elf)
-  let layouts ← Layout.layouts elfs
-  let sizedLayouts : { a : Array Layout.ObjectLayout // a.size = elfs.size } :=
-    ⟨layouts.val, layouts.property.left⟩
-  let patches := Reloc.plan formula elfs sizedLayouts (Resolve.buildTable elfs)
+  let layouts ← Layout.layouts Layout.dynAnchor elfs
+  let patches ← Reloc.plan formula elfs layouts.val layouts.property.left
+                   (Resolve.buildTable elfs)
   check (patches.size > 0) "expected nonzero relocation writes"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +

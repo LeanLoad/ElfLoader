@@ -174,8 +174,8 @@ path (`Map.lean` + `Apply.lean` + `Exec.lean`) is conditioned on:
    the loaded binary will then try to acquire.
 4. **Loaded binary uses `__NR_exit_group`, not `__NR_exit`.** The
    thread-scoped `exit` syscall would only kill the calling thread;
-   other host threads survive and the process never terminates. The
-   `examples/static.c` fixture honors this; musl's `_exit` does too.
+   other host threads survive and the process never terminates.
+   musl's `_exit` does the right thing.
 5. **Signal handlers reset to `SIG_DFL`** before transfer of control,
    so the loaded binary's faults do not wake Lean's `segv_handler`
    (which deadlocks against libuv's pthread lock).
@@ -219,6 +219,4 @@ Three non-obvious gotchas:
 3. **The loaded program must call `__NR_exit_group`, not
    `__NR_exit`.** Lean's runtime threads coexist with the loaded
    program; a thread-scoped `_exit` leaves them alive and the
-   process hangs. musl's `_exit` does the right thing; nolibc's
-   doesn't (the `examples/static.c` fixture works around this
-   manually via `my_syscall1(__NR_exit_group, rc)`).
+   process hangs. musl's `_exit` does the right thing.

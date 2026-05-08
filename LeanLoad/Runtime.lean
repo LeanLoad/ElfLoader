@@ -3,29 +3,25 @@ Trust seam: every `@[extern]` declaration that crosses into the C
 shims under `runtime/`, plus the `MemoryOp` abstraction over those
 externs and the IO interpreter that dispatches each constructor.
 
-Three layers in this file:
+Reserve-then-overlay design:
+  • At the IO boundary, `mmapAnonAlloc` requests a kernel-picked
+    anon block large enough to hold every loaded object. The
+    returned base is threaded into pure planning.
+  • The planned `Array MemoryOp` contains only ops that operate
+    INSIDE that reservation: `mmapFile` overlays, `zeroout`,
+    `mprotect`, and patches. The reservation itself is not in the
+    op array — it's a one-shot IO call before any planned op runs.
 
+Three layers:
   1. Externs (top half) — opaque `FileHandle`, mmap variants,
-     mprotect, raw writes, ctor calls, exec/jump. A grep for
-     `@[extern]` outside this file is a smell.
-
-  2. `MemoryOp` — pure data type describing every kernel call the
-     loader makes, modulo the value-returning `mmapStack` and the
-     no-return `execAndJump` (one-shot finalizers, called inline
-     from `Main.realize`).
-
-  3. `MemoryOp.run` / `runAll` — IO interpreters; the only place
-     in the codebase that calls externs.
+     mprotect, raw writes, ctor calls, exec/jump.
+  2. `MemoryOp` — pure data type for fire-and-forget kernel calls.
+  3. `runSafe` — IO interpreter; only path to the kernel from
+     planned ops.
 
 The semantics of each extern match Linux `mmap(2)` / `mprotect(2)`.
 Mappings live for the process lifetime; the kernel reclaims at exit.
 Audited by inspection (~150 lines of C), not proven.
-
-Bounds proofs live entirely on the Lean side (`Layout.patch_inRange`
-etc.); externs take raw `UInt64` addresses and trust the caller has
-done the math correctly. Pure planners (`Plan/Realize`,
-`Plan/Reloc`, `Plan/Init`) emit `Array MemoryOp`; the IO bookend
-calls `MemoryOp.runAll`.
 -/
 
 namespace LeanLoad
@@ -33,11 +29,7 @@ namespace LeanLoad
 namespace Runtime
 
 -- ============================================================================
--- FileHandle — a transparent kernel fd. The fd is held until process
--- exit; we never `close(2)` because `execAndJump` is non-returning
--- and the kernel reclaims at exit. Tests can construct arbitrary
--- handles (e.g. for synthetic fixtures); the kernel rejects invalid
--- fds at the syscall.
+-- FileHandle — a transparent kernel fd. Held until process exit.
 -- ============================================================================
 
 def FileHandle : Type := UInt32
@@ -49,35 +41,39 @@ opaque openFile (path : @& String) : IO FileHandle
 @[extern "leanload_pread"]
 opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 
-/-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `vaddr`. -/
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `vaddr`. Used
+    by `MemoryOp.mmapFile` for per-segment file content. Replaces
+    whatever was at `[vaddr, vaddr+len)` (intentionally — in our
+    design that's the kernel-picked anon reservation). -/
 @[extern "leanload_mmap_file"]
 opaque mmap (h : FileHandle) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
--- ============================================================================
--- Memory ops — raw `UInt64` addresses.
--- ============================================================================
+/-- Kernel-picked anon reservation. `mmap(NULL, len, PROT_READ |
+    PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, …)` — kernel returns
+    the chosen base, guaranteed disjoint from any existing mapping
+    in the host process. Called once at the IO boundary before any
+    planned op runs. -/
+@[extern "leanload_mmap_alloc"]
+opaque mmapAnonAlloc (len : UInt64) : IO UInt64
 
-/-- Anonymous `MAP_FIXED` reservation at `vaddr` for `len` bytes. -/
-@[extern "leanload_mmap_reserve"]
-opaque mmapReserve (vaddr : UInt64) (len : UInt64) : IO Unit
-
-/-- Anonymous `MAP_STACK` mapping; kernel chooses the address. Returns
-    the chosen base — the caller threads it to `execAndJump`. -/
+/-- Anonymous `MAP_STACK` mapping for the loaded program's stack;
+    kernel chooses the address. -/
 @[extern "leanload_mmap_stack"]
 opaque mmapStack (len : UInt64) : IO UInt64
 
 @[extern "leanload_mprotect"]
 opaque mprotect (addr : UInt64) (len : UInt64) (prot : UInt32) : IO Unit
 
-/-- Write 8 little-endian bytes of `value` at `addr`. -/
-@[extern "leanload_patch64"]
-opaque patch64 (addr : UInt64) (value : UInt64) : IO Unit
+/-- Write the low 4 or 8 little-endian bytes of `value` at `addr`,
+    selected by `size` (4 or 8). Used for relocation patches; the
+    formula computes a `UInt64` and we truncate at memcpy time. -/
+@[extern "leanload_write"]
+opaque write (addr : UInt64) (size : UInt8) (value : UInt64) : IO Unit
 
-/-- Write the low 4 little-endian bytes of `value` at `addr`. -/
-@[extern "leanload_patch32"]
-opaque patch32 (addr : UInt64) (value : UInt64) : IO Unit
-
+/-- Zero `len` bytes starting at `addr`. Used for the partial-page
+    BSS tail past `filesz` on a file overlay's last page (kernel
+    maps file content there, not zero). -/
 @[extern "leanload_zeroout"]
 opaque zeroout (addr : UInt64) (len : UInt64) : IO Unit
 
@@ -99,66 +95,167 @@ opaque execAndJump
   (stackLen : UInt64)
   (argv0  : @& String) : IO Unit
 
--- ============================================================================
--- PROT_* constants (Linux). The planner uses `PROT_WRITE` to widen
--- a file-backed segment's initial protection so partial-last-page
--- BSS can be zeroed before `mprotect` drops the bit for read-only
--- segments.
--- ============================================================================
-
+/-- POSIX `PROT_WRITE` — used to widen a file overlay's initial
+    permission so relocation patches can write before the final
+    `mprotect` drops the bit. -/
 def PROT_WRITE : UInt32 := 2
 
 end Runtime
 
 -- ============================================================================
--- MemoryOp — pure abstraction over every fire-and-forget kernel
--- call. Pure planners emit `Array MemoryOp`; `MemoryOp.runAll`
--- dispatches each to the corresponding extern.
---
--- `mmapStack` (kernel-chosen address) and `execAndJump` (no-return
--- control transfer) stay outside this set — they don't fit the
--- fire-and-forget Unit-return shape and are one-shot finalizers
--- called inline from `Main.realize`.
+-- MemoryOp — fire-and-forget kernel-state mutations that run INSIDE
+-- the kernel-picked anon reservation. No `mmapAnon` constructor:
+-- the reservation is a one-shot IO call (`mmapAnonAlloc`) at the IO
+-- boundary, not part of the planned op array.
 -- ============================================================================
 
-/-- One *kernel-state mutation* the loader asks for. User-code
-    execution (ctors, the final `execAndJump`) is *not* in this set
-    — those run inline from `Main.realize` after `runAll` finishes,
-    because they're conceptually "running the loaded program",
-    not preparing the address space.
-
-    `mmapFile` carries a `FileHandle` (transparent `UInt32` fd)
-    directly — no index indirection. Pure planners can construct
-    ops with any `FileHandle` (= `UInt32`); the kernel rejects
-    invalid fds at the syscall. -/
+/-- One *kernel-state mutation* the loader asks for inside the
+    reservation. -/
 inductive MemoryOp where
-  /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `addr` for
-      `len` bytes from `handle`, file offset `offset`, protection
-      `prot`. -/
+  /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay. Replaces the
+      anon backing for `[addr, addr+len)` with file bytes. -/
   | mmapFile (handle : Runtime.FileHandle) (addr len : UInt64)
              (prot : UInt32) (offset : UInt64)
-  /-- Anonymous `MAP_FIXED` reservation at `addr` for `len` bytes. -/
-  | mmapAnon (addr len : UInt64)
   /-- Zero `len` bytes at `addr`. -/
   | zeroout (addr len : UInt64)
-  /-- Set protection on `[addr, addr+len)` to `prot`. -/
+  /-- Set protection on `[addr, addr+len)`. -/
   | mprotect (addr len : UInt64) (prot : UInt32)
-  /-- Write 8 little-endian bytes of `value` at `addr`. -/
-  | patch64 (addr value : UInt64)
-  /-- Write 4 little-endian bytes of `value` at `addr`. -/
-  | patch32 (addr value : UInt64)
+  /-- Write the low `size` bytes (4 or 8) of `value` at `addr`. -/
+  | write (addr : UInt64) (size : UInt8) (value : UInt64)
 
 namespace MemoryOp
 
-/-- Interpret an op list in order. -/
-def runAll (ops : Array MemoryOp) : IO Unit := ops.forM fun op =>
+/-- Interpret an op list in order. **Private**: the only public entry
+    point is `runSafe`, which requires the safety witness. -/
+private def runAllUnsafe (ops : Array MemoryOp) : IO Unit := ops.forM fun op =>
   match op with
   | .mmapFile h addr len prot offset => Runtime.mmap h addr len prot offset
-  | .mmapAnon addr len               => Runtime.mmapReserve addr len
-  | .zeroout addr len                => Runtime.zeroout addr len
+  | .zeroout  addr len               => Runtime.zeroout addr len
   | .mprotect addr len prot          => Runtime.mprotect addr len prot
-  | .patch64 addr value              => Runtime.patch64 addr value
-  | .patch32 addr value              => Runtime.patch32 addr value
+  | .write    addr size value        => Runtime.write addr size value
+
+-- ============================================================================
+-- Per-op accessors and kind predicates.
+-- ============================================================================
+
+/-- The op's target address. -/
+def addr : MemoryOp → UInt64
+  | .mmapFile _ a _ _ _ => a
+  | .zeroout  a _       => a
+  | .mprotect a _ _     => a
+  | .write    a _ _     => a
+
+/-- The op's memory-range length. -/
+def len : MemoryOp → UInt64
+  | .mmapFile _ _ l _ _ => l
+  | .zeroout  _ l       => l
+  | .mprotect _ l _     => l
+  | .write    _ s _     => s.toUInt64
+
+/-- The op overlays a file inside the reservation. -/
+def IsOverlay : MemoryOp → Prop
+  | .mmapFile .. => True
+  | _            => False
+
+instance (op : MemoryOp) : Decidable op.IsOverlay := by
+  cases op <;> simp [IsOverlay] <;> infer_instance
+
+/-- The op writes bytes (zeroout + relocation writes). -/
+def IsWrite : MemoryOp → Prop
+  | .zeroout .. => True
+  | .write   .. => True
+  | _           => False
+
+instance (op : MemoryOp) : Decidable op.IsWrite := by
+  cases op <;> simp [IsWrite] <;> infer_instance
+
+/-- The op changes page protection. -/
+def IsMprotect : MemoryOp → Prop
+  | .mprotect .. => True
+  | _            => False
+
+instance (op : MemoryOp) : Decidable op.IsMprotect := by
+  cases op <;> simp [IsMprotect] <;> infer_instance
+
+-- ============================================================================
+-- Range arithmetic — predicates over `[addr, addr + len)` in `Nat`
+-- to dodge UInt64 wrap.
+-- ============================================================================
+
+/-- Two memory ranges don't overlap. -/
+def Disjoint (a₁ l₁ a₂ l₂ : UInt64) : Prop :=
+  a₁.toNat + l₁.toNat ≤ a₂.toNat ∨ a₂.toNat + l₂.toNat ≤ a₁.toNat
+
+/-- An address range `[innerA, innerA+innerL)` is fully contained
+    in `[outerA, outerA+outerL)`. -/
+def InRange (innerA innerL outerA outerL : UInt64) : Prop :=
+  outerA.toNat ≤ innerA.toNat ∧
+  innerA.toNat + innerL.toNat ≤ outerA.toNat + outerL.toNat
+
+instance (a₁ l₁ a₂ l₂ : UInt64) : Decidable (Disjoint a₁ l₁ a₂ l₂) :=
+  inferInstanceAs (Decidable (_ ∨ _))
+
+instance (innerA innerL outerA outerL : UInt64) :
+    Decidable (InRange innerA innerL outerA outerL) :=
+  inferInstanceAs (Decidable (_ ∧ _))
+
+end MemoryOp
+
+-- ============================================================================
+-- Top-level safety predicates, parameterized by the reservation range
+-- `[rsvAddr, rsvAddr + rsvLen)` returned by `Runtime.mmapAnonAlloc`.
+-- Together they assert: file overlays don't collide with each other,
+-- and every overlay / write / mprotect lies inside the reservation.
+-- ============================================================================
+
+/-- File overlays are pairwise disjoint. -/
+def OverlaysDisjoint (ops : Array MemoryOp) : Prop :=
+  ∀ i, ∀ _ : i < ops.size, ∀ j, ∀ _ : j < ops.size, i < j →
+    ops[i].IsOverlay → ops[j].IsOverlay →
+    MemoryOp.Disjoint ops[i].addr ops[i].len ops[j].addr ops[j].len
+
+/-- Every overlay lies inside the reservation. -/
+def OverlaysContained (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) : Prop :=
+  ∀ i, ∀ _ : i < ops.size, ops[i].IsOverlay →
+    MemoryOp.InRange ops[i].addr ops[i].len rsvAddr rsvLen
+
+/-- Every write op lies inside the reservation. -/
+def WritesContained (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) : Prop :=
+  ∀ i, ∀ _ : i < ops.size, ops[i].IsWrite →
+    MemoryOp.InRange ops[i].addr ops[i].len rsvAddr rsvLen
+
+/-- Every mprotect op lies inside the reservation. -/
+def MprotectsContained (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) : Prop :=
+  ∀ i, ∀ _ : i < ops.size, ops[i].IsMprotect →
+    MemoryOp.InRange ops[i].addr ops[i].len rsvAddr rsvLen
+
+instance (ops : Array MemoryOp) : Decidable (OverlaysDisjoint ops) := by
+  unfold OverlaysDisjoint; infer_instance
+
+instance (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) :
+    Decidable (OverlaysContained rsvAddr rsvLen ops) := by
+  unfold OverlaysContained; infer_instance
+
+instance (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) :
+    Decidable (WritesContained rsvAddr rsvLen ops) := by
+  unfold WritesContained; infer_instance
+
+instance (rsvAddr rsvLen : UInt64) (ops : Array MemoryOp) :
+    Decidable (MprotectsContained rsvAddr rsvLen ops) := by
+  unfold MprotectsContained; infer_instance
+
+namespace MemoryOp
+
+/-- Interpret a safety-witnessed op list, given the reservation
+    range that bounds every op. The witness fields are erased; the
+    IO behaviour is identical to a plain `forM` over the array. -/
+def runSafe (rsvAddr rsvLen : UInt64)
+    (ops : { ops : Array MemoryOp //
+      OverlaysDisjoint ops ∧
+      OverlaysContained rsvAddr rsvLen ops ∧
+      WritesContained rsvAddr rsvLen ops ∧
+      MprotectsContained rsvAddr rsvLen ops }) :
+    IO Unit := runAllUnsafe ops.val
 
 end MemoryOp
 
