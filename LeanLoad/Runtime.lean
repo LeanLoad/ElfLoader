@@ -1,6 +1,6 @@
 /-
 Trust seam: every `@[extern]` declaration that crosses into the C
-shims under `runtime/`, plus the `RuntimeOp` abstraction over those
+shims under `runtime/`, plus the `MemoryOp` abstraction over those
 externs and the IO interpreter that dispatches each constructor.
 
 Three layers in this file:
@@ -9,12 +9,12 @@ Three layers in this file:
      mprotect, raw writes, ctor calls, exec/jump. A grep for
      `@[extern]` outside this file is a smell.
 
-  2. `RuntimeOp` — pure data type describing every kernel call the
+  2. `MemoryOp` — pure data type describing every kernel call the
      loader makes, modulo the value-returning `mmapStack` and the
      no-return `execAndJump` (one-shot finalizers, called inline
      from `Main.realize`).
 
-  3. `RuntimeOp.run` / `runAll` — IO interpreters; the only place
+  3. `MemoryOp.run` / `runAll` — IO interpreters; the only place
      in the codebase that calls externs.
 
 The semantics of each extern match Linux `mmap(2)` / `mprotect(2)`.
@@ -24,8 +24,8 @@ Audited by inspection (~150 lines of C), not proven.
 Bounds proofs live entirely on the Lean side (`Layout.patch_inRange`
 etc.); externs take raw `UInt64` addresses and trust the caller has
 done the math correctly. Pure planners (`Plan/Realize`,
-`Plan/Reloc`, `Plan/Init`) emit `Array RuntimeOp`; the IO bookend
-calls `RuntimeOp.runAll`.
+`Plan/Reloc`, `Plan/Init`) emit `Array MemoryOp`; the IO bookend
+calls `MemoryOp.runAll`.
 -/
 
 namespace LeanLoad
@@ -111,8 +111,8 @@ def PROT_WRITE : UInt32 := 2
 end Runtime
 
 -- ============================================================================
--- RuntimeOp — pure abstraction over every fire-and-forget kernel
--- call. Pure planners emit `Array RuntimeOp`; `RuntimeOp.runAll`
+-- MemoryOp — pure abstraction over every fire-and-forget kernel
+-- call. Pure planners emit `Array MemoryOp`; `MemoryOp.runAll`
 -- dispatches each to the corresponding extern.
 --
 -- `mmapStack` (kernel-chosen address) and `execAndJump` (no-return
@@ -121,17 +121,21 @@ end Runtime
 -- called inline from `Main.realize`.
 -- ============================================================================
 
-/-- One operation the loader asks the kernel to perform.
-    Parameterised by `n`, the number of file handles available at IO
-    time — `mmapFile`'s `fileIdx : Fin n` indexes into the
-    caller-supplied handle table totally (no out-of-bounds failure
-    mode at apply time). Other constructors don't use `n`, but the
-    type still threads it for uniform `Array (RuntimeOp n)`. -/
-inductive RuntimeOp (n : Nat) where
+/-- One *kernel-state mutation* the loader asks for. User-code
+    execution (ctors, the final `execAndJump`) is *not* in this set
+    — those run inline from `Main.realize` after `runAll` finishes,
+    because they're conceptually "running the loaded program",
+    not preparing the address space.
+
+    `mmapFile` carries a `FileHandle` (transparent `UInt32` fd)
+    directly — no index indirection. Pure planners can construct
+    ops with any `FileHandle` (= `UInt32`); the kernel rejects
+    invalid fds at the syscall. -/
+inductive MemoryOp where
   /-- File-backed `MAP_PRIVATE | MAP_FIXED` overlay at `addr` for
-      `len` bytes from `handles[fileIdx]`, file offset `offset`,
-      protection `prot`. -/
-  | mmapFile (fileIdx : Fin n) (addr len : UInt64)
+      `len` bytes from `handle`, file offset `offset`, protection
+      `prot`. -/
+  | mmapFile (handle : Runtime.FileHandle) (addr len : UInt64)
              (prot : UInt32) (offset : UInt64)
   /-- Anonymous `MAP_FIXED` reservation at `addr` for `len` bytes. -/
   | mmapAnon (addr len : UInt64)
@@ -143,27 +147,19 @@ inductive RuntimeOp (n : Nat) where
   | patch64 (addr value : UInt64)
   /-- Write 4 little-endian bytes of `value` at `addr`. -/
   | patch32 (addr value : UInt64)
-  /-- Call the constructor function at `addr`. -/
-  | callCtor (addr : UInt64)
 
-namespace RuntimeOp
+namespace MemoryOp
 
-/-- Interpret an op list in order. The `h_size` proof makes
-    `handles[fileIdx]` total — no out-of-bounds case to handle. -/
-def runAll {n : Nat} (handles : Array Runtime.FileHandle)
-    (h_size : handles.size = n) (ops : Array (RuntimeOp n)) :
-    IO Unit := ops.forM fun op =>
+/-- Interpret an op list in order. -/
+def runAll (ops : Array MemoryOp) : IO Unit := ops.forM fun op =>
   match op with
-  | .mmapFile idx addr len prot offset =>
-    let h := handles[idx.val]'(h_size.symm ▸ idx.isLt)
-    Runtime.mmap h addr len prot offset
-  | .mmapAnon addr len      => Runtime.mmapReserve addr len
-  | .zeroout addr len       => Runtime.zeroout addr len
-  | .mprotect addr len prot => Runtime.mprotect addr len prot
-  | .patch64 addr value     => Runtime.patch64 addr value
-  | .patch32 addr value     => Runtime.patch32 addr value
-  | .callCtor addr          => Runtime.callCtor addr
+  | .mmapFile h addr len prot offset => Runtime.mmap h addr len prot offset
+  | .mmapAnon addr len               => Runtime.mmapReserve addr len
+  | .zeroout addr len                => Runtime.zeroout addr len
+  | .mprotect addr len prot          => Runtime.mprotect addr len prot
+  | .patch64 addr value              => Runtime.patch64 addr value
+  | .patch32 addr value              => Runtime.patch32 addr value
 
-end RuntimeOp
+end MemoryOp
 
 end LeanLoad

@@ -16,7 +16,7 @@ stages plus boundary-rejection cases that span more than one file:
      base assignment (`Plan/Layout`), and the `Region` view over a
      segment with a chosen base.
 
-  4. **Realize plan** — the `Array RuntimeOp` that `Exec.realize`
+  4. **Realize plan** — the `Array MemoryOp` that `Exec.realize`
      interprets. Shows how `Region.ops` shapes change with BSS-only
      vs file+BSS segments, and how `Realize.planOps` concatenates
      mmap + patch + ctor ops into one list.
@@ -164,7 +164,7 @@ private def stackingExample : Option (Array UInt64) := do
 #guard stackingExample = some #[0, dynAnchor, dynAnchor + 0x2000]
 
 -- ============================================================================
--- 4. Realize plan: `Region` views and `Array RuntimeOp` shapes.
+-- 4. Realize plan: `Region` views and `Array MemoryOp` shapes.
 --
 -- `Region` (a Segment with chosen base) is the unit `Realize` plans
 -- around. `Region.ops` emits the per-region kernel calls; the shape
@@ -196,7 +196,7 @@ private def bssOnlyRegion : Option Region :=
 #guard bssOnlyRegion.map (·.hasFileBacked) = some false
 #guard bssOnlyRegion.map (·.hasPartialBss) = some false
 
--- ---- 4b. Region.ops shape — `#guard`-able since `RuntimeOp` is pure. ------
+-- ---- 4b. Region.ops shape — `#guard`-able since `MemoryOp` is pure. ------
 --
 -- `Realize.Region.ops fileIdx r` emits ops shaped per the segment's
 -- BSS profile. Sizes:
@@ -218,20 +218,20 @@ private def synthSeg? (vaddr memsz filesz : UInt64) : Option Segment :=
 private def fileOnlySeg : Option Segment := synthSeg? 0 0x1000 0x1000  -- one page, fully file
 private def mixedSeg    : Option Segment := synthSeg? 0 0x2000 0x800   -- file then BSS
 
-private def regionOps (seg : Option Segment) : Option (Array (RuntimeOp 1)) :=
+private def regionOps (seg : Option Segment) : Option (Array (MemoryOp 1)) :=
   seg.map fun s => Realize.Region.ops ⟨0, by simp⟩ ({ base := dynAnchor, seg := s } : Region)
 
 #guard (regionOps bssOnlySeg).map (·.size)  = some 2
 #guard (regionOps fileOnlySeg).map (·.size) = some 3
 #guard (regionOps mixedSeg).map (·.size)    = some 4
 
--- ---- 4c. End-to-end planOps: realize ++ patches ++ ctors. -----------------
+-- ---- 4c. End-to-end planOps: realize ++ patches. -------------------------
+--
+-- Ctors are user-code execution (not kernel ops); they run inline
+-- in `Main.realize` after `MemoryOp.runAll`, so they're not in
+-- `planOps`'s output.
 
--- An empty graph: no elfs, no patches, no ctors → empty op list.
--- (`elfs.size = 0`, so `RuntimeOp elfs.size = RuntimeOp 0`.)
-#guard (Realize.planOps #[] #[] (by decide) #[] #[]).size = 0
-
--- One ctor address: just one `.callCtor` op.
-#guard (Realize.planOps #[] #[] (by decide) #[] #[0xc0ffee]).size = 1
+-- An empty graph: no elfs, no patches → empty op list.
+#guard (Realize.planOps #[] #[] (by decide) #[]).size = 0
 
 end LeanLoad.Example

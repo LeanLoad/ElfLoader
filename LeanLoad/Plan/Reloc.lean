@@ -4,7 +4,7 @@ Relocation planning — pure.
 Consumes per-segment relas (already segment-tied at the validation
 boundary, see `Elaborate.Segment.{rela, jmprel}`) plus a per-arch
 `Formula` and a resolution table (from `Resolve`); emits a list of
-`RuntimeOp.patch64` / `patch32` ops the runtime loader will execute.
+`MemoryOp.patch64` / `patch32` ops the runtime loader will execute.
 
 The patch's destination address is computed at planning time:
 `addr := base + r_offset`. After realize, `[base + pageVaddr,
@@ -59,13 +59,13 @@ def resolveSymValue (elfs : Array Elf) (bases : Array UInt64)
   result.getD 0
 
 -- ============================================================================
--- Per-rela planning — produces a `RuntimeOp.patch{64,32}`.
+-- Per-rela planning — produces a `MemoryOp.patch{64,32}`.
 -- ============================================================================
 
 /-- Plan one rela inside a region. Returns `none` for no-op
     relocations (`R_*_NONE` and unsupported types). -/
-private def planRela {n : Nat} (formula : Formula) (region : Region)
-    (symValue : UInt64) (r : RawRela) : Option (RuntimeOp n) :=
+private def planRela (formula : Formula) (region : Region)
+    (symValue : UInt64) (r : RawRela) : Option MemoryOp :=
   let inputs : FormulaInputs :=
     { symValue, addend := r.r_addend, base := region.base,
       place := region.base + r.r_offset }
@@ -81,18 +81,18 @@ private def planRela {n : Nat} (formula : Formula) (region : Region)
 def planObject (formula : Formula) (elfs : Array Elf) (bases : Array UInt64)
     (hBases : bases.size = elfs.size)
     (rt : Resolve.Table elfs.size) (objectIdx : Fin elfs.size) :
-    Array (RuntimeOp elfs.size) := Id.run do
+    Array MemoryOp := Id.run do
   let elf  := elfs[objectIdx]
   let base := bases[objectIdx.val]'(by rw [hBases]; exact objectIdx.isLt)
-  let mut acc : Array (RuntimeOp elfs.size) := #[]
+  let mut acc : Array MemoryOp := #[]
   for h : segI in [:elf.segments.size] do
     let segIdx : Fin elf.segments.size := ⟨segI, h.upper⟩
     let seg := elf.segments[segIdx]
     let region : Region := { base, seg }
-    let planEntry (acc : Array (RuntimeOp elfs.size))
+    let planEntry (acc : Array MemoryOp)
         (entry : { r : Parse.RawRela //
           Elaborate.coversRela seg.vaddr seg.memsz r.r_offset }) :
-        Array (RuntimeOp elfs.size) :=
+        Array MemoryOp :=
       let r := entry.val
       let symValue : UInt64 :=
         if r.sym == 0 then 0
@@ -107,10 +107,10 @@ def planObject (formula : Formula) (elfs : Array Elf) (bases : Array UInt64)
 /-- Plan relocations for every elf. -/
 def plan (formula : Formula) (elfs : Array Elf)
     (layouts : { a : Array Layout.ObjectLayout // a.size = elfs.size })
-    (rt : Resolve.Table elfs.size) : Array (RuntimeOp elfs.size) := Id.run do
+    (rt : Resolve.Table elfs.size) : Array MemoryOp := Id.run do
   let bases : Array UInt64 := layouts.val.map (·.base)
   have hBases : bases.size = elfs.size := by simp [bases, layouts.property]
-  let mut acc : Array (RuntimeOp elfs.size) := #[]
+  let mut acc : Array MemoryOp := #[]
   for h : i in [:elfs.size] do
     acc := acc ++ planObject formula elfs bases hBases rt ⟨i, h.upper⟩
   return acc

@@ -6,7 +6,7 @@ glue that ties the verified core (`Parse`, plus the pure top-level
 `Plan` modules) to the IO layer (`Runtime`, `Discover.IO`).
 
 The IO bookend `realize` (below) is a thin wrapper: planner-side
-(`Realize.planOps`) builds an `Array RuntimeOp`, `RuntimeOp.runAll`
+(`Realize.planOps`) builds an `Array MemoryOp`, `MemoryOp.runAll`
 dispatches to externs, then the one-shot finalizers (`mmapStack` +
 `execAndJump`) transfer control. Doesn't return.
 -/
@@ -21,19 +21,22 @@ open LeanLoad.Elaborate (Elf)
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024
 
-/-- Run all planned `RuntimeOp`s, allocate the kernel-style stack,
+/-- Run all planned `MemoryOp`s, allocate the kernel-style stack,
     and `execAndJump` to entry. **Does not return.** -/
 private def realize (elfs : Array Elf) (handles : Array Runtime.FileHandle)
     (h_size : handles.size = elfs.size)
     (h_pos : 0 < elfs.size) (mainElf : Elf)
     (layouts : { a : Array Layout.ObjectLayout // a.size = elfs.size })
-    (patches : Array (RuntimeOp elfs.size))
+    (patches : Array MemoryOp)
     (ctorAddrs : Array UInt64)
     (path : String) : IO Unit := do
   let bases := layouts.val.map (·.base)
   have h_bases : bases.size = elfs.size := by simp [bases, layouts.property]
-  let ops := Realize.planOps elfs bases h_bases patches ctorAddrs
-  RuntimeOp.runAll handles h_size ops
+  let ops := Realize.planOps elfs handles h_size bases h_bases patches
+  MemoryOp.runAll ops
+  -- Ctors run after the address space is fully realized — they're
+  -- user code, not kernel ops.
+  ctorAddrs.forM Runtime.callCtor
   let mainBase := bases[0]'(by rw [h_bases]; exact h_pos)
   let mainEntry :=
     (layouts.val[0]'(by rw [layouts.property]; exact h_pos)).entry.getD 0
