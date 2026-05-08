@@ -1,30 +1,22 @@
 /-
-Init planner — pure.
+Init planner — base-free.
 
-Produces the list of constructor addresses to call, in the order
-gabi 08 § Initialization and Termination Functions requires. The
-trusted IO executor (`Exec.runInits`) just iterates the result.
-
-Two pieces here:
-
-  1. Topological sort over the discovered dep graph. gabi 08 mandates
-     a *partial order* — "deps before dependents", cycle order
-     undefined. DFS post-order is *our* implementation choice (matches
-     glibc / musl); any valid topological sort would be conformant.
-     Reverse-BFS is *not* a valid topological sort on non-tree DAGs
-     and would violate the spec.
-
-  2. Address resolution. For each object in the order, walk
-     `elf.initArr`. ET_DYN entries are relative addresses (gabi 07
-     § Base Address) and need the chosen base added; ET_EXEC entries
-     are already absolute. Filter zero entries.
+Produces a topological order over the discovered dep graph. gabi 08
+mandates a *partial order* — "deps before dependents", cycle order
+undefined. DFS post-order is *our* implementation choice (matches
+glibc / musl); any valid topological sort would be conformant.
+Reverse-BFS is *not* a valid topological sort on non-tree DAGs and
+would violate the spec.
 
 The dep edges are re-derived here from `obj.elf.needed` rather than
 stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
+
+Address resolution (turn the order + bases + initArr into the flat
+`Array UInt64` of ctor addresses to call) is base-aware and lives in
+`Materialize.initAddrs`.
 -/
 
 import LeanLoad.Discover.Plan
-import LeanLoad.Plan.Layout
 import LeanLoad.Elaborate.Elf
 import Std.Data.HashMap
 
@@ -32,7 +24,6 @@ namespace LeanLoad.Init
 
 open LeanLoad
 open LeanLoad.Discover
-open LeanLoad.Layout
 
 -- ============================================================================
 -- Dep edges (re-derived from `obj.elf.needed`)
@@ -120,29 +111,5 @@ section Example
 -- 3 is shared by 1 and 2 — DFS emits it once on the first visit.
 #guard computeOrder #[#[1, 2], #[3], #[3], #[]] 4 = #[3, 1, 2, 0]
 end Example
-
--- ============================================================================
--- Address resolution
--- ============================================================================
-
-/-- Constructor function addresses to call, in init order. Walks
-    `order` forward (init); fini callers walk
-    `(plan elfs layouts order).reverse`.
-
-    For each elf, walks `elf.initArr`: ET_DYN entries are relative
-    (add base); ET_EXEC are absolute. Zero entries are skipped — gabi
-    leaves them unspecified, but historical practice (and the table
-    layout where zero-terminators are common) treats them as no-ops. -/
-def plan (elfs : Array Elaborate.Elf) (bases : Array UInt64)
-    (order : Array Nat) : Array UInt64 := Id.run do
-  let mut addrs : Array UInt64 := #[]
-  for objectIdx in order do
-    let some elf  := elfs[objectIdx]?  | continue
-    let some base := bases[objectIdx]? | continue
-    let isExec := elf.elfType == .exec
-    for entry in elf.initArr do
-      let fnAddr := if isExec then entry else base + entry
-      if fnAddr != 0 then addrs := addrs.push fnAddr
-  return addrs
 
 end LeanLoad.Init

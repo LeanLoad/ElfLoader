@@ -23,7 +23,7 @@ import LeanLoad
 
 open LeanLoad
 open LeanLoad.Discover
-open LeanLoad.Layout
+open LeanLoad.Plan
 open LeanLoad.Elaborate (Elf)
 
 /-- Expected name set for the `build/main` fixture's dependency
@@ -77,11 +77,17 @@ private def resolveTest (g : ObjectList) : Except String Unit := do
       check (provider == expectedProvider)
         s!"{sym} resolved to {provider}, expected {expectedProvider}"
 
+/-- Synthetic reservation base used by tests that don't need the
+    kernel-picked address. Lives only here — production gets the
+    real base from `Runtime.mmapAnonAlloc`. -/
+private def testAnchor : UInt64 := 0x80000000
+
 private def layoutTest (g : ObjectList) : Except String Unit := do
-  -- `Layout.layouts` succeeds → returns a sized subtype; the size
+  -- `Plan.layouts` succeeds → returns a sized subtype; the size
   -- proof is the second component, so this test only checks that the
   -- well-formedness validation succeeds (size match is by construction).
-  let _ ← Layout.layouts Layout.dynAnchor (g.val.map (·.elf))
+  let lp := LoadPlan.ofElfs (g.val.map (·.elf))
+  let _ ← layouts testAnchor lp
   .ok ()
 
 private def orderTest (g : ObjectList) : Except String Unit := do
@@ -93,10 +99,23 @@ private def orderTest (g : ObjectList) : Except String Unit := do
 
 private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
   let elfs := g.val.map (·.elf)
-  let layouts ← Layout.layouts Layout.dynAnchor elfs
-  let patches ← Reloc.plan formula elfs layouts.val layouts.property.left
-                   (Resolve.buildTable elfs)
-  check (patches.size > 0) "expected nonzero relocation writes"
+  let rt := Resolve.buildTable elfs
+  let relocPlan := Reloc.planAll elfs rt
+  let totalEntries := relocPlan.foldl (init := 0) fun acc er =>
+    er.foldl (init := acc) fun acc sr => acc + sr.size
+  check (totalEntries > 0) "expected nonzero planned relocations"
+  -- Bake them too — exercises the formula + symValueOf path.
+  let lp := LoadPlan.ofElfs elfs
+  let bases ← layouts testAnchor lp
+  have h_lp : elfs.size = lp.elfs.size := (LoadPlan.ofElfs_size elfs).symm
+  have h_bases : bases.val.size = elfs.size := h_lp ▸ bases.property.left
+  let mut ops : Array MemoryOp := #[]
+  for h : i in [:elfs.size] do
+    let base := bases.val[i]'(by rw [h_bases]; exact h.upper)
+    let elfRelocs := (relocPlan[i]?).getD #[]
+    for sr in elfRelocs do
+      ops := ops ++ (← Materialize.bakeSegmentRelocs formula elfs bases.val h_bases base sr)
+  check (ops.size > 0) "expected nonzero baked write ops"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +
 -- ctor calls + exec) has no test stage: it doesn't return (it

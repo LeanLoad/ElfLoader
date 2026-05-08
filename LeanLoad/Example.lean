@@ -13,13 +13,14 @@ stages plus boundary-rejection cases that span more than one file:
      rejection paths a malformed binary takes through `elaborate`.
 
   3. **Plan walkthrough** — symbol resolution (`Plan/Resolve`),
-     base assignment (`Plan/Layout`), and the `Region` view over a
-     segment with a chosen base.
+     base assignment (`Plan/Layout`), and the `SegmentPlan` view
+     over a segment (base-free).
 
-  4. **Realize plan** — the `Array MemoryOp` that `Exec.realize`
-     interprets. Shows how `Region.ops` shapes change with BSS-only
-     vs file+BSS segments, and how `Realize.planOps` concatenates
-     mmap + patch + ctor ops into one list.
+  4. **Materialize** — the `Array MemoryOp` derived from a
+     `LoadOps` tree that `Main.realize` runs. Shows how
+     `Materialize.setupOps` shapes change with BSS-only vs file+BSS
+     segments, and how `Materialize.safe` flattens + checks the
+     full op list.
 
 `LeanLoad/Test.lean` exercises the real `examples/build/main`
 end-to-end; that remains the authoritative "the loader copes with
@@ -28,19 +29,24 @@ synthesis-driven readability.
 -/
 
 import LeanLoad.Plan.Layout
-import LeanLoad.Plan.Realize
 import LeanLoad.Plan.Resolve
+import LeanLoad.Materialize.Build
 import LeanLoad.Elaborate.Elf
 
 namespace LeanLoad.Example
 
 open LeanLoad
 open LeanLoad.Elaborate
-open LeanLoad.Layout
+open LeanLoad.Plan
 
 -- ============================================================================
 -- 1. Test fixtures.
 -- ============================================================================
+
+/-- Synthetic reservation base used by examples that don't need a
+    real kernel-picked address. Production loads use the address
+    returned by `Runtime.mmapAnonAlloc`. -/
+private def exampleAnchor : UInt64 := 0x80000000
 
 /-- Default `Elf` — empty in every dimension. Used only by tests that
     synthesize an `Elf` and override the few fields the test cares
@@ -149,30 +155,31 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
 
 -- ET_EXEC is rejected at elaborate time, so every elf reaching
 -- planning is ET_DYN. `assignBases` takes the reservation base
--- as a parameter; production gets it from `Runtime.mmapAnonAlloc`,
--- and tests/examples use `dynAnchor` as a synthetic constant.
-#guard assignBases dynAnchor #[synthElf (elfType := .dyn)] = #[dynAnchor]
+-- as a parameter; production gets it from `Runtime.mmapAnonAlloc`.
+#guard
+  let lp := LoadPlan.ofElfs #[synthElf (elfType := .dyn)]
+  assignBases exampleAnchor lp = #[exampleAnchor]
 
 -- Stacking: each `.dyn` lib has a 0x2000-byte span (one PT_LOAD at
 -- vaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
 -- alignUp 0x2000 0x1000 = 0x2000`. So three libs get
--- dynAnchor, dynAnchor + 0x2000, dynAnchor + 0x4000.
+-- exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000.
 private def stackingExample : Option (Array UInt64) := do
   let seg ← synthSegment? 0 0x2000
   let libElf := synthElf (elfType := .dyn) (segments := #[seg])
-  some (assignBases dynAnchor #[libElf, libElf, libElf])
+  let lp := LoadPlan.ofElfs #[libElf, libElf, libElf]
+  some (assignBases exampleAnchor lp)
 
-#guard stackingExample = some #[dynAnchor, dynAnchor + 0x2000, dynAnchor + 0x4000]
+#guard stackingExample = some #[exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000]
 
 -- ============================================================================
--- 4. Realize plan: `Region` views and `Array MemoryOp` shapes.
+-- 4. Realize plan: `SegmentPlan` views and `Array MemoryOp` shapes.
 --
--- `Region` (a Segment with chosen base) is the unit `Realize` plans
--- around. `Region.ops` emits the per-region kernel calls; the shape
--- of the emitted list depends on the segment's BSS profile.
+-- `SegmentPlan` is the base-free loader view of a segment; absolute
+-- addresses come from `base + sp.pageVaddr` at materialize time.
 -- ============================================================================
 
--- ---- 4a. Region view: absolute addresses derive from base + segment. -------
+-- ---- 4a. SegmentPlan view: base-free page math. ----------------------------
 
 /-- A 0x2000-byte BSS-only segment at vaddr 0 (page-aligned). With
     `filesz = 0` and `memsz = 0x2000`, this is two pages of pure BSS
@@ -184,27 +191,27 @@ private def bssOnlySeg : Option Segment :=
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
   (Segment.ofPhdr phdr #[] #[]).toOption
 
--- A region with the BSS-only segment placed at `dynAnchor`.
-private def bssOnlyRegion : Option Region :=
-  bssOnlySeg.map fun seg => { base := dynAnchor, seg }
+private def bssOnlyPlan : Option SegmentPlan :=
+  bssOnlySeg.map SegmentPlan.ofSegment
 
--- The region's mmap'd range is `[base, base + 0x2000)`.
-#guard bssOnlyRegion.map (·.absVaddr) = some dynAnchor
-#guard bssOnlyRegion.map (·.length)   = some 0x2000
+-- The plan's mmap'd range is `[pageVaddr, pageVaddr + pageLength)`,
+-- absolute addresses computed as `base + pageVaddr`.
+#guard bssOnlyPlan.map (·.pageVaddr)   = some 0
+#guard bssOnlyPlan.map (·.pageLength)  = some 0x2000
 
 -- BSS-only: no file backing — the underlying object reservation
 -- already covers it (kernel zero-fills MAP_ANONYMOUS).
-#guard bssOnlyRegion.map (·.hasFileBacked) = some false
+#guard bssOnlyPlan.map (·.hasFileBacked) = some false
 
--- ---- 4b. Region.ops shape — `#guard`-able since `MemoryOp` is pure. ------
+-- ---- 4b. setupOps shape — `#guard`-able since `MemoryOp` is pure. ---------
 --
--- Each region emits 1–3 ops inside the kernel-picked reservation:
+-- Each segment emits 1–3 ops inside the kernel-picked reservation:
 --   • mmapFile (if hasFileBacked) — file overlay (with PROT_WRITE widening)
 --   • zeroout  (if hasPartialBss) — clear file content past `filesz`
 --   • mprotect — final perms over the whole segment range
 --
 -- The reservation underneath (kernel-picked anon, RW) handles BSS;
--- no per-region mmapAnon needed. The single mprotect covers both
+-- no per-segment mmapAnon needed. The single mprotect covers both
 -- file overlay and BSS tail since they're all inside the reservation.
 --
 --   filesz=0          (BSS-only):              [mprotect]                       (1)
@@ -231,22 +238,22 @@ private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- pa
 private def fileAnonBss     : Option Segment := synthSeg? 0 0x2000 0x1000  -- full-page BSS only
 private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- partial + full-page
 
-private def regionOps (seg : Option Segment) : Option (Array MemoryOp) :=
-  seg.map fun s => Realize.Region.ops dummyHandle ({ base := dynAnchor, seg := s } : Region)
+private def setupOpsOf (seg : Option Segment) : Option (Array MemoryOp) :=
+  seg.map fun s => Materialize.setupOps dummyHandle (SegmentPlan.ofSegment s) exampleAnchor
 
-#guard (regionOps bssOnlySeg).map (·.size)      = some 1  -- mprotect only
-#guard (regionOps fileOnlySeg).map (·.size)     = some 2  -- mmapFile, mprotect
-#guard (regionOps filePartialBss).map (·.size)  = some 3  -- mmapFile, zeroout, mprotect
-#guard (regionOps fileAnonBss).map (·.size)     = some 2  -- mmapFile, mprotect
-#guard (regionOps fileBothBss).map (·.size)     = some 3  -- mmapFile, zeroout, mprotect
+#guard (setupOpsOf bssOnlySeg).map (·.size)      = some 1  -- mprotect only
+#guard (setupOpsOf fileOnlySeg).map (·.size)     = some 2  -- mmapFile, mprotect
+#guard (setupOpsOf filePartialBss).map (·.size)  = some 3  -- mmapFile, zeroout, mprotect
+#guard (setupOpsOf fileAnonBss).map (·.size)     = some 2  -- mmapFile, mprotect
+#guard (setupOpsOf fileBothBss).map (·.size)     = some 3  -- mmapFile, zeroout, mprotect
 
--- ---- 4c. End-to-end planOps: realize ++ patches, gated by safety check. --
+-- ---- 4c. End-to-end Materialize.safe gating an empty LoadOps. ----------
 --
--- `Realize.planOps rsvAddr rsvLen ...` returns `Except String { ops //
--- safety predicates wrt [rsvAddr, +rsvLen) }`. Empty input → empty
--- op list, predicates vacuously hold for any reservation range.
+-- `Materialize.safe rsvAddr rsvLen lo` returns `Except String { ops //
+-- safety predicates wrt [rsvAddr, +rsvLen) }`. The empty `LoadOps`
+-- tree flattens to an empty op list, and the predicates vacuously
+-- hold for any reservation range.
 
--- Empty graph: no elfs, no handles, no patches → empty op list.
-#guard (Realize.planOps dynAnchor 0 #[] #[] (by decide) #[] (by decide) #[]).toOption.map (·.val.size) = some 0
+#guard (Materialize.safe exampleAnchor 0 #[]).toOption.map (·.val.size) = some 0
 
 end LeanLoad.Example

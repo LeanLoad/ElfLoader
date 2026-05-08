@@ -45,7 +45,7 @@ open LeanLoad.Parse (RawElf RawPhdr RawRela RawSym)
 --
 -- Spec: gabi 07 § Program Loading. These are *spec-level* (gabi
 -- vaddr/memsz ordering); page-aligned non-overlap is a separate
--- runtime check via `Layout.segmentsSorted`.
+-- runtime check via `Plan.segmentsSorted` (over `SegmentPlan`s).
 --
 -- The two predicates live as standalone defs (not bundled in a
 -- `WellFormed` wrapper) so `Elf` can carry them as direct fields.
