@@ -86,36 +86,39 @@ structure LoadedObject where
   elf  : Elaborate.Elf
 
 /-- Output of `Discover` — the loaded objects in BFS discovery order
-    with `main` at index 0. The non-emptiness witness is in the type:
-    `Discover.discover` always seeds with main, and BFS only ever
-    pushes (never removes), so `0 < g.val.size` holds by construction.
-    Encoding the invariant in the type makes `g.main` total (no
-    `Option`) and removes the "what if there's no main" defensive
-    code from every consumer.
+    with `main` at index 0. Two invariants live in the type:
+
+      * `sizePos` — `0 < val.size`. `discover` seeds with main and
+        BFS only pushes, so non-emptiness holds by construction.
+        Makes `main` total (no `Option`).
+
+      * `namesNodup` — names are pairwise distinct. The BFS dedups
+        via canonical SONAME before pushing. `Init.buildDeps` relies
+        on this so its `name → index` map is injective.
 
     Access pattern: callers peel via `g.val` to use Array methods
-    (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). The subtype
-    layer is purposefully visible — every `.val` is a reminder that
-    we're stripping a load-bearing invariant. Use `g.main` whenever
-    main is what you want, not `g.val[0]?`.
+    (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). The
+    structure wrapper is purposefully visible — every `.val` is a
+    reminder that we're stripping a load-bearing invariant. Use
+    `g.main` whenever main is what you want, not `g.val[0]?`.
 
     Dep edges are *not* stored. The only downstream consumer is
     `LeanLoad.Init.computeOrder` (init/fini), which re-derives them
     from `obj.elf.needed`. -/
-abbrev ObjectList := { a : Array LoadedObject //
-  0 < a.size ∧ (a.map (·.name)).toList.Nodup }
+structure ObjectList where
+  /-- The loaded objects, in BFS discovery order. Main at index 0. -/
+  val        : Array LoadedObject
+  /-- Non-emptiness — `0 < val.size`. Witnessed by `discover` seeding
+      with `main` before entering the BFS loop. -/
+  sizePos    : 0 < val.size
+  /-- Names pairwise distinct. Witnessed by the BFS `alreadyLoaded`
+      dedup check; used by `Init.buildDeps` for an injective
+      `name → index` map. -/
+  namesNodup : (val.map (·.name)).toList.Nodup
 
 namespace ObjectList
 
-/-- Non-emptiness witness — the first half of `ObjectList.property`. -/
-def sizePos (g : ObjectList) : 0 < g.val.size := g.property.1
-
-/-- Names of the loaded objects are pairwise distinct — the second
-    half of `ObjectList.property`. Used by `Init.buildDeps` to argue
-    the `name → index` map is injective. -/
-def namesNodup (g : ObjectList) : (g.val.map (·.name)).toList.Nodup := g.property.2
-
-/-- The main executable — total because the subtype carries the
+/-- The main executable — total because `ObjectList` carries the
     non-emptiness witness. -/
 def main (g : ObjectList) : LoadedObject := g.val[0]'g.sizePos
 
