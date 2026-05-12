@@ -28,6 +28,7 @@ Three top-level entry points:
 
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Reloc
+import LeanLoad.Plan.Aggregate
 
 namespace LeanLoad.Materialize
 
@@ -40,18 +41,22 @@ open LeanLoad.Elaborate (Elf Formula)
 -- ============================================================================
 
 /-- Build the `LoadOps n` tree from a `Reserve` (with no-wrap
-    witness), a `LoadPlan n` (parametric in elf count `n`, with
-    `totalSpan_eq`), the per-elf raw `Elf`s (used for symbol-value
-    lookup) and file handles (used for the file overlay mmap), and
-    the per-arch reloc formula. Per-segment relocs live on
-    `SegmentPlan` itself — no parallel `LoadRelocs` argument.
+    witness) and a fully populated `Plan` aggregate. The `Plan`
+    bundles the `LoadPlan`, the per-elf `Elf`s, the file handles, and
+    the per-arch reloc formula at one parametric size, so this
+    function has no parallel-array bookkeeping at the call site.
 
-    Computes `bases` internally via `Plan.assignBases rsv.addr lp`. -/
-def build (rsv : Reserve) (lp : LoadPlan n)
-    (elfs : Array Elf) (h_elfs : elfs.size = n)
-    (handles : Array Runtime.FileHandle) (h_handles : handles.size = n)
-    (formula : Formula) :
-    Except String (LoadOps n) := do
+    Computes `bases` internally via `Plan.assignBases rsv.addr
+    plan.load`. -/
+def build (plan : Plan.Plan) (rsv : Reserve) :
+    Except String (LoadOps plan.objects.val.size) := do
+  let lp := plan.load
+  let elfs := plan.objectElfs
+  let handles := plan.objectHandles
+  let formula := plan.formula
+  let n := plan.objects.val.size
+  have h_elfs    : elfs.size    = n := plan.objectElfs_size
+  have h_handles : handles.size = n := plan.objectHandles_size
   have h_lp_elfs : lp.elfs.size = n := lp.elfs_size
   let bases := Plan.assignBases rsv.addr lp
   have h_bases_n : bases.size = n :=
@@ -81,8 +86,7 @@ def build (rsv : Reserve) (lp : LoadPlan n)
 -- ============================================================================
 
 /-- Constructor function addresses to call, in init order. Walks
-    `order` forward (init); fini callers walk `(initAddrs lp bases
-    h_bases order).reverse`.
+    `order` forward (init); fini callers reverse the result.
 
     For each elf, walks `elf.initArr`: ET_DYN entries are relative
     (add base); ET_EXEC are absolute. Zero entries are skipped — gabi
@@ -103,6 +107,17 @@ def initAddrs (lp : LoadPlan n) (bases : Array UInt64)
         let fnAddr := if isExec then entry else base + entry
         if fnAddr != 0 then addrs := addrs.push fnAddr
     return addrs
+
+/-- One-shot ctor address resolution from a `Plan` + reservation
+    base. The two derived arrays (`bases`, `initOrder`) are typed at
+    the same `objects.val.size`, so no coherence proofs leak into the
+    caller. -/
+def ctorAddrs (plan : Plan.Plan) (rsv : Reserve) : Array UInt64 :=
+  let lp := plan.load
+  let bases := Plan.assignBases rsv.addr lp
+  have h_bases : bases.size = plan.objects.val.size :=
+    (Plan.assignBases_size _ _).trans lp.elfs_size
+  initAddrs lp bases h_bases plan.initOrder
 
 -- ============================================================================
 -- Safety gate: decidable check over the structured tree.

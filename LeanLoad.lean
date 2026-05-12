@@ -36,6 +36,7 @@ import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Init
+import LeanLoad.Plan.Aggregate
 
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Reloc

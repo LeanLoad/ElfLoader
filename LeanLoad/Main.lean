@@ -70,34 +70,16 @@ private def Nat.hex12 (n : Nat) : String :=
 #guard padR "abc" 6 '.' = "abc..."
 #guard padL "abc" 6 '.' = "...abc"
 
-/-- Discover (IO) → pure base-free planning (Layout, Resolve, Reloc,
-    Init order) → kernel-picked reservation → assignBases →
-    Materialize → realize. **Does not return.** -/
+/-- Discover (IO) → pure-pipeline `Plan` aggregate (resolve + layout
+    + relocs + init order) → kernel-picked reservation → Materialize
+    → realize. **Does not return.** -/
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
-  let elfs    := g.val.map (·.elf)
-  let handles := g.val.map (·.handle)
-  have h_elfs_eq : elfs.size = g.val.size := by simp [elfs]
-  have h_handles : handles.size = elfs.size := by simp [elfs, handles]
-  let mainElf := g.main.elf
-  let resTable := Resolve.buildTable elfs
-  if let some u := resTable.missing[0]? then
-    throw (IO.userError s!"load: {resTable.missing.size} unresolved strong symbol(s); first: {u.name}")
-  -- Pure base-free planning. `LoadPlan.ofElfs` plans relocs per
-  -- segment, so there is no separate `Reloc.planAll` call.
-  let lp ← IO.ofExcept (Plan.LoadPlan.ofElfs elfs resTable)
-  -- `Init.order` returns `Array (Fin g.val.size)`; cast to the
-  -- `lp`-side index type (`Fin elfs.size`).
-  let initOrder : Array (Fin elfs.size) := h_elfs_eq.symm ▸ Init.order g
-  -- Kernel-picked reservation covering every loaded object.
-  let rsv ← Reserve.run lp.totalSpan
-  let bases := Plan.assignBases rsv.addr lp
-  let formula := Elaborate.formulaFor mainElf.machine
-  have h_bases : bases.size = elfs.size :=
-    (Plan.assignBases_size rsv.addr lp).trans lp.elfs_size
-  let lo ← IO.ofExcept (Materialize.build rsv lp elfs rfl handles h_handles formula)
-  let ctorAddrs := Materialize.initAddrs lp bases h_bases initOrder
-  realize rsv lo mainElf ctorAddrs path
+  let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
+  let rsv ← Reserve.run plan.load.totalSpan
+  let lo ← IO.ofExcept (Materialize.build plan rsv)
+  let ctorAddrs := Materialize.ctorAddrs plan rsv
+  realize rsv lo plan.objects.main.elf ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
@@ -106,11 +88,6 @@ def debug (path : String) : IO Unit := do
   let g ← Discover.discover path
   for obj in g.val do
     IO.eprintln s!"  {obj.name}"
-  let elfs    := g.val.map (·.elf)
-  let handles := g.val.map (·.handle)
-  have h_size : handles.size = elfs.size := by simp [elfs, handles]
-  have _h_pos  : 0 < elfs.size := by simp [elfs]; exact g.sizePos
-  let mainElf := g.main.elf
 
   IO.eprintln "\n== 2. Parse + Elaborate (per-object Elf views) =="
   for h : i in [:g.val.size] do
@@ -137,20 +114,22 @@ def debug (path : String) : IO Unit := do
         memsz=0x{Nat.hex seg.memsz.toNat} \
         prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
 
+  -- One-shot pure-pipeline build. Every later stage reads from `plan`.
+  let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
+  let mainElf := plan.objects.main.elf
+
   IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
-  let resTable := Resolve.buildTable elfs
-  have h_eq : elfs.size = g.val.size := by simp [elfs]
-  let providerName (r : Resolve.SymRef elfs.size) : String :=
-    g.val[r.objectIdx.val]'(h_eq ▸ r.objectIdx.isLt) |>.name
-  let nameW := resTable.entries.foldl (init := 0) (fun w (u, _) => max w u.name.length)
-  let providerW := resTable.entries.foldl (init := "<unresolved>".length) fun w (_, res) =>
+  let providerName (r : Resolve.SymRef plan.objects.val.size) : String :=
+    plan.objects.val[r.objectIdx.val] |>.name
+  let nameW := plan.resolve.entries.foldl (init := 0) (fun w (u, _) => max w u.name.length)
+  let providerW := plan.resolve.entries.foldl (init := "<unresolved>".length) fun w (_, res) =>
     match res with
     | .found r => max w (providerName r).length
     | _        => w
   let mut currentObj : Option Nat := none
-  for (u, res) in resTable.entries do
+  for (u, res) in plan.resolve.entries do
     if currentObj != some u.objectIdx then
-      if let some obj := g.val[u.objectIdx]? then
+      if let some obj := plan.objects.val[u.objectIdx]? then
         IO.eprintln s!"{obj.name}:"
       currentObj := some u.objectIdx
     let suffix : String := match res with
@@ -158,41 +137,42 @@ def debug (path : String) : IO Unit := do
       | .strongUndef => s!"{padR "<unresolved>" providerW}"
       | .found r =>
         let p := padR (providerName r) providerW
-        match g.val[r.objectIdx]?.bind (fun obj => obj.elf.symtab[r.symIdx]?) with
+        match plan.objects.val[r.objectIdx]?.bind
+            (fun obj => obj.elf.symtab[r.symIdx]?) with
         | some entry => s!"{p} [sym {r.symIdx} @0x{Nat.hex entry.value.toNat}]"
         | none       => s!"{p} [sym {r.symIdx}]"
     IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
-  IO.eprintln s!"strong missing: {resTable.missing.size}, weak missing: {resTable.weakMissing.size}"
+  IO.eprintln s!"strong missing: {plan.resolve.missing.size}, \
+    weak missing: {plan.resolve.weakMissing.size}"
 
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
-  let lp ← IO.ofExcept (Plan.LoadPlan.ofElfs elfs resTable)
+  let lp := plan.load
   let rsv ← Reserve.run lp.totalSpan
   IO.eprintln s!"  reservation = [0x{Nat.hex rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := Plan.assignBases rsv.addr lp
-  have h_bases : bases.size = elfs.size :=
+  have h_bases : bases.size = plan.objects.val.size :=
     (Plan.assignBases_size rsv.addr lp).trans lp.elfs_size
-  for h : i in [:g.val.size] do
-    let base := bases[i]'(by rw [h_bases]; simp [elfs]; exact h.upper)
-    let obj := g.val[i]
+  for h : i in [:plan.objects.val.size] do
+    let base := bases[i]'(by rw [h_bases]; exact h.upper)
+    let obj := plan.objects.val[i]
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
-    have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; simp [elfs]; exact h.upper
+    have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; exact h.upper
     let ep := lp.elfs[i]'hi_lp
     for sp in ep.segments do
       let absVa := base + sp.pageVaddr
       IO.eprintln s!"  vaddr=0x{Nat.hex absVa.toNat} len=0x{Nat.hex sp.pageLength.toNat} prot={sp.prot}"
-  have h_elfs_eq : elfs.size = g.val.size := by simp [elfs]
-  let initOrder : Array (Fin elfs.size) := h_elfs_eq.symm ▸ Init.order g
-  IO.eprintln s!"init order: {initOrder.map (·.val)}"
-  IO.eprintln s!"fini order: {(initOrder.map (·.val)).reverse}"
+  IO.eprintln s!"init order: {plan.initOrder.map (·.val)}"
+  IO.eprintln s!"fini order: {(plan.initOrder.map (·.val)).reverse}"
 
   IO.eprintln "\n== 5. Reloc (planned 4/8-byte stores, per-arch formula) =="
-  let formula := Elaborate.formulaFor mainElf.machine
+  let formula := plan.formula
+  let elfs := plan.objectElfs
   let labelW := 16
-  for h : i in [:g.val.size] do
-    let obj  := g.val[i]
+  for h : i in [:plan.objects.val.size] do
+    let obj  := plan.objects.val[i]
     let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW
-    have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; simp [elfs]; exact h.upper
+    have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; exact h.upper
     let ep := lp.elfs[i]'hi_lp
     for h2 : segI in [:ep.segments.size] do
       let sp := ep.segments[segI]
@@ -203,7 +183,7 @@ def debug (path : String) : IO Unit := do
             match bases[ref.objectIdx.val]? with
             | none => 0
             | some provBase =>
-              match elfs[ref.objectIdx].symtab[ref.symIdx]? with
+              match elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?) with
               | none     => 0
               | some sym => provBase + sym.value
         let inputs : Elaborate.FormulaInputs :=
@@ -214,19 +194,19 @@ def debug (path : String) : IO Unit := do
           let symName : String := match entry.target with
             | none => ""
             | some ref =>
-              (elfs[ref.objectIdx].symtab[ref.symIdx]?.bind (·.name)).getD "?"
+              (elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?)
+                |>.bind (·.name)).getD "?"
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + entry.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let lo ← IO.ofExcept
-    (Materialize.build rsv lp elfs rfl handles h_size formula)
+  let lo ← IO.ofExcept (Materialize.build plan rsv)
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
     {lo.stores.size} stores, \
     {lo.mprotects.size} mprotects across {lo.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
-  let ctorAddrs := Materialize.initAddrs lp bases h_bases initOrder
+  let ctorAddrs := Materialize.ctorAddrs plan rsv
   IO.eprintln s!"planned {ctorAddrs.size} constructor address(es)"
 
   IO.eprintln "\n== 7. Materialize.safe → LoadOps.runSafe → callCtors → execAndJump (does not return) =="
