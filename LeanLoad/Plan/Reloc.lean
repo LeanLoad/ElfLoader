@@ -1,17 +1,28 @@
 /-
 Relocation planning — base-free.
 
-Per `RawRela` we resolve the symbol target — local-defined refs
-become `(this object, sym)`, undef refs go through `Resolve.Table`,
-and `r.sym = 0` becomes `none` — and bundle that with the rela's
-`type` / `r_offset` / `r_addend` into a `RelocEntry`. None of these
-fields knows about an mmap base; the materializer (in
+Per `RawRela` we resolve the symbol reference into a `RelocTarget`
+(three explicit cases: `noSymbol`, `weakUnresolved`, `resolved ref`)
+and bundle that with the rela's `type` / `r_offset` / `addend` and
+the inherited `coversRela` witness into a `RelocEntry n seg`. None
+of these fields knows about an mmap base; the materializer (in
 `Materialize.bakeReloc`) computes the absolute place and the symbol
 value once a reservation base is chosen.
 
-This file owns the `RelocEntry` type and per-rela planner
-(`planOne`). The per-segment planner lives in `Plan/Layout.lean` —
-each `SegmentPlan` carries its own `relocs` array, so there's no
+Key types:
+  • `RelocTarget n` — 3-case inductive replacing the old
+    `Option (SymRef n)`. Lets `Main.debug` distinguish "no symbol"
+    from "weak-unresolved" diagnostically; `Materialize.bakeReloc`
+    collapses both unresolved cases via `RelocTarget.symRef?`.
+  • `RelocEntry n seg` — parameterised by the owning `Segment` so
+    the `coversRela seg.vaddr seg.memsz r_offset` witness from
+    `Segment.rela` / `Segment.jmprel` propagates forward into the
+    planned tree. `Materialize.StoresContained` reads this witness
+    structurally (via `BasedPlan.segment_storeRange_in_rsv`).
+
+This file owns `RelocEntry` and the per-rela planner (`planOne`).
+The per-segment planner lives in `Plan/Layout.lean` — each
+`SegmentPlan` carries its own `relocs` array, so there's no
 parallel-tree-of-relocs to construct or zip against the layout tree
 later. `Materialize.bakeSegmentRelocs` reads `sp.relocs` directly.
 -/

@@ -3,30 +3,48 @@ Layout planning — base-free.
 
 Each PT_LOAD `Segment` lifts to a `SegmentPlan n` whose page math is
 precomputed once and stored: `pageVaddr`, `pageLength`, `pageInset`,
-`fileOverlayLen`, `fileOffset`, `partialBssLen`, `prot`. The plan
-also carries its own `relocs : Array (RelocEntry n segment)` — there is no
-parallel relocation tree. Every offset is relative to `base = 0`;
-the materializer adds the chosen base when emitting structured slots.
+`fileOverlayLen`, `fileOffset`, `partialBssLen`, `prot`. Per-segment
+*invariants* are carried alongside as Prop fields so the
+materializer's safety proofs read them by projection without
+unfolding the page-arithmetic functions:
+
+  • `pageEnd_lt`         — `pageVaddr + pageLength < 2^64` (no wrap).
+  • `fileOverlay_le`     — `fileOverlayLen ≤ pageLength`.
+  • `vaddr_memsz_le`     — `vaddr + memsz ≤ pageVaddr + pageLength`
+                           (store-window upper bound for relocs).
+  • `zero_end_le`        — `pageInset + filesz + partialBssLen ≤
+                           pageLength` (BSS-zero slot upper bound).
+  • `pageInset_eq_vaddr` — `pageVaddr + pageInset = vaddr` (lets
+                           per-slot proofs rewrite to canonical form).
+
+`SegmentPlan` also carries `relocs : Array (RelocEntry n segment)`
+(no parallel relocation tree). Every offset is relative to
+`base = 0`; the materializer adds the chosen base when emitting
+structured slots.
 
 Hierarchy:
-  • `SegmentPlan n` — one PT_LOAD with page math + per-segment relocs.
-  • `ElfPlan n`     — one elf's `SegmentPlan`s, its `advance`, plus a
-                      proof that the page-aligned ranges don't overlap
-                      (`segmentsSorted`) and each one fits in `advance`.
+  • `SegmentPlan n` — one PT_LOAD with page math + invariants + relocs.
+  • `ElfPlan n`     — one elf's `SegmentPlan`s, its `advance`, plus
+                      `segmentsSorted` (page-aligned ranges don't
+                      overlap) and `pageEndAddr_le_advance` (each
+                      segment fits in `advance`).
   • `LoadPlan n`    — every elf's `ElfPlan` plus the cumulative
-                      `totalSpan` (the `len` for `mmapAnonAlloc`).
+                      `totalSpan` and the `totalSpan_eq` Nat↔UInt64
+                      bridge.
 
-The natural number parameter `n` is the elf count: every `RelocEntry`
-indexes the global elf array with `Fin n`.
+The natural number parameter `n` is the elf count: every
+`RelocEntry` indexes the global elf array with `Fin n`.
 
 `LoadPlan.ofElfs` builds the whole tree in one pass: it consumes
-`(elfs, resolveTable)` and produces a fully-planned `LoadPlan elfs.size`.
-Per-elf page-aligned non-overlap is validated as part of construction
-— failure is rare (modern toolchains never emit overlapping page
-ranges) but possible in principle.
+`(elfs, resolveTable)` and produces a fully-planned
+`LoadPlan elfs.size`. Per-elf page-aligned non-overlap is validated
+as part of construction — failure is rare (modern toolchains never
+emit overlapping page ranges) but possible in principle.
 
 Once a `LoadPlan` exists, `assignBases base lp` is total: it stacks
 each elf by `alignUp objectSpan 0x1000` from the IO-supplied base.
+The closed-form bound `assignBases_at_toNat` feeds
+`Materialize.BasedPlan.bases_at_toNat`.
 
 Spec: gabi 07 § Program Header (page-aligned mmap views, base
 assignment, span over loadable segments).
