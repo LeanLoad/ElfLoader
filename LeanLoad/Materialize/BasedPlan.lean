@@ -327,6 +327,204 @@ theorem segment_zeroRange_in_rsv (bp : BasedPlan)
   · rw [h_a2_eq, h_a1_eq, h_base_pv]; omega
   · rw [h_a2_eq, h_a1_eq, h_base_pv]; omega
 
+-- ============================================================================
+-- Disjointness lemmas. Two flavours:
+--   • within-elf — same `i`, distinct segments `j₁ < j₂`. Pulls
+--     `Plan.Sorted` (page-aligned non-overlap from ElfPlan) into a
+--     `Runtime.Disjoint` claim about the mmap'd ranges.
+--   • cross-elf  — distinct elves `i₁ < i₂`. Uses the existing
+--     `base_plus_advance_le_base` for the dominant inequality.
+--
+-- Both end at the same shape: `Disjoint (base + sp.pageVaddr)
+-- (fileOverlayLen or pageLength) (base' + sp'.pageVaddr) (...)`.
+-- ============================================================================
+
+/-- Within an elf: page-aligned segment ranges don't overlap. Lifts
+    `Plan.Sorted` (the existing ElfPlan invariant) from `pageEndAddr ≤
+    pageVaddr` to `base + pageEnd ≤ base + pageVaddr'`. -/
+theorem within_elf_pageRange_disjoint (bp : BasedPlan)
+    (i : Nat) (h_i : i < bp.n)
+    (j₁ j₂ : Nat)
+    (h_j₁ : j₁ < (bp.plan.load.elfs[i]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i)).segments.size)
+    (h_j₂ : j₂ < (bp.plan.load.elfs[i]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i)).segments.size)
+    (h_lt : j₁ < j₂) :
+    Runtime.Disjoint
+      ((bp.bases[i]'(by rw [bp.bases_size]; exact h_i)) +
+        ((bp.plan.load.elfs[i]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₁]'h_j₁).pageVaddr)
+      ((bp.plan.load.elfs[i]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₁]'h_j₁).pageLength
+      ((bp.bases[i]'(by rw [bp.bases_size]; exact h_i)) +
+        ((bp.plan.load.elfs[i]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₂]'h_j₂).pageVaddr)
+      ((bp.plan.load.elfs[i]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₂]'h_j₂).pageLength := by
+  have h_lp_i : i < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i
+  -- The page-aligned ranges are sorted by `ElfPlan.segmentsSorted`:
+  -- `sp_j1.pageEndAddr ≤ sp_j2.pageVaddr`. Lift to Nat.
+  have h_pe_le_pv :
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageEndAddr ≤
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₂]'h_j₂).pageVaddr :=
+    (bp.plan.load.elfs[i]'h_lp_i).segmentsSorted j₁ h_j₁ j₂ h_j₂ h_lt
+  have h_pe_le_pv_nat :
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageEndAddr.toNat ≤
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₂]'h_j₂).pageVaddr.toNat :=
+    UInt64.le_iff_toNat_le.mp h_pe_le_pv
+  -- `pageEndAddr.toNat = pageVaddr.toNat + pageLength.toNat` via `pageEnd_lt`.
+  have h_no_wrap_j₁ :
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageVaddr.toNat +
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageLength.toNat <
+      2 ^ 64 :=
+    (bp.plan.load.elfs[i]'h_lp_i).pageEnd_lt j₁ h_j₁
+  have h_pe_eq :
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageEndAddr.toNat =
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageVaddr.toNat +
+      ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageLength.toNat := by
+    change ((_ + _ : UInt64)).toNat = _
+    rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_no_wrap_j₁
+  have h_base_pv₁ := bp.segment_base_add_pageVaddr_toNat i h_i j₁ h_j₁
+  have h_base_pv₂ := bp.segment_base_add_pageVaddr_toNat i h_i j₂ h_j₂
+  have h_no_wrap_base₁ := bp.segment_pageRange_no_wrap i h_i j₁ h_j₁
+  -- Disjoint is `LHS_end ≤ RHS_start ∨ RHS_end ≤ LHS_start`. Take left,
+  -- normalise both `(base + pageVaddr).toNat` decompositions, then
+  -- `omega`.
+  left
+  show ((bp.bases[i]'(by rw [bp.bases_size]; exact h_i)) +
+        ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageVaddr).toNat +
+       ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageLength.toNat ≤
+       ((bp.bases[i]'(by rw [bp.bases_size]; exact h_i)) +
+        ((bp.plan.load.elfs[i]'h_lp_i).segments[j₂]'h_j₂).pageVaddr).toNat
+  rw [h_base_pv₁, h_base_pv₂]
+  omega
+
+/-- Within an elf: mmap ranges don't overlap. Same proof skeleton as
+    `within_elf_pageRange_disjoint` but with `fileOverlayLen ≤ pageLength`
+    shrinkage applied to both sides. -/
+theorem within_elf_mmapRange_disjoint (bp : BasedPlan)
+    (i : Nat) (h_i : i < bp.n)
+    (j₁ j₂ : Nat)
+    (h_j₁ : j₁ < (bp.plan.load.elfs[i]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i)).segments.size)
+    (h_j₂ : j₂ < (bp.plan.load.elfs[i]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i)).segments.size)
+    (h_lt : j₁ < j₂) :
+    Runtime.Disjoint
+      ((bp.bases[i]'(by rw [bp.bases_size]; exact h_i)) +
+        ((bp.plan.load.elfs[i]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₁]'h_j₁).pageVaddr)
+      ((bp.plan.load.elfs[i]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₁]'h_j₁).fileOverlayLen
+      ((bp.bases[i]'(by rw [bp.bases_size]; exact h_i)) +
+        ((bp.plan.load.elfs[i]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₂]'h_j₂).pageVaddr)
+      ((bp.plan.load.elfs[i]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i)).segments[j₂]'h_j₂).fileOverlayLen := by
+  have h_page := bp.within_elf_pageRange_disjoint i h_i j₁ j₂ h_j₁ h_j₂ h_lt
+  have h_lp_i : i < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i
+  have h_fo_le_pl₁ :=
+    (bp.plan.load.elfs[i]'h_lp_i).fileOverlay_le_pageLength j₁ h_j₁
+  have h_fo_le_pl₂ :=
+    (bp.plan.load.elfs[i]'h_lp_i).fileOverlay_le_pageLength j₂ h_j₂
+  -- `h_page : Disjoint base+pv₁ pageLength₁ base+pv₂ pageLength₂` —
+  -- shrink each len from pageLength to fileOverlayLen.
+  rcases h_page with h_left | h_right
+  · left; omega
+  · right; omega
+
+/-- Cross-elf: page ranges of any two distinct elves don't overlap.
+    Uses `base_plus_advance_le_base` plus `pageEndAddr_le_advance` to
+    place the entire page range inside the per-elf slice. -/
+theorem cross_elf_pageRange_disjoint (bp : BasedPlan)
+    (i₁ i₂ : Nat) (h_i₁ : i₁ < bp.n) (h_i₂ : i₂ < bp.n)
+    (j₁ : Nat) (h_j₁ : j₁ < (bp.plan.load.elfs[i₁]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i₁)).segments.size)
+    (j₂ : Nat) (h_j₂ : j₂ < (bp.plan.load.elfs[i₂]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i₂)).segments.size)
+    (h_lt : i₁ < i₂) :
+    Runtime.Disjoint
+      ((bp.bases[i₁]'(by rw [bp.bases_size]; exact h_i₁)) +
+        ((bp.plan.load.elfs[i₁]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i₁)).segments[j₁]'h_j₁).pageVaddr)
+      ((bp.plan.load.elfs[i₁]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i₁)).segments[j₁]'h_j₁).pageLength
+      ((bp.bases[i₂]'(by rw [bp.bases_size]; exact h_i₂)) +
+        ((bp.plan.load.elfs[i₂]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i₂)).segments[j₂]'h_j₂).pageVaddr)
+      ((bp.plan.load.elfs[i₂]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i₂)).segments[j₂]'h_j₂).pageLength := by
+  have h_base_pv₁ := bp.segment_base_add_pageVaddr_toNat i₁ h_i₁ j₁ h_j₁
+  have h_pageEnd₁ := bp.segment_pageRange_in_rsv i₁ h_i₁ j₁ h_j₁
+  have h_pageEnd₂ := bp.segment_pageRange_in_rsv i₂ h_i₂ j₂ h_j₂
+  have h_no_wrap₁ := bp.segment_pageRange_no_wrap i₁ h_i₁ j₁ h_j₁
+  have h_no_wrap₂ := bp.segment_pageRange_no_wrap i₂ h_i₂ j₂ h_j₂
+  have h_lp_i₁ : i₁ < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i₁
+  have h_lp_i₂ : i₂ < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i₂
+  have h_pe₁ : ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageVaddr.toNat +
+               ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageLength.toNat ≤
+               (bp.plan.load.elfs[i₁]'h_lp_i₁).advance.toNat := by
+    have h_eq : ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageVaddr.toNat +
+                ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageLength.toNat =
+                ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageEndAddr.toNat := by
+      show _ =
+        (((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageVaddr +
+         ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageLength).toNat
+      rw [UInt64.toNat_add]
+      have h_no_wrap :=
+        (bp.plan.load.elfs[i₁]'h_lp_i₁).pageEnd_lt j₁ h_j₁
+      exact (Nat.mod_eq_of_lt h_no_wrap).symm
+    rw [h_eq]
+    exact (bp.plan.load.elfs[i₁]'h_lp_i₁).pageEndAddr_le_advance j₁ h_j₁
+  have h_b_le_b := bp.base_plus_advance_le_base i₁ i₂ h_i₁ h_i₂ h_lt
+  have h_base_pv₂ := bp.segment_base_add_pageVaddr_toNat i₂ h_i₂ j₂ h_j₂
+  -- Take left disjunct, normalise both `(base + pv).toNat`, omega.
+  left
+  show ((bp.bases[i₁]'(by rw [bp.bases_size]; exact h_i₁)) +
+        ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageVaddr).toNat +
+       ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageLength.toNat ≤
+       ((bp.bases[i₂]'(by rw [bp.bases_size]; exact h_i₂)) +
+        ((bp.plan.load.elfs[i₂]'h_lp_i₂).segments[j₂]'h_j₂).pageVaddr).toNat
+  rw [h_base_pv₁, h_base_pv₂]
+  omega
+
+/-- Cross-elf mmap-range disjointness — shrink page-range disjointness
+    using `fileOverlay_le_pageLength`. -/
+theorem cross_elf_mmapRange_disjoint (bp : BasedPlan)
+    (i₁ i₂ : Nat) (h_i₁ : i₁ < bp.n) (h_i₂ : i₂ < bp.n)
+    (j₁ : Nat) (h_j₁ : j₁ < (bp.plan.load.elfs[i₁]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i₁)).segments.size)
+    (j₂ : Nat) (h_j₂ : j₂ < (bp.plan.load.elfs[i₂]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i₂)).segments.size)
+    (h_lt : i₁ < i₂) :
+    Runtime.Disjoint
+      ((bp.bases[i₁]'(by rw [bp.bases_size]; exact h_i₁)) +
+        ((bp.plan.load.elfs[i₁]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i₁)).segments[j₁]'h_j₁).pageVaddr)
+      ((bp.plan.load.elfs[i₁]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i₁)).segments[j₁]'h_j₁).fileOverlayLen
+      ((bp.bases[i₂]'(by rw [bp.bases_size]; exact h_i₂)) +
+        ((bp.plan.load.elfs[i₂]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i₂)).segments[j₂]'h_j₂).pageVaddr)
+      ((bp.plan.load.elfs[i₂]'(by
+        rw [bp.plan.load.elfs_size]; exact h_i₂)).segments[j₂]'h_j₂).fileOverlayLen := by
+  have h_page := bp.cross_elf_pageRange_disjoint i₁ i₂ h_i₁ h_i₂ j₁ h_j₁ j₂ h_j₂ h_lt
+  have h_lp_i₁ : i₁ < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i₁
+  have h_lp_i₂ : i₂ < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i₂
+  have h_fo_le_pl₁ :=
+    (bp.plan.load.elfs[i₁]'h_lp_i₁).fileOverlay_le_pageLength j₁ h_j₁
+  have h_fo_le_pl₂ :=
+    (bp.plan.load.elfs[i₂]'h_lp_i₂).fileOverlay_le_pageLength j₂ h_j₂
+  rcases h_page with h_left | h_right
+  · left; omega
+  · right; omega
+
 /-- The store range `[base + r_offset, base + r_offset + size)` fits
     in the reservation for any `RelocEntry` with the `coversRela`
     witness on its parent segment. The 4-or-8-byte width is bounded
