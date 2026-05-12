@@ -59,7 +59,12 @@ instance : Inhabited Elaborate.Elf where
       soname := Option.none, runpath := Option.none, initArr := #[],
       segments := #[],
       segmentsSorted := by decide,
-      segmentsNonOverlap := by decide }
+      segmentsNonOverlap := by decide,
+      phdrCovered := by
+        -- vacuous: phnum = 0 means the phdr table has 0 bytes, and
+        -- the bounded ∃ over an empty segments array is false; but the
+        -- decidable form here reduces to a `decide`.
+        unfold Elaborate.PhdrCovered; simp }
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
 def synthElf

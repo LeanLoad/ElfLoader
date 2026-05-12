@@ -188,7 +188,9 @@ def DT_SONAME        : UInt64 := 14
 def DT_RPATH         : UInt64 := 15
 def DT_JMPREL        : UInt64 := 23
 def DT_INIT_ARRAY    : UInt64 := 25
+def DT_FINI_ARRAY    : UInt64 := 26
 def DT_INIT_ARRAYSZ  : UInt64 := 27
+def DT_FINI_ARRAYSZ  : UInt64 := 28
 def DT_RUNPATH       : UInt64 := 29
 
 /-- One entry of the `.dynamic` array. `d_un` holds either `d_val`

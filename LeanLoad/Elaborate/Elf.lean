@@ -70,6 +70,37 @@ instance (segs : Array Segment) : Decidable (NonOverlap segs) := by
   unfold NonOverlap; infer_instance
 
 -- ============================================================================
+-- Phdr coverage — a PT_LOAD segment maps the program-header table to
+-- the loaded image at virtual address `phoff`. Requires `vaddr =
+-- offset` for the covering segment so `mainBase + phoff` equals the
+-- runtime `AT_PHDR` without an offset→vaddr translation. By gabi-07
+-- convention the first PT_LOAD has both at 0 (or the same aligned
+-- base) and contains the ELF header + phdr table.
+-- ============================================================================
+
+/-- The PT_LOAD segment `s` covers the program-header table at file
+    offset `phoff` of byte length `nbytes`, AND its `vaddr` equals its
+    `offset` (so `runtime_addr = mainBase + phoff` is consistent with
+    the kernel's `AT_PHDR`). -/
+def coversPhdrs (s : Segment) (phoff : UInt64) (nbytes : Nat) : Prop :=
+  s.vaddr = s.offset ∧
+  s.vaddr.toNat ≤ phoff.toNat ∧
+  phoff.toNat + nbytes ≤ s.vaddr.toNat + s.memsz.toNat
+
+instance (s : Segment) (phoff : UInt64) (nbytes : Nat) :
+    Decidable (coversPhdrs s phoff nbytes) := by
+  unfold coversPhdrs; infer_instance
+
+/-- Some PT_LOAD segment covers the phdr table (per `coversPhdrs`).
+    Bounded `∃` so it's decidable via `Nat.decidableBExLT`. -/
+def PhdrCovered (segs : Array Segment) (phoff : UInt64) (nbytes : Nat) : Prop :=
+  ∃ i, ∃ _ : i < segs.size, coversPhdrs segs[i] phoff nbytes
+
+instance (segs : Array Segment) (phoff : UInt64) (nbytes : Nat) :
+    Decidable (PhdrCovered segs phoff nbytes) := by
+  unfold PhdrCovered; infer_instance
+
+-- ============================================================================
 -- The elaborated ELF.
 -- ============================================================================
 
@@ -110,6 +141,13 @@ structure Elf where
   segmentsSorted     : Sorted segments
   /-- De-facto: PT_LOAD ranges are pairwise disjoint. -/
   segmentsNonOverlap : NonOverlap segments
+  /-- The program-header table is mapped to the loaded image at
+      virtual address `phoff` — i.e. some PT_LOAD with `vaddr = offset`
+      covers `[phoff, phoff + phnum × RawPhdrSize)`. Lets `Main.realize`
+      pass `mainBase + phoff` as `AT_PHDR` to `execAndJump` without
+      offset-to-vaddr translation — and proves that the runtime trust
+      assumption is met at elaborate time. -/
+  phdrCovered : PhdrCovered segments phoff (Parse.RawPhdrSize * phnum.toNat)
 
 -- ============================================================================
 -- elaborate: RawElf → Except String Elf
@@ -188,16 +226,24 @@ def elaborate (raw : RawElf) : Except String Elf := do
   let needed  := raw.needed.filterMap (raw.strtab.lookup ·.toNat)
   let soname  := raw.soname.bind (raw.strtab.lookup ·.toNat)
   let runpath := raw.runpath.bind (raw.strtab.lookup ·.toNat)
-  if h : Sorted segments ∧ NonOverlap segments then
-    return {
-      elfType, machine,
-      entry := raw.header.e_entry,
-      phoff := raw.header.e_phoff,
-      phnum := raw.header.e_phnum,
-      symtab,
-      needed, soname, runpath,
-      initArr := raw.initArr, segments,
-      segmentsSorted := h.left, segmentsNonOverlap := h.right }
+  if h_wf : Sorted segments ∧ NonOverlap segments then
+    let phdr_nbytes : Nat := Parse.RawPhdrSize * raw.header.e_phnum.toNat
+    if h_phdr : PhdrCovered segments raw.header.e_phoff phdr_nbytes then
+      return {
+        elfType, machine,
+        entry := raw.header.e_entry,
+        phoff := raw.header.e_phoff,
+        phnum := raw.header.e_phnum,
+        symtab,
+        needed, soname, runpath,
+        initArr := raw.initArr, segments,
+        segmentsSorted := h_wf.left, segmentsNonOverlap := h_wf.right,
+        phdrCovered := h_phdr }
+    else
+      .error s!"elaborate: phdr table at file offset \
+        0x{raw.header.e_phoff.toNat} (size {phdr_nbytes}) is not covered \
+        by any PT_LOAD with vaddr=offset; AT_PHDR cannot be computed as \
+        mainBase + phoff"
   else
     .error "elaborate: PT_LOAD segments not sorted or overlap \
       (gabi-07 § Program Loading: sort by p_vaddr; non-overlap is \
