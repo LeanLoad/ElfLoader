@@ -11,6 +11,12 @@ would violate the spec.
 The dep edges are re-derived here from `obj.elf.needed` rather than
 stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
 
+`order : (g : ObjectList) → Array (Fin g.val.size)` returns
+Fin-indexed object indices so downstream consumers
+(`Materialize.initAddrs`) can index `lp.elfs` and `bases` totally,
+without `[]?`. The `Fin n` bound is preserved structurally through
+DFS via the internal `DfsState n` carrier.
+
 Address resolution (turn the order + bases + initArr into the flat
 `Array UInt64` of ctor addresses to call) is base-aware and lives in
 `Materialize.initAddrs`.
@@ -48,8 +54,20 @@ def buildDeps (objects : Array LoadedObject) : Array (Array Nat) :=
     obj.elf.needed.filterMap nameToIdx.get?
 
 -- ============================================================================
--- DFS post-order
+-- DFS post-order.
+--
+-- The `Fin n` bound on the produced order is preserved by carrying
+-- `visited` and `order` in a `DfsState n` struct: every `push` into
+-- `order` is guarded by `idx < n`, and `Array.set` preserves the
+-- `visited.size = n` field.
 -- ============================================================================
+
+/-- DFS carrier. Keeps the visited bitmap (sized to `n`) alongside
+    the partial order. -/
+private structure DfsState (n : Nat) where
+  visited     : Array Bool
+  visitedSize : visited.size = n
+  order       : Array (Fin n)
 
 /-- Depth-first traversal helper. `visited[i]` marks an object that
     has either been emitted (`order` already contains it) or is
@@ -59,57 +77,65 @@ def buildDeps (objects : Array LoadedObject) : Array (Array Nat) :=
     (object count); each recursive call descends through one
     not-yet-visited object, so the bound is tight. With fuel, no
     `partial def` — `dfs` is structurally recursive. -/
-def dfs (fuel : Nat) (deps : Array (Array Nat)) (idx : Nat)
-    (visited : Array Bool) (order : Array Nat) : Array Bool × Array Nat :=
+private def dfs (fuel : Nat) (deps : Array (Array Nat)) (idx : Nat)
+    (s : DfsState n) : DfsState n :=
   match fuel with
-  | 0 => (visited, order)
+  | 0 => s
   | fuel + 1 =>
-    if h : idx < visited.size then
-      if visited[idx] then (visited, order)
+    if h : idx < n then
+      have h_in : idx < s.visited.size := by rw [s.visitedSize]; exact h
+      if s.visited[idx]'h_in then s
       else
-        let visited := visited.set idx true
+        let v' := s.visited.set idx true
+        let s' : DfsState n :=
+          { visited := v'
+            visitedSize := by
+              show (s.visited.set idx true).size = n
+              rw [Array.size_set]; exact s.visitedSize
+            order := s.order }
         let children := (deps[idx]?).getD #[]
-        let (v, o) := children.foldl (init := (visited, order))
-                        (fun st c => dfs fuel deps c st.1 st.2)
-        (v, o.push idx)
-    else (visited, order)
+        let s'' := children.foldl (init := s') (fun st c => dfs fuel deps c st)
+        { s'' with order := s''.order.push ⟨idx, h⟩ }
+    else s
 termination_by fuel
 
 /-- Dependency order: depth-first post-order over `deps` from object 0
     (main). Init walks the result forward; fini walks it reversed. -/
-def computeOrder (deps : Array (Array Nat)) (n : Nat) : Array Nat :=
+def computeOrder (deps : Array (Array Nat)) (n : Nat) : Array (Fin n) :=
   if n == 0 then #[]
   else
-    let visited := Array.replicate n false
-    let acc : Array Nat := Array.mkEmpty n
-    (dfs n deps 0 visited acc).snd
+    let s : DfsState n :=
+      { visited := Array.replicate n false
+        visitedSize := by simp
+        order := Array.mkEmpty n }
+    (dfs n deps 0 s).order
 
 /-- Init order over a `ObjectList`: builds dep edges, runs DFS
-    post-order. Convenience wrapper used by `plan` and the debug
-    printer. -/
-def order (g : ObjectList) : Array Nat :=
+    post-order. The returned indices are typed `Fin g.val.size` so
+    downstream consumers can index `lp.elfs` / `bases` totally. -/
+def order (g : ObjectList) : Array (Fin g.val.size) :=
   computeOrder (buildDeps g.val) g.val.size
 
 section Example
 -- Three-object DAG: 0 (main) → {1, 2}; 1 → {2}; 2 → ∅.
 -- DFS from 0 visits 1 first, descends to 2, emits 2 then 1, then
 -- returns and emits 0. Result: deps before dependents, main last.
-#guard computeOrder #[#[1, 2], #[2], #[]] 3 = #[2, 1, 0]
+#guard (computeOrder #[#[1, 2], #[2], #[]] 3).map (·.val) = #[2, 1, 0]
 
 -- Empty graph → empty order.
-#guard computeOrder #[] 0 = #[]
+#guard (computeOrder #[] 0).map (·.val) = #[]
 
 -- Linear chain 0 → 1 → 2 → 3: deeper objects emit first.
-#guard computeOrder #[#[1], #[2], #[3], #[]] 4 = #[3, 2, 1, 0]
+#guard (computeOrder #[#[1], #[2], #[3], #[]] 4).map (·.val) = #[3, 2, 1, 0]
 
 -- Cycle 0 → 1 → 0: visited-flag breaks the back-edge mid-descent;
 -- both still emit (gabi 08 leaves cycle order undefined — we just
 -- terminate without re-recursing).
-#guard computeOrder #[#[1], #[0]] 2 = #[1, 0]
+#guard (computeOrder #[#[1], #[0]] 2).map (·.val) = #[1, 0]
 
 -- Diamond: 0 → {1, 2}; 1 → {3}; 2 → {3}; 3 → ∅.
 -- 3 is shared by 1 and 2 — DFS emits it once on the first visit.
-#guard computeOrder #[#[1, 2], #[3], #[3], #[]] 4 = #[3, 1, 2, 0]
+#guard (computeOrder #[#[1, 2], #[3], #[3], #[]] 4).map (·.val) = #[3, 1, 2, 0]
 end Example
 
 end LeanLoad.Init

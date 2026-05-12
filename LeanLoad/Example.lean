@@ -120,6 +120,95 @@ private def relaWithNoCover : Parse.RawElf := { emptyRawElf with
   rela := #[{ r_offset := 0xdeadbeef, r_info := 0, r_addend := 0 }] }
 #guard (elaborate relaWithNoCover).toOption.isNone
 
+-- Real-world acceptance: the 127-byte file `third_party/minimal-elf/
+-- src/lib.rs::write_elf` emits, with one byte patched (`e_type`
+-- 2→3) to make it ET_DYN. minimal-elf itself produces ET_EXEC, which
+-- LeanLoad rejects (only PIE / ET_DYN is supported); the patched
+-- variant is the smallest ET_DYN binary that exercises the full
+-- parse + elaborate path — header + one PT_LOAD phdr + 7 bytes of
+-- code, no dynamic / relas / symtab. File layout (gabi 02 § ELF
+-- Header, gabi 07 § Program Header):
+--
+--   [0x00..0x40)  Elf64_Ehdr     (64 bytes)
+--   [0x40..0x78)  Elf64_Phdr × 1 (56 bytes, PT_LOAD)
+--   [0x78..0x7f)  program code   (7 bytes, the e_entry target)
+private def minimalElfBytes : ByteArray := ⟨#[
+  -- ── e_ident (16 bytes, gabi 02 § ELF Identification) ───────────────────
+  0x7f, 0x45, 0x4c, 0x46,           -- [0x00] EI_MAG0..3  = "\x7fELF" magic
+  0x02,                             -- [0x04] EI_CLASS    = ELFCLASS64 (64-bit)
+  0x01,                             -- [0x05] EI_DATA     = ELFDATA2LSB (little-endian)
+  0x01,                             -- [0x06] EI_VERSION  = EV_CURRENT
+  0x00,                             -- [0x07] EI_OSABI    = ELFOSABI_NONE (System V)
+  0x00,                             -- [0x08] EI_ABIVERSION = 0
+  0x00, 0x00, 0x00,                 -- [0x09] EI_PAD (7 reserved bytes, must be zero)
+  0x00, 0x00, 0x00, 0x00,           -- [0x0c]   …continued
+  -- ── rest of Elf64_Ehdr (48 bytes) ──────────────────────────────────────
+  0x03, 0x00,                                       -- [0x10] e_type      = ET_DYN (3; minimal-elf emits 2=ET_EXEC, patched here)
+  0x3e, 0x00,                                       -- [0x12] e_machine   = EM_X86_64 (0x3e = 62)
+  0x01, 0x00, 0x00, 0x00,                           -- [0x14] e_version   = EV_CURRENT (1)
+  0x78, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x18] e_entry     = 0x400078 (VADDR 0x400000 + 120-byte hdr prefix)
+  0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x20] e_phoff     = 64 (phdr table starts right after ehdr)
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x28] e_shoff     = 0 (no section headers — stripped)
+  0x00, 0x00, 0x00, 0x00,                           -- [0x30] e_flags     = 0 (no processor-specific flags)
+  0x40, 0x00,                                       -- [0x34] e_ehsize    = 64 (size of this header)
+  0x38, 0x00,                                       -- [0x36] e_phentsize = 56 (size of one phdr)
+  0x01, 0x00,                                       -- [0x38] e_phnum     = 1 (single PT_LOAD)
+  0x00, 0x00,                                       -- [0x3a] e_shentsize = 0
+  0x00, 0x00,                                       -- [0x3c] e_shnum     = 0
+  0x00, 0x00,                                       -- [0x3e] e_shstrndx  = 0
+  -- ── Elf64_Phdr (56 bytes, at file offset 64) ───────────────────────────
+  0x01, 0x00, 0x00, 0x00,                           -- [0x40] p_type   = PT_LOAD (1)
+  0x07, 0x00, 0x00, 0x00,                           -- [0x44] p_flags  = PF_R|PF_W|PF_X (1|2|4 = 7); RWX in one page
+  0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x48] p_offset = 120 (code begins right after ehdr+phdr)
+  0x78, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x50] p_vaddr  = 0x400078 (matches e_entry; gabi-07: p_vaddr ≡ p_offset mod p_align)
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x58] p_paddr  = 0 (unused on Linux)
+  0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x60] p_filesz = 7 (file bytes for this segment)
+  0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x68] p_memsz  = 7 (mem bytes; filesz==memsz means no BSS tail)
+  0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   -- [0x70] p_align  = 0x1000 (4 KiB page)
+  -- ── program (7 bytes, at file offset 120, the e_entry target) ──────────
+  -- Linux x86-64 exit(0) trampoline. Encoded via `push imm8 / pop %rax`
+  -- (3 bytes) which is shorter than `mov $60, %eax` (5 bytes).
+  0x6a, 0x3c,                       -- [0x78] push  $0x3c     (60 = SYS_exit on Linux x86-64)
+  0x58,                             -- [0x7a] pop   %rax      (%rax := SYS_exit)
+  0x31, 0xff,                       -- [0x7b] xor   %edi, %edi (status := 0; argv[0] of exit())
+  0x0f, 0x05                        -- [0x7d] syscall          (→ exit(0); never returns)
+]⟩
+
+#guard minimalElfBytes.size == 127  -- = 0x7f; 64 ehdr + 56 phdr + 7 code
+
+private def parsedMinimalElf : Option (Parse.RawEhdr × Parse.RawPhdr) :=
+  let p : Parse.Parser (Parse.RawEhdr × Parse.RawPhdr) := do
+    let h ← (Parse.BytesDecode.decode : Parse.Parser Parse.RawEhdr)
+    let ph ← (Parse.BytesDecode.decode : Parse.Parser Parse.RawPhdr)
+    return (h, ph)
+  (Parse.Parser.run minimalElfBytes p).toOption
+
+#guard (parsedMinimalElf.map (·.1.e_type))            == some 3   -- ET_DYN
+#guard (parsedMinimalElf.map (·.1.e_machine))         == some 62  -- EM_X86_64
+#guard (parsedMinimalElf.map (·.1.e_entry))           == some 0x400078
+#guard (parsedMinimalElf.map (·.1.ident.ei_class))    == some ELFCLASS64
+#guard (parsedMinimalElf.map (·.1.ident.ei_data))     == some ELFDATA2LSB
+#guard (parsedMinimalElf.map (·.2.p_type))            == some Parse.PT_LOAD
+#guard (parsedMinimalElf.map (·.2.p_vaddr))           == some 0x400078
+#guard (parsedMinimalElf.map (·.2.p_memsz))           == some 7
+
+/-- Reassemble a `RawElf` from the parsed header + single phdr (the
+    binary has no dynamic section, no relas, no symtab — it's static
+    and libc-free). With `e_type = ET_DYN`, `elaborate` accepts: the
+    per-segment gabi-07 checks succeed and every header invariant
+    holds. -/
+private def minimalRawElf : Option Parse.RawElf :=
+  parsedMinimalElf.map fun (h, ph) =>
+    { (default : Parse.RawElf) with header := h, phdrs := #[ph] }
+
+#guard match minimalRawElf.map elaborate with
+       | some (.ok elf) =>
+           elf.elfType    == .dyn
+        && elf.machine    == .x86_64
+        && elf.entry      == 0x400078
+        && elf.segments.size == 1
+       | _ => false
+
 -- ============================================================================
 -- 3. Plan walkthrough.
 -- ============================================================================
@@ -157,8 +246,10 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
 -- planning is ET_DYN. `assignBases` takes the reservation base
 -- as a parameter; production gets it from `Runtime.mmapAnon`.
 #guard
-  match LoadPlan.ofElfs #[synthElf (elfType := .dyn)] with
-  | .ok lp => assignBases exampleAnchor lp.val == #[exampleAnchor]
+  let elfs : Array Elaborate.Elf := #[synthElf (elfType := .dyn)]
+  let rt := Resolve.buildTable elfs
+  match LoadPlan.ofElfs elfs rt with
+  | .ok lp => assignBases exampleAnchor lp == #[exampleAnchor]
   | .error _ => false
 
 -- A single-segment array's `Sorted` and `NonOverlap` predicates are
@@ -186,8 +277,10 @@ private def stackingExample : Option (Array UInt64) := do
   let libElf := synthElf (elfType := .dyn) (segments := #[seg])
                   (segmentsSorted := sorted_singleton seg)
                   (segmentsNonOverlap := nonOverlap_singleton seg)
-  match LoadPlan.ofElfs #[libElf, libElf, libElf] with
-  | .ok lp => some (assignBases exampleAnchor lp.val)
+  let elfs := #[libElf, libElf, libElf]
+  let rt := Resolve.buildTable elfs
+  match LoadPlan.ofElfs elfs rt with
+  | .ok lp => some (assignBases exampleAnchor lp)
   | .error _ => none
 
 #guard stackingExample = some #[exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000]
@@ -211,8 +304,8 @@ private def bssOnlySeg : Option Segment :=
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
   (Segment.ofPhdr phdr #[] #[]).toOption
 
-private def bssOnlyPlan : Option SegmentPlan :=
-  bssOnlySeg.map SegmentPlan.ofSegment
+private def bssOnlyPlan : Option (SegmentPlan 0) :=
+  bssOnlySeg.map (fun s => SegmentPlan.ofSegmentCore 0 s #[])
 
 -- The plan's mmap'd range is `[pageVaddr, pageVaddr + pageLength)`,
 -- absolute addresses computed as `base + pageVaddr`.
@@ -264,7 +357,7 @@ private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- pa
 private def slotCount (seg : Option Segment) : Option Nat :=
   seg.map fun s =>
     let (mmap, zero, _mp) :=
-      Materialize.setupSlots (SegmentPlan.ofSegment s) dummyHandle exampleAnchor
+      Materialize.setupSlots (SegmentPlan.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
     (if mmap.isSome then 1 else 0) + (if zero.isSome then 1 else 0) + 1
 
 #guard slotCount bssOnlySeg     = some 1  -- mprotect only
@@ -282,6 +375,6 @@ private def slotCount (seg : Option Segment) : Option Nat :=
 private def exampleReserve : Reserve :=
   { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
 
-#guard (Materialize.safe exampleReserve #[]).toOption.map (·.val.size) = some 0
+#guard (Materialize.safe exampleReserve (n := 0) #[]).toOption.map (·.val.size) = some 0
 
 end LeanLoad.Example

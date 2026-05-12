@@ -9,10 +9,11 @@ fields knows about an mmap base; the materializer (in
 `Materialize.bakeReloc`) computes the absolute place and the symbol
 value once a reservation base is chosen.
 
-Output shape mirrors the plan tree: `LoadRelocs` is per-elf, then
-per-segment, then per-rela. Indices are parallel to
-`LoadPlan.elfs[i].segments[j]` so the materializer can zip them
-without an extra mapping.
+This file owns the `RelocEntry` type and per-rela planner
+(`planOne`). The per-segment planner lives in `Plan/Layout.lean` —
+each `SegmentPlan` carries its own `relocs` array, so there's no
+parallel-tree-of-relocs to construct or zip against the layout tree
+later. `Materialize.bakeSegmentRelocs` reads `sp.relocs` directly.
 -/
 
 import LeanLoad.Plan.Resolve
@@ -44,18 +45,6 @@ structure RelocEntry (n : Nat) where
   /-- Resolved symbol provider, or `none` for `R_*_NONE` / unresolved. -/
   target   : Option (Resolve.SymRef n)
 
-/-- Per-segment relocation plans, in the order they were emitted
-    (rela first, then jmprel — matches per-rela iteration in
-    `bakeSegmentRelocs`). -/
-abbrev SegmentRelocs (n : Nat) := Array (RelocEntry n)
-
-/-- Per-elf list of `SegmentRelocs`, parallel to
-    `ElfPlan.segments`. -/
-abbrev ElfRelocs (n : Nat) := Array (SegmentRelocs n)
-
-/-- Top-level relocation plan, parallel to `LoadPlan.elfs`. -/
-abbrev LoadRelocs (n : Nat) := Array (ElfRelocs n)
-
 -- ============================================================================
 -- Symbol target resolution. Base-free.
 -- ============================================================================
@@ -73,10 +62,10 @@ private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     if !entry.isUndef then
       some ⟨objectIdx, symIdx⟩
     else
-      (rt.index.get? (objectIdx.val, symIdx)).bind id
+      (rt.index.get? (objectIdx.val, symIdx)).bind Resolve.Resolution.target?
 
 /-- Plan one rela: resolve target, capture the rest as-is. -/
-private def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
+def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (r : RawRela) : RelocEntry elfs.size :=
   let target :=
     if r.sym == 0 then none
@@ -84,32 +73,16 @@ private def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
   { type := r.type, r_offset := r.r_offset, addend := r.r_addend, target }
 
 /-- Plan one segment's relas (then jmprel — both go through the same
-    formula at materialize time). -/
+    formula at materialize time). Used by `Plan.Layout` when
+    constructing each `SegmentPlan`. -/
 def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (seg : Segment) :
-    SegmentRelocs elfs.size := Id.run do
-  let mut acc : SegmentRelocs elfs.size := #[]
+    Array (RelocEntry elfs.size) := Id.run do
+  let mut acc : Array (RelocEntry elfs.size) := #[]
   for entry in seg.rela do
     acc := acc.push (planOne elfs rt objectIdx entry.val)
   for entry in seg.jmprel do
     acc := acc.push (planOne elfs rt objectIdx entry.val)
-  return acc
-
-/-- Plan one elf: per-segment list, parallel to `elf.segments`. -/
-def planElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
-    (objectIdx : Fin elfs.size) : ElfRelocs elfs.size := Id.run do
-  let elf := elfs[objectIdx]
-  let mut acc : ElfRelocs elfs.size := #[]
-  for seg in elf.segments do
-    acc := acc.push (planSegment elfs rt objectIdx seg)
-  return acc
-
-/-- Plan every elf's relocations. -/
-def planAll (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
-    LoadRelocs elfs.size := Id.run do
-  let mut acc : LoadRelocs elfs.size := #[]
-  for h : i in [:elfs.size] do
-    acc := acc.push (planElf elfs rt ⟨i, h.upper⟩)
   return acc
 
 end LeanLoad.Reloc

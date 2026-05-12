@@ -83,13 +83,15 @@ private def resolveTest (g : ObjectList) : Except String Unit := do
 private def testAnchor : UInt64 := 0x80000000
 
 private def layoutTest (g : ObjectList) : Except String Unit := do
-  -- `LoadPlan.ofElfs` succeeds → returns a sized subtype with the
-  -- per-elf `segmentsSorted` proof. Size match is by construction.
-  let _ ← LoadPlan.ofElfs (g.val.map (·.elf))
+  -- `LoadPlan.ofElfs` succeeds → returns a `LoadPlan elfs.size` with
+  -- per-elf `segmentsSorted` and per-segment relocs woven in.
+  let elfs := g.val.map (·.elf)
+  let rt := Resolve.buildTable elfs
+  let _ ← LoadPlan.ofElfs elfs rt
   .ok ()
 
 private def orderTest (g : ObjectList) : Except String Unit := do
-  let order := Init.order g
+  let order := (Init.order g).map (·.val)
   check (order.size == g.val.size)
     s!"order size {order.size} ≠ object count {g.val.size}"
   check (order.back? == some 0)
@@ -98,23 +100,20 @@ private def orderTest (g : ObjectList) : Except String Unit := do
 private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
   let elfs := g.val.map (·.elf)
   let rt := Resolve.buildTable elfs
-  let relocPlan := Reloc.planAll elfs rt
-  let totalEntries := relocPlan.foldl (init := 0) fun acc er =>
-    er.foldl (init := acc) fun acc sr => acc + sr.size
+  let lp ← LoadPlan.ofElfs elfs rt
+  let totalEntries := lp.elfs.foldl (init := 0) fun acc ep =>
+    ep.segments.foldl (init := acc) fun acc sp => acc + sp.relocs.size
   check (totalEntries > 0) "expected nonzero planned relocations"
   -- Bake them too — exercises the formula + symValueOf path.
-  let lpW ← LoadPlan.ofElfs elfs
-  let lp := lpW.val
-  have h_lp : elfs.size = lp.elfs.size := lpW.property.symm
   let bases := assignBases testAnchor lp
   have h_bases : bases.size = elfs.size :=
-    (assignBases_size testAnchor lp).trans h_lp.symm
+    (assignBases_size testAnchor lp).trans lp.elfs_size
   let mut stores : Array Store := #[]
-  for h : i in [:elfs.size] do
-    let base := bases[i]'(by rw [h_bases]; exact h.upper)
-    let elfRelocs := (relocPlan[i]?).getD #[]
-    for sr in elfRelocs do
-      stores := stores ++ (← Materialize.bakeSegmentRelocs formula elfs bases h_bases base sr)
+  for h : i in [:lp.elfs.size] do
+    let ep := lp.elfs[i]
+    let base := bases[i]'(by rw [h_bases]; rw [← lp.elfs_size]; exact h.upper)
+    for sp in ep.segments do
+      stores := stores ++ (← Materialize.bakeSegmentRelocs formula elfs bases h_bases base sp.relocs)
   check (stores.size > 0) "expected nonzero baked Store ops"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +

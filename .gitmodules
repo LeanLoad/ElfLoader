@@ -43,3 +43,6 @@
 [submodule "third_party/glibc"]
 	path = third_party/glibc
 	url = https://sourceware.org/git/glibc.git
+[submodule "third_party/minimal-elf"]
+	path = third_party/minimal-elf
+	url = https://github.com/tchajed/minimal-elf

@@ -1,29 +1,29 @@
 /-
-Bake base-free `RelocEntry`s into typed `Write` ops once a
-reservation base is known.
+Bake the base-free `RelocEntry`s attached to each `SegmentPlan n`
+into typed `Store` ops once a reservation base is known.
 
 For each entry: look up the symbol's absolute value `S = base[target]
 + symtab[target].value` (or 0 when `target = none`), feed
 `(S, A, base, place)` into the per-arch `Formula`, and emit a
-4- or 8-byte `Write` at `base + r_offset`. 32-bit writes are
+4- or 8-byte `Store` at `base + r_offset`. 32-bit writes are
 overflow-checked (psABI per-relocation `OVERFLOW_CHECK`); see the
 banner in this file.
 
 Entry points:
-  • `bakeReloc` — one entry → `Option Write` (none for `R_*_NONE`).
-  • `bakeSegmentRelocs` — one segment's relas → flat `Array Write`.
+  • `bakeReloc` — one entry → `Option Store` (none for `R_*_NONE`).
+  • `bakeSegmentRelocs` — one segment's relas → flat `Array Store`.
 
 Used by `Materialize.build` per segment.
 -/
 
-import LeanLoad.Plan.Reloc
+import LeanLoad.Plan.Layout
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Elaborate.Reloc
 
 namespace LeanLoad.Materialize
 
 open LeanLoad
-open LeanLoad.Reloc (RelocEntry SegmentRelocs)
+open LeanLoad.Reloc (RelocEntry)
 open LeanLoad.Elaborate (Elf Formula FormulaInputs FormulaResult PatchSize)
 
 -- ============================================================================
@@ -71,7 +71,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     | some sym => provBase + sym.value
 
 -- ============================================================================
--- Bake one RelocEntry into an Option Write.
+-- Bake one RelocEntry into an Option Store.
 -- ============================================================================
 
 /-- Bake one entry. Returns `.ok none` for no-op relocations
@@ -102,10 +102,10 @@ private def bakeReloc (formula : Formula) (elfs : Array Elf)
 /-- Bake every entry in one segment into a flat `Array Store`. -/
 def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (sr : SegmentRelocs elfs.size) :
+    (base : UInt64) (relocs : Array (RelocEntry elfs.size)) :
     Except String (Array Store) := do
   let mut acc : Array Store := #[]
-  for entry in sr do
+  for entry in relocs do
     match ← bakeReloc formula elfs bases h_bases base entry with
     | none    => pure ()
     | some w  => acc := acc.push w

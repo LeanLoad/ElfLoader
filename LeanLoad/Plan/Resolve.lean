@@ -14,6 +14,15 @@ For each undefined reference across all loaded objects, we find a
 defining (object, symbol) pair via breadth-first search over the
 `ObjectList.objects` array (which `Discover` already returns in BFS
 order: main first, then NEEDED entries in their declared order).
+
+Each entry's resolution is one of three explicit cases:
+  • `found ref` — the BFS turned up a defining (object, symbol).
+  • `weakUndef` — undef reference is weak (gabi 05 lets it bind to 0).
+  • `strongUndef` — undef reference is strong and would fail at load.
+
+`missing` and `weakMissing` are derived projections over `entries`,
+not separately maintained arrays — the inductive `Resolution` is the
+single source of truth.
 -/
 
 import LeanLoad.Parse.Structs
@@ -59,33 +68,67 @@ structure Unresolved (n : Nat) where
   name      : String
   deriving Repr
 
+/-- Result of resolving one undef reference. Three explicit cases:
+    found, weak-undefined (S = 0 by spec), and strong-undefined (load
+    failure). -/
+inductive Resolution (n : Nat) where
+  /-- The BFS found a providing `(object, symbol)`. -/
+  | found (ref : SymRef n)
+  /-- Undef reference is `STB_WEAK`; gabi 05 binds it to 0. -/
+  | weakUndef
+  /-- Undef reference is strong and unresolved — load failure. -/
+  | strongUndef
+  deriving Repr
+
+namespace Resolution
+
+/-- Extract the resolved provider, dropping the weak/strong-undef
+    distinction. Used by `Reloc.planOne` where both undef branches
+    collapse to `S = 0`. -/
+def target? : Resolution n → Option (SymRef n)
+  | .found ref => some ref
+  | .weakUndef => none
+  | .strongUndef => none
+
+end Resolution
+
 /-- Result of building the resolution table for the elf array.
     Parameterised by the elf count so every contained `Unresolved` /
     `SymRef` carries its bounds proof. -/
 structure Table (n : Nat) where
-  /-- One entry per undefined reference in any elf. Iteration order —
-      used by the debug printer in `Main.debug`. -/
-  resolved : Array (Unresolved n × Option (SymRef n))
-  /-- O(1) `(objectIdx, symIdx) → Option (SymRef n)` lookup. Built
-      in lock-step with `resolved`; `Plan.Reloc.lookupResolved` reads
-      this so per-rela symbol resolution is O(1) instead of scanning
-      `resolved` linearly (which was O(undefs × relas) in aggregate). -/
-  index : Std.HashMap (Nat × Nat) (Option (SymRef n))
-  /-- Strong (non-weak) undef references that did not resolve.
-      A non-empty `missing` means the program would fail at load. -/
-  missing  : Array (Unresolved n)
-  /-- Weak undef references that did not resolve. Allowed by gabi 05;
-      surfaced for diagnostics only. -/
-  weakMissing : Array (Unresolved n)
+  /-- One entry per undefined reference in any elf, in iteration
+      order. Each carries an explicit `Resolution` — there's no
+      `Option` to distinguish "weak undef" from "strong undef". -/
+  entries : Array (Unresolved n × Resolution n)
+  /-- O(1) `(objectIdx, symIdx) → Resolution n` lookup, in lock-step
+      with `entries`. `Plan.Reloc.planOne` reads this so per-rela
+      symbol resolution is O(1). -/
+  index : Std.HashMap (Nat × Nat) (Resolution n)
+
+namespace Table
+
+/-- Strong (non-weak) undef references that did not resolve. A
+    non-empty `missing` means the program would fail at load. -/
+def missing (t : Table n) : Array (Unresolved n) :=
+  t.entries.filterMap fun (u, r) => match r with
+    | .strongUndef => some u
+    | _            => none
+
+/-- Weak undef references that did not resolve. Allowed by gabi 05;
+    surfaced for diagnostics only. -/
+def weakMissing (t : Table n) : Array (Unresolved n) :=
+  t.entries.filterMap fun (u, r) => match r with
+    | .weakUndef => some u
+    | _          => none
+
+end Table
 
 /-- Walk every elf's symbol table, look up each undefined
     reference's definition. Builds both the iteration array
-    (`resolved`) and the O(1) lookup `index` in lock-step. -/
+    (`entries`) and the O(1) lookup `index` in lock-step. -/
 def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
-  let mut resolved : Array (Unresolved elfs.size × Option (SymRef elfs.size)) := #[]
-  let mut index : Std.HashMap (Nat × Nat) (Option (SymRef elfs.size)) := ∅
-  let mut missing : Array (Unresolved elfs.size) := #[]
-  let mut weakMissing : Array (Unresolved elfs.size) := #[]
+  let mut entries : Array (Unresolved elfs.size × Resolution elfs.size) := #[]
+  let mut index : Std.HashMap (Nat × Nat) (Resolution elfs.size) := ∅
   for h : objectIdx in [:elfs.size] do
     let elf := elfs[objectIdx]
     let mut symIdx := 0
@@ -97,13 +140,13 @@ def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
         | some n =>
           let entry : Unresolved elfs.size :=
             { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := n }
-          let r := resolveByName elfs n
-          resolved := resolved.push (entry, r)
-          index := index.insert (objectIdx, symIdx) r
-          if r.isNone then
-            if symEntry.isWeak then weakMissing := weakMissing.push entry
-            else missing := missing.push entry
+          let resolution : Resolution elfs.size :=
+            match resolveByName elfs n with
+            | some ref => .found ref
+            | none     => if symEntry.isWeak then .weakUndef else .strongUndef
+          entries := entries.push (entry, resolution)
+          index := index.insert (objectIdx, symIdx) resolution
       symIdx := symIdx + 1
-  return { resolved, index, missing, weakMissing }
+  return { entries, index }
 
 end LeanLoad.Resolve
