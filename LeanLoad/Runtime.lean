@@ -182,16 +182,21 @@ def run (m : Mprotect) : IO Unit :=
 end Mprotect
 
 namespace Reserve
-/-- Allocate a reservation of `len` bytes. Calls the private
+/-- Allocate a reservation of exactly `len` bytes. Calls the private
     `Runtime.mmapAnon` extern and validates the no-wrap property at
-    runtime. The validation is essentially free (one comparison) and
-    the `.error` branch is unreachable on Linux (userspace addresses
-    fit in 48 bits) — kept as a safety net so a non-Linux kernel
+    runtime. The returned subtype carries the proof `r.len = len`, so
+    callers (e.g. `Materialize.build`) can connect the reservation
+    size to a `LoadPlan`'s `totalSpan` without recourse to an IO-side
+    coherence lemma.
+
+    The validation is essentially free (one comparison) and the
+    `.error` branch is unreachable on Linux (userspace addresses fit
+    in 48 bits) — kept as a safety net so a non-Linux kernel
     returning a wrapping address fails loud. -/
-def run (len : UInt64) : IO Reserve := do
+def run (len : UInt64) : IO { r : Reserve // r.len = len } := do
   let addr ← Runtime.mmapAnon len
   if h : addr.toNat + len.toNat < 2 ^ 64 then
-    return ⟨addr, len, h⟩
+    return ⟨⟨addr, len, h⟩, rfl⟩
   else
     throw (IO.userError s!"Runtime.mmapAnon returned wrapping reservation \
       (addr=0x{addr.toNat}, len=0x{len.toNat})")

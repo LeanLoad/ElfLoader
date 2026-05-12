@@ -366,15 +366,24 @@ private def slotCount (seg : Option Segment) : Option Nat :=
 #guard slotCount fileAnonBss    = some 2  -- mmap + mprotect
 #guard slotCount fileBothBss    = some 3  -- mmap + zero + mprotect
 
--- ---- 4c. End-to-end Materialize.safe gating an empty LoadOps. ----------
+-- ---- 4c. Safety predicates: vacuously hold for an empty LoadOps. ----------
 --
--- `Materialize.safe rsv lo` returns `Except String { lo // safety
--- predicates wrt the reservation }`. The empty `LoadOps` tree has no
--- slots, and the predicates vacuously hold for any reservation.
+-- The five `MmapsDisjoint` / `*Contained` predicates that
+-- `Materialize.build` discharges are decidable, so we can probe them
+-- directly on a synthetic empty load tree. With no slots, all five
+-- predicates hold for any reservation by vacuous quantification.
 
 private def exampleReserve : Reserve :=
   { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
 
-#guard (Materialize.safe exampleReserve (n := 0) #[]).toOption.map (·.val.size) = some 0
+#guard decide (Materialize.MmapsDisjoint (n := 0) #[]) = true
+#guard decide
+    (Materialize.MmapsContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
+#guard decide
+    (Materialize.ZerosContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
+#guard decide
+    (Materialize.StoresContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
+#guard decide
+    (Materialize.MprotectsContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
 
 end LeanLoad.Example

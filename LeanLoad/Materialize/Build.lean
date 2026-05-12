@@ -1,29 +1,31 @@
 /-
-Builder + safety gate: turn base-free `Plan/` outputs into a
-structured `LoadOps` tree, then witness it for `runSafe`.
+Builder: turn the pure-pipeline `Plan` aggregate into a
+safety-witnessed `LoadOps` tree ready for `runSafe`.
 
-Three top-level entry points:
-  • `build`     — pure: `(rsv, lp, elfs, handles, formula) →
-                  LoadOps n`. Takes the typed `Reserve` (with its
-                  no-wrap proof) and the matching `LoadPlan n` (with
-                  parametric `n` = elf count and `totalSpan_eq`
-                  coherence). Computes `bases := Plan.assignBases
-                  rsv.addr lp` internally. Per segment: `setupSlots`
-                  (mmap, zero, mprotect from the `SegmentPlan` + base)
-                  + `bakeSegmentRelocs` (stores from `sp.relocs`).
-  • `initAddrs` — pure: `(lp, bases, order) → Array UInt64`. Walks
-                  each elf's `initArr` in init order; ET_DYN entries
-                  get the chosen base added, ET_EXEC entries are
-                  absolute, zero entries are skipped.
-  • `safe`      — pure: `(rsv, lo) → safety-witnessed LoadOps`. Runs
-                  the decidable safety predicates over the
-                  reservation; on success the witness is fed to
-                  `LoadOps.runSafe`. Failure means a planner bug —
-                  Phase 1 (in progress) replaces this with a static
-                  proof so the runtime check goes away.
+Two top-level entry points:
+  • `build`     — pure: `(plan, rsv, h_total) → safety-witnessed
+                  LoadOps`. Takes the `Plan` aggregate, the IO-side
+                  `Reserve`, and a coherence proof
+                  `rsv.len = plan.load.totalSpan` (typically threaded
+                  off `Reserve.run`'s subtype). Returns a witnessed
+                  `{ lo : LoadOps n // …5 safety predicates… }`. The
+                  five `MmapsDisjoint` / `*Contained` predicates are
+                  established at construction time via an internal
+                  decidable check; a future pass replaces that check
+                  with a structural proof (the lemma library in
+                  `Plan/Layout.lean` covers per-segment `pageEndAddr`
+                  bounds, `assignBases_at_toNat`, `cumOffset_mono`,
+                  `totalSpan_eq` — the remaining gluing across slot
+                  kinds + tree levels is ~200-300 lines but
+                  mechanical).
+  • `ctorAddrs` — pure: `(plan, rsv) → Array UInt64`. Resolves each
+                  init-array entry through the per-elf base, in DFS
+                  post-order; ET_DYN entries get the chosen base
+                  added, ET_EXEC entries are absolute, zero entries
+                  are skipped.
 
-`Main.realize` uses `safe` then `LoadOps.runSafe`. `Main.load` uses
-`build` and `initAddrs`.
+`Main.realize` consumes `build`'s witnessed result via
+`LoadOps.runSafe`. There is no separate `safe` entry point.
 -/
 
 import LeanLoad.Materialize.LoadOps
@@ -40,15 +42,10 @@ open LeanLoad.Elaborate (Elf Formula)
 -- Builder: Reserve + LoadPlan + handles + formula → LoadOps tree.
 -- ============================================================================
 
-/-- Build the `LoadOps n` tree from a `Reserve` (with no-wrap
-    witness) and a fully populated `Plan` aggregate. The `Plan`
-    bundles the `LoadPlan`, the per-elf `Elf`s, the file handles, and
-    the per-arch reloc formula at one parametric size, so this
-    function has no parallel-array bookkeeping at the call site.
-
-    Computes `bases` internally via `Plan.assignBases rsv.addr
-    plan.load`. -/
-def build (plan : Plan.Plan) (rsv : Reserve) :
+/-- Internal: assemble the unwitnessed `LoadOps n` tree from `plan`
+    and `rsv`. Used by `build`, which then runs the safety predicates
+    over the result. -/
+private def buildCore (plan : Plan.Plan) (rsv : Reserve) :
     Except String (LoadOps plan.objects.val.size) := do
   let lp := plan.load
   let elfs := plan.objectElfs
@@ -80,6 +77,39 @@ def build (plan : Plan.Plan) (rsv : Reserve) :
         { plan := sp, mmap, zero, stores, mprotect }
     lo := lo.push { base, segments }
   return lo
+
+/-- Witnessed build: assemble the `LoadOps` tree and gate it through
+    the five decidable safety predicates
+    (`MmapsDisjoint` / `*Contained`) parameterised on the reservation
+    `[rsv.addr, +rsv.len)`. The `h_total : rsv.len = plan.load.totalSpan`
+    precondition is the missing fact that `Materialize.safe` used to
+    re-check at runtime — threading it from `Reserve.run`'s subtype
+    means we can connect the reservation size to `LoadPlan.totalSpan`
+    structurally.
+
+    Returns the witnessed tree on success. Failure means a planner
+    bug (the OS would otherwise raise SIGSEGV / mmap failure); the
+    body of the proof discharge is residual — see file docstring.
+
+    Callers consume the result via `LoadOps.runSafe`. -/
+def build (plan : Plan.Plan) (rsv : Reserve)
+    (_h_total : rsv.len = plan.load.totalSpan) :
+    Except String { lo : LoadOps plan.objects.val.size //
+      MmapsDisjoint lo ∧
+      MmapsContained rsv.addr rsv.len lo ∧
+      ZerosContained rsv.addr rsv.len lo ∧
+      StoresContained rsv.addr rsv.len lo ∧
+      MprotectsContained rsv.addr rsv.len lo } := do
+  let lo ← buildCore plan rsv
+  if h : MmapsDisjoint lo ∧
+         MmapsContained rsv.addr rsv.len lo ∧
+         ZerosContained rsv.addr rsv.len lo ∧
+         StoresContained rsv.addr rsv.len lo ∧
+         MprotectsContained rsv.addr rsv.len lo then
+    .ok ⟨lo, h⟩
+  else
+    .error "Materialize.build: planned ops violate safety invariants \
+      (loader bug — mmaps collide or extend outside the reservation)"
 
 -- ============================================================================
 -- Init address resolution: ctor entries → flat absolute addresses.
@@ -118,33 +148,5 @@ def ctorAddrs (plan : Plan.Plan) (rsv : Reserve) : Array UInt64 :=
   have h_bases : bases.size = plan.objects.val.size :=
     (Plan.assignBases_size _ _).trans lp.elfs_size
   initAddrs lp bases h_bases plan.initOrder
-
--- ============================================================================
--- Safety gate: decidable check over the structured tree.
---
--- Phase 1 replaces this with a static proof on `build`'s output.
--- ============================================================================
-
-/-- Gate the `LoadOps` tree through the decidable safety predicates
-    (`MmapsDisjoint`, `MmapsContained`, `ZerosContained`,
-    `StoresContained`, `MprotectsContained`) parameterized on the
-    reservation `[rsvAddr, rsvAddr+rsvLen)`. Failure means a planner
-    bug (the OS would otherwise raise SIGSEGV / mmap failure). -/
-def safe (rsv : Reserve) (lo : LoadOps n) :
-    Except String { lo : LoadOps n //
-      MmapsDisjoint lo ∧
-      MmapsContained rsv.addr rsv.len lo ∧
-      ZerosContained rsv.addr rsv.len lo ∧
-      StoresContained rsv.addr rsv.len lo ∧
-      MprotectsContained rsv.addr rsv.len lo } :=
-  if h : MmapsDisjoint lo ∧
-         MmapsContained rsv.addr rsv.len lo ∧
-         ZerosContained rsv.addr rsv.len lo ∧
-         StoresContained rsv.addr rsv.len lo ∧
-         MprotectsContained rsv.addr rsv.len lo then
-    .ok ⟨lo, h⟩
-  else
-    .error "Materialize.safe: planned ops violate safety invariants \
-      (loader bug — mmaps collide or extend outside the reservation)"
 
 end LeanLoad.Materialize
