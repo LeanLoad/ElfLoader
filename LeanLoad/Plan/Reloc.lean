@@ -94,13 +94,35 @@ structure RelocEntry (n : Nat) (seg : Segment) where
 /-- Resolve which `(objectIdx, symIdx)` provides the symbol value
     `S`. Local-defined symbols stay in the referrer; undef refs hop
     via `Resolve.Table` (`.found ref` → resolved; `.weakUndef` →
-    weakUnresolved; strongUndef is impossible at planning time —
-    `Plan.ofObjects` rejected it earlier). -/
+    weakUnresolved).
+
+    Three branches mark cases that are reachable in principle but not
+    in well-formed inputs:
+      • `symtab[symIdx]?` returns `none` — only happens with a
+        malformed ELF whose rela's `r.sym` index exceeds the dynsym
+        size. We'd rule this out structurally by validating every
+        rela at elaborate time and adding `r.sym.toNat < symtab.size`
+        to the `Segment.rela` / `jmprel` subtypes — a moderate
+        cascade through `Segment`/`SegmentPlan`/`ElfPlan` types.
+      • `rt.index.get?` returns `none` on an undef sym — only happens
+        when an undef symbol has no name (empty / `none`), since
+        `buildTable` skips those. We'd rule this out by always-
+        inserting in `buildTable` (so the lookup is total on undef
+        symbols) and adding a `complete` invariant to `Resolve.Table`
+        parameterised on the elf array.
+      • `.strongUndef` — `Plan.ofObjects` rejects load when any
+        strong-undef remains, but the *type* of `Resolve.Table` does
+        not yet witness "no strongUndef". A `noStrongUndef` field
+        threaded through that rejection would let `match` exhaust
+        cleanly.
+    All three fall through to `.weakUnresolved` / `.noSymbol`, which
+    drive `S = 0` in the formula — semantically correct for these
+    edge cases. -/
 private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (symIdx : Nat) :
     RelocTarget elfs.size :=
   match elfs[objectIdx].symtab[symIdx]? with
-  | none       => .noSymbol  -- caller bug: out-of-range symIdx
+  | none       => .noSymbol             -- malformed: symIdx ≥ symtab.size
   | some entry =>
     if !entry.isUndef then
       .resolved ⟨objectIdx, symIdx⟩
@@ -108,8 +130,8 @@ private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
       match rt.index.get? (objectIdx.val, symIdx) with
       | some (.found ref)  => .resolved ref
       | some .weakUndef    => .weakUnresolved
-      | some .strongUndef  => .weakUnresolved  -- unreachable; Plan.ofObjects rejects
-      | none               => .noSymbol         -- caller bug
+      | some .strongUndef  => .weakUnresolved -- Plan.ofObjects rejected; defensive
+      | none               => .weakUnresolved -- undef sym had empty/no name
 
 /-- Plan one rela: resolve target, preserve the `coversRela` witness
     from the parent segment. -/

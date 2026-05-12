@@ -332,6 +332,105 @@ theorem ofSegmentCore_pageVaddr_add_fileOverlayLen_le_pageEndAddr (n : Nat)
   · rw [h_vm_eq]; exact ea_no_wrap _ _ _ s.addrBound
   · rw [h_vf_eq, h_vm_eq]; omega
 
+-- ============================================================================
+-- Derived bounds for `ofSegmentCore`. Used by `ElfPlan.ofElf` to
+-- discharge `ElfPlan`'s per-segment quantified proof fields.
+-- ============================================================================
+
+/-- `pageVaddr + pageLength < 2^64` on the constructed plan. -/
+theorem ofSegmentCore_pageEnd_lt (n : Nat) (s : Segment)
+    (relocs : Array (RelocEntry n s)) :
+    (ofSegmentCore n s relocs).pageVaddr.toNat +
+    (ofSegmentCore n s relocs).pageLength.toNat < 2 ^ 64 := by
+  rw [ofSegmentCore_pageVaddr_add_pageLength]
+  exact ofSegmentCore_pageEndAddr_lt n s relocs
+
+/-- `fileOverlayLen ≤ pageLength` on the constructed plan. -/
+theorem ofSegmentCore_fileOverlay_le_pageLength (n : Nat) (s : Segment)
+    (relocs : Array (RelocEntry n s)) :
+    (ofSegmentCore n s relocs).fileOverlayLen.toNat ≤
+    (ofSegmentCore n s relocs).pageLength.toNat := by
+  have h1 := ofSegmentCore_pageVaddr_add_fileOverlayLen_le_pageEndAddr n s relocs
+  have h2 := ofSegmentCore_pageVaddr_add_pageLength n s relocs
+  omega
+
+/-- `vaddr + memsz ≤ pageVaddr + pageLength` on the constructed plan. -/
+theorem ofSegmentCore_vaddr_memsz_le_pageEnd (n : Nat) (s : Segment)
+    (relocs : Array (RelocEntry n s)) :
+    s.vaddr.toNat + s.memsz.toNat ≤
+    (ofSegmentCore n s relocs).pageVaddr.toNat +
+    (ofSegmentCore n s relocs).pageLength.toNat := by
+  rw [ofSegmentCore_pageVaddr_add_pageLength]
+  exact ofSegmentCore_vaddr_add_memsz_le_pageEndAddr n s relocs
+
+/-- `pageVaddr + pageInset = vaddr` on the constructed plan. -/
+theorem ofSegmentCore_pageInset_eq_vaddr (n : Nat) (s : Segment)
+    (relocs : Array (RelocEntry n s)) :
+    (ofSegmentCore n s relocs).pageVaddr.toNat +
+    (ofSegmentCore n s relocs).pageInset.toNat = s.vaddr.toNat := by
+  rw [ofSegmentCore_pageVaddr, ofSegmentCore_pageInset]
+  have h_ad_le : alignDown s.vaddr (effectiveAlign s.align) ≤ s.vaddr :=
+    alignDown_le _ _
+  have h_pi_eq : (s.vaddr - alignDown s.vaddr (effectiveAlign s.align)).toNat =
+                 s.vaddr.toNat - (alignDown s.vaddr (effectiveAlign s.align)).toNat :=
+    UInt64.toNat_sub_of_le _ _ h_ad_le
+  rw [h_pi_eq]
+  have := UInt64.le_iff_toNat_le.mp h_ad_le
+  omega
+
+/-- `pageInset + filesz + partialBssLen ≤ pageLength` on the
+    constructed plan. Bridges `partialBssLen`'s UInt64 subtraction to
+    a Nat-level bound suitable for `ZerosContained`. -/
+theorem ofSegmentCore_zero_end_le_pageLength (n : Nat) (s : Segment)
+    (relocs : Array (RelocEntry n s)) :
+    (ofSegmentCore n s relocs).pageInset.toNat + s.filesz.toNat +
+    (ofSegmentCore n s relocs).partialBssLen.toNat ≤
+    (ofSegmentCore n s relocs).pageLength.toNat := by
+  -- partialBssLen = fileOverlayLen - (pageInset + filesz) in UInt64.
+  -- We show pageInset + filesz ≤ fileOverlayLen (from `alignUp_ge`), so
+  -- pageInset + filesz + partialBssLen = fileOverlayLen ≤ pageLength.
+  have h_pi_eq : (ofSegmentCore n s relocs).pageInset.toNat =
+                 s.vaddr.toNat - (alignDown s.vaddr (effectiveAlign s.align)).toNat := by
+    rw [ofSegmentCore_pageInset]
+    exact UInt64.toNat_sub_of_le _ _ (alignDown_le _ _)
+  have h_ad_le : (alignDown s.vaddr (effectiveAlign s.align)).toNat ≤ s.vaddr.toNat :=
+    UInt64.le_iff_toNat_le.mp (alignDown_le _ _)
+  have h_fm := UInt64.le_iff_toNat_le.mp s.fileszLeMemsz
+  have h_addr := s.addrBound
+  have h_ea_le_succ := effectiveAlign_le_succ s.align
+  have h_2_48 : (2:Nat)^48 < 2^64 := by decide
+  have h_pi_filesz_no_wrap :
+      (ofSegmentCore n s relocs).pageInset.toNat + s.filesz.toNat < 2 ^ 64 := by
+    rw [h_pi_eq]; omega
+  have h_pi_filesz_eq :
+      ((ofSegmentCore n s relocs).pageInset + s.filesz).toNat =
+      (ofSegmentCore n s relocs).pageInset.toNat + s.filesz.toNat := by
+    rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_pi_filesz_no_wrap
+  have h_ea_ne : effectiveAlign s.align ≠ 0 := effectiveAlign_ne_zero s.align
+  have h_y_no_wrap : ((ofSegmentCore n s relocs).pageInset + s.filesz).toNat +
+      (effectiveAlign s.align).toNat < 2 ^ 64 := by
+    rw [h_pi_filesz_eq, h_pi_eq]; omega
+  have h_pi_filesz_le_fo :
+      ((ofSegmentCore n s relocs).pageInset + s.filesz).toNat ≤
+      (ofSegmentCore n s relocs).fileOverlayLen.toNat := by
+    show _ ≤ (alignUp _ _).toNat
+    exact UInt64.le_iff_toNat_le.mp (alignUp_ge _ _ h_ea_ne h_y_no_wrap)
+  have h_pi_filesz_le_fo' :
+      (ofSegmentCore n s relocs).pageInset.toNat + s.filesz.toNat ≤
+      (ofSegmentCore n s relocs).fileOverlayLen.toNat := by
+    rw [← h_pi_filesz_eq]; exact h_pi_filesz_le_fo
+  have h_partial_eq : (ofSegmentCore n s relocs).partialBssLen.toNat =
+      (ofSegmentCore n s relocs).fileOverlayLen.toNat -
+      ((ofSegmentCore n s relocs).pageInset.toNat + s.filesz.toNat) := by
+    show ((ofSegmentCore n s relocs).fileOverlayLen -
+          ((ofSegmentCore n s relocs).pageInset + s.filesz)).toNat = _
+    rw [UInt64.toNat_sub_of_le _ _
+      (UInt64.le_iff_toNat_le.mpr h_pi_filesz_le_fo)]
+    rw [h_pi_filesz_eq]
+  have h_fo_le_pl :=
+    ofSegmentCore_fileOverlay_le_pageLength n s relocs
+  omega
+
 end SegmentPlan
 
 -- ============================================================================
@@ -408,6 +507,33 @@ structure ElfPlan (n : Nat) where
       The crux of the per-elf containment bound. -/
   pageEndAddr_le_advance : ∀ (i : Nat) (h : i < segments.size),
     segments[i].pageEndAddr.toNat ≤ advance.toNat
+  /-- Per-segment no-wrap: `pageVaddr + pageLength < 2^64`. Used by
+      every materialize-stage slot bound to lift UInt64 addition to
+      Nat. -/
+  pageEnd_lt : ∀ (i : Nat) (h : i < segments.size),
+    segments[i].pageVaddr.toNat + segments[i].pageLength.toNat < 2 ^ 64
+  /-- The file overlay sits inside the page-aligned segment range —
+      the `Materialize.MmapsContained` bound. -/
+  fileOverlay_le_pageLength : ∀ (i : Nat) (h : i < segments.size),
+    segments[i].fileOverlayLen.toNat ≤ segments[i].pageLength.toNat
+  /-- The 4/8-byte write window of any rela sits inside the
+      page-aligned segment range — combines with `coversRela` to
+      discharge `Materialize.StoresContained`. -/
+  vaddr_memsz_le_pageEnd : ∀ (i : Nat) (h : i < segments.size),
+    segments[i].segment.vaddr.toNat + segments[i].segment.memsz.toNat ≤
+    segments[i].pageVaddr.toNat + segments[i].pageLength.toNat
+  /-- The partial-page BSS zero slot's end sits inside the
+      page-aligned segment range — the `Materialize.ZerosContained`
+      bound. -/
+  zero_end_le_pageLength : ∀ (i : Nat) (h : i < segments.size),
+    segments[i].pageInset.toNat + segments[i].segment.filesz.toNat +
+      segments[i].partialBssLen.toNat ≤ segments[i].pageLength.toNat
+  /-- The zero slot starts at `pageVaddr + pageInset = vaddr`. Lets
+      the zero slot's absolute address simplify to `base + vaddr +
+      filesz` for proofs. -/
+  pageInset_eq_vaddr : ∀ (i : Nat) (h : i < segments.size),
+    segments[i].pageVaddr.toNat + segments[i].pageInset.toNat =
+    segments[i].segment.vaddr.toNat
 
 namespace ElfPlan
 
@@ -496,9 +622,78 @@ def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
       intro i h_lt
       have h := h_pe_le_obj i h_lt
       omega
+    -- Each segment is `ofSegmentCore`-built; pull the bound facts off
+    -- the corresponding `ofSegmentCore_*` lemmas. The `h_eq_at` helper
+    -- rewrites `segs[i]` into the canonical `ofSegmentCore` form.
+    have h_eq_at : ∀ (i : Nat) (h_lt : i < segs.size),
+        segs[i]'h_lt = SegmentPlan.ofSegmentCore elfs.size
+          (e.segments[i]'(h_size_eq ▸ h_lt))
+          (Reloc.planSegment elfs rt objectIdx
+            (e.segments[i]'(h_size_eq ▸ h_lt))) := by
+      intro i h_lt
+      show (e.segments.map _)[i]'h_lt = _
+      rw [Array.getElem_map]
+    have h_pageEnd_lt : ∀ (i : Nat) (h : i < segs.size),
+        segs[i].pageVaddr.toNat + segs[i].pageLength.toNat < 2 ^ 64 := by
+      intro i h_lt; rw [h_eq_at i h_lt]
+      exact SegmentPlan.ofSegmentCore_pageEnd_lt _ _ _
+    have h_fileOverlay_le_pageLength : ∀ (i : Nat) (h : i < segs.size),
+        segs[i].fileOverlayLen.toNat ≤ segs[i].pageLength.toNat := by
+      intro i h_lt; rw [h_eq_at i h_lt]
+      exact SegmentPlan.ofSegmentCore_fileOverlay_le_pageLength _ _ _
+    have h_vaddr_memsz_le_pageEnd : ∀ (i : Nat) (h : i < segs.size),
+        segs[i].segment.vaddr.toNat + segs[i].segment.memsz.toNat ≤
+        segs[i].pageVaddr.toNat + segs[i].pageLength.toNat := by
+      intro i h_lt
+      have h_eq := h_eq_at i h_lt
+      rw [h_eq]
+      have := SegmentPlan.ofSegmentCore_vaddr_memsz_le_pageEnd elfs.size
+        (e.segments[i]'(h_size_eq ▸ h_lt))
+        (Reloc.planSegment elfs rt objectIdx (e.segments[i]'(h_size_eq ▸ h_lt)))
+      have h_seg_eq : (SegmentPlan.ofSegmentCore elfs.size
+          (e.segments[i]'(h_size_eq ▸ h_lt))
+          (Reloc.planSegment elfs rt objectIdx
+            (e.segments[i]'(h_size_eq ▸ h_lt)))).segment =
+          e.segments[i]'(h_size_eq ▸ h_lt) := rfl
+      rw [h_seg_eq]; exact this
+    have h_zero_end_le_pageLength : ∀ (i : Nat) (h : i < segs.size),
+        segs[i].pageInset.toNat + segs[i].segment.filesz.toNat +
+          segs[i].partialBssLen.toNat ≤ segs[i].pageLength.toNat := by
+      intro i h_lt
+      have h_eq := h_eq_at i h_lt
+      rw [h_eq]
+      have := SegmentPlan.ofSegmentCore_zero_end_le_pageLength elfs.size
+        (e.segments[i]'(h_size_eq ▸ h_lt))
+        (Reloc.planSegment elfs rt objectIdx (e.segments[i]'(h_size_eq ▸ h_lt)))
+      have h_seg_eq : (SegmentPlan.ofSegmentCore elfs.size
+          (e.segments[i]'(h_size_eq ▸ h_lt))
+          (Reloc.planSegment elfs rt objectIdx
+            (e.segments[i]'(h_size_eq ▸ h_lt)))).segment =
+          e.segments[i]'(h_size_eq ▸ h_lt) := rfl
+      rw [h_seg_eq]; exact this
+    have h_pageInset_eq_vaddr : ∀ (i : Nat) (h : i < segs.size),
+        segs[i].pageVaddr.toNat + segs[i].pageInset.toNat =
+        segs[i].segment.vaddr.toNat := by
+      intro i h_lt
+      have h_eq := h_eq_at i h_lt
+      rw [h_eq]
+      have := SegmentPlan.ofSegmentCore_pageInset_eq_vaddr elfs.size
+        (e.segments[i]'(h_size_eq ▸ h_lt))
+        (Reloc.planSegment elfs rt objectIdx (e.segments[i]'(h_size_eq ▸ h_lt)))
+      have h_seg_eq : (SegmentPlan.ofSegmentCore elfs.size
+          (e.segments[i]'(h_size_eq ▸ h_lt))
+          (Reloc.planSegment elfs rt objectIdx
+            (e.segments[i]'(h_size_eq ▸ h_lt)))).segment =
+          e.segments[i]'(h_size_eq ▸ h_lt) := rfl
+      rw [h_seg_eq]; exact this
     .ok { elf := e, segments := segs, advance,
           segmentsSorted := h_sorted,
-          pageEndAddr_le_advance := h_bound }
+          pageEndAddr_le_advance := h_bound,
+          pageEnd_lt := h_pageEnd_lt,
+          fileOverlay_le_pageLength := h_fileOverlay_le_pageLength,
+          vaddr_memsz_le_pageEnd := h_vaddr_memsz_le_pageEnd,
+          zero_end_le_pageLength := h_zero_end_le_pageLength,
+          pageInset_eq_vaddr := h_pageInset_eq_vaddr }
   else
     .error "ElfPlan.ofElf: PT_LOAD page-aligned ranges overlap"
 
