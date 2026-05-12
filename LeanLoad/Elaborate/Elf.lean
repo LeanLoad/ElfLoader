@@ -91,14 +91,49 @@ instance (s : Segment) (phoff : UInt64) (nbytes : Nat) :
     Decidable (coversPhdrs s phoff nbytes) := by
   unfold coversPhdrs; infer_instance
 
-/-- Some PT_LOAD segment covers the phdr table (per `coversPhdrs`).
-    Bounded `∃` so it's decidable via `Nat.decidableBExLT`. -/
+/-- Some PT_LOAD segment covers the phdr table (per `coversPhdrs`),
+    or there's no phdr table to cover (`nbytes = 0`, degenerate Elf
+    with `phnum = 0` — `AT_PHDR` is unused in that case). Bounded
+    `∃` so it's decidable via `Nat.decidableBExLT`. -/
 def PhdrCovered (segs : Array Segment) (phoff : UInt64) (nbytes : Nat) : Prop :=
-  ∃ i, ∃ _ : i < segs.size, coversPhdrs segs[i] phoff nbytes
+  nbytes = 0 ∨ ∃ i, ∃ _ : i < segs.size, coversPhdrs segs[i] phoff nbytes
 
 instance (segs : Array Segment) (phoff : UInt64) (nbytes : Nat) :
     Decidable (PhdrCovered segs phoff nbytes) := by
   unfold PhdrCovered; infer_instance
+
+-- ============================================================================
+-- Ctor / dtor address coverage — every non-zero entry in
+-- `DT_INIT_ARRAY` / `DT_FINI_ARRAY` is a callable function. For ET_DYN
+-- (the only kind LeanLoad supports) the entry is a base-relative
+-- virtual address; it must live inside an executable PT_LOAD or
+-- calling it segfaults at runtime. Validated at elaborate so a
+-- corrupt binary fails loud at load time.
+-- ============================================================================
+
+/-- A function pointer (relative vaddr) is either zero (skip — gabi
+    leaves zero entries unspecified, but glibc/musl treat them as
+    no-ops) or lives inside an executable PT_LOAD's
+    `[vaddr, vaddr + memsz)`. -/
+def ctorInExecSeg (segs : Array Segment) (entry : UInt64) : Prop :=
+  entry = 0 ∨
+  ∃ i, ∃ _ : i < segs.size,
+    segs[i].perm.exec ∧
+    segs[i].vaddr.toNat ≤ entry.toNat ∧
+    entry.toNat < segs[i].vaddr.toNat + segs[i].memsz.toNat
+
+instance (segs : Array Segment) (entry : UInt64) :
+    Decidable (ctorInExecSeg segs entry) := by
+  unfold ctorInExecSeg; infer_instance
+
+/-- Every entry in the array lives in an executable PT_LOAD (or is
+    zero). Used to discharge `initArr` / `finiArr` validity. -/
+def CtorsInExecSeg (segs : Array Segment) (arr : Array UInt64) : Prop :=
+  ∀ k, ∀ _ : k < arr.size, ctorInExecSeg segs arr[k]
+
+instance (segs : Array Segment) (arr : Array UInt64) :
+    Decidable (CtorsInExecSeg segs arr) := by
+  unfold CtorsInExecSeg; infer_instance
 
 -- ============================================================================
 -- The elaborated ELF.
@@ -133,7 +168,10 @@ structure Elf where
   needed   : Array String
   soname   : Option String
   runpath  : Option String
+  /-- `DT_INIT_ARRAY` entries — ctors, walked forward on startup. -/
   initArr  : Array UInt64
+  /-- `DT_FINI_ARRAY` entries — dtors, walked backward on exit. -/
+  finiArr  : Array UInt64
   /-- One bundle per PT_LOAD, in phdr order, with relas grouped by
       the segment they target. -/
   segments : Array Segment
@@ -148,6 +186,12 @@ structure Elf where
       offset-to-vaddr translation — and proves that the runtime trust
       assumption is met at elaborate time. -/
   phdrCovered : PhdrCovered segments phoff (Parse.RawPhdrSize * phnum.toNat)
+  /-- Every `DT_INIT_ARRAY` entry is zero or lives in an executable
+      PT_LOAD. Calling a non-executable address would SIGSEGV at
+      runtime; catching this at elaborate fails loud instead. -/
+  initArrInExecSeg : CtorsInExecSeg segments initArr
+  /-- Same as `initArrInExecSeg`, for `DT_FINI_ARRAY`. -/
+  finiArrInExecSeg : CtorsInExecSeg segments finiArr
 
 -- ============================================================================
 -- elaborate: RawElf → Except String Elf
@@ -229,16 +273,26 @@ def elaborate (raw : RawElf) : Except String Elf := do
   if h_wf : Sorted segments ∧ NonOverlap segments then
     let phdr_nbytes : Nat := Parse.RawPhdrSize * raw.header.e_phnum.toNat
     if h_phdr : PhdrCovered segments raw.header.e_phoff phdr_nbytes then
-      return {
-        elfType, machine,
-        entry := raw.header.e_entry,
-        phoff := raw.header.e_phoff,
-        phnum := raw.header.e_phnum,
-        symtab,
-        needed, soname, runpath,
-        initArr := raw.initArr, segments,
-        segmentsSorted := h_wf.left, segmentsNonOverlap := h_wf.right,
-        phdrCovered := h_phdr }
+      if h_init : CtorsInExecSeg segments raw.initArr then
+        if h_fini : CtorsInExecSeg segments raw.finiArr then
+          return {
+            elfType, machine,
+            entry := raw.header.e_entry,
+            phoff := raw.header.e_phoff,
+            phnum := raw.header.e_phnum,
+            symtab,
+            needed, soname, runpath,
+            initArr := raw.initArr, finiArr := raw.finiArr, segments,
+            segmentsSorted := h_wf.left, segmentsNonOverlap := h_wf.right,
+            phdrCovered := h_phdr,
+            initArrInExecSeg := h_init,
+            finiArrInExecSeg := h_fini }
+        else
+          .error s!"elaborate: some DT_FINI_ARRAY entry is not in any \
+            executable PT_LOAD ({raw.finiArr.size} entries total)"
+      else
+        .error s!"elaborate: some DT_INIT_ARRAY entry is not in any \
+          executable PT_LOAD ({raw.initArr.size} entries total)"
     else
       .error s!"elaborate: phdr table at file offset \
         0x{raw.header.e_phoff.toNat} (size {phdr_nbytes}) is not covered \

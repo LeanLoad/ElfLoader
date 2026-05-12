@@ -109,6 +109,10 @@ structure RawElf where
   jmprel  : Array RawRela
   /-- `DT_INIT_ARRAY` entries — already parsed from the file bytes. -/
   initArr : Array UInt64
+  /-- `DT_FINI_ARRAY` entries — already parsed from the file bytes.
+      For ET_DYN, walked in reverse on process exit (mirrors `initArr`'s
+      forward walk on startup). -/
+  finiArr : Array UInt64
   deriving Inhabited
 
 end LeanLoad.Parse
@@ -228,10 +232,11 @@ def parse (h : Runtime.FileHandle) : IO RawElf := do
   let rela     ← parseSizedTable RawRelaSize h phdrs dyn DT_RELA       DT_RELASZ       "DT_RELA"
   let jmprel   ← parseSizedTable RawRelaSize h phdrs dyn DT_JMPREL     DT_PLTRELSZ     "DT_JMPREL"
   let initArr  ← parseSizedTable 8           h phdrs dyn DT_INIT_ARRAY DT_INIT_ARRAYSZ "DT_INIT_ARRAY"
+  let finiArr  ← parseSizedTable 8           h phdrs dyn DT_FINI_ARRAY DT_FINI_ARRAYSZ "DT_FINI_ARRAY"
 
   return {
     header, phdrs, dyn, strtab, symtab, needed, soname, runpath,
-    rela, jmprel, initArr
+    rela, jmprel, initArr, finiArr
   }
 
 end LeanLoad.Parse.RawElf

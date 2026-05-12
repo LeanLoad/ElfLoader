@@ -56,15 +56,16 @@ instance : Inhabited Elaborate.Elf where
     { elfType := .none, machine := .x86_64,
       entry := 0, phoff := 0, phnum := 0,
       symtab := #[], needed := #[],
-      soname := Option.none, runpath := Option.none, initArr := #[],
+      soname := Option.none, runpath := Option.none,
+      initArr := #[], finiArr := #[],
       segments := #[],
       segmentsSorted := by decide,
       segmentsNonOverlap := by decide,
-      phdrCovered := by
-        -- vacuous: phnum = 0 means the phdr table has 0 bytes, and
-        -- the bounded ∃ over an empty segments array is false; but the
-        -- decidable form here reduces to a `decide`.
-        unfold Elaborate.PhdrCovered; simp }
+      -- `phnum = 0` ⇒ `nbytes = 0`, the vacuous-true branch.
+      phdrCovered := Or.inl rfl
+      -- Empty init/fini array — vacuously every entry is in some exec seg.
+      initArrInExecSeg := by decide
+      finiArrInExecSeg := by decide }
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
 def synthElf
