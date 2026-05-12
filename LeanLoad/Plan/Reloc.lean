@@ -34,13 +34,43 @@ open LeanLoad.Elaborate (Elf Segment coversRela)
 -- `r_offset + 8 ≤ seg.vaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
 
-/-- One planned relocation, owned by `seg`. `target` is the resolved
-    provider of the symbol value `S`: a local definition resolves to
-    `(this object, sym)`; an undef ref resolves through
-    `Resolve.Table`; `r.sym = 0` or unresolved-weak yields `none`
-    (formula sees `S = 0`). The `covered` witness carries the
-    8-byte-window containment from the parent segment forward into
-    the planned tree. -/
+/-- Resolution outcome for one rela's symbol reference. Three
+    explicit cases collapse the old `Option (SymRef n)` to a richer
+    discriminator so `Main.debug` can distinguish "no symbol slot"
+    from "weak-undefined" diagnostically, and so `Materialize.bakeReloc`
+    pattern-matches without an outer `Option`. All three cases drive
+    `S = 0` in the formula except `resolved`. -/
+inductive RelocTarget (n : Nat) where
+  /-- `r.sym = 0` (`R_*_NONE` and similar). No symbol referenced. -/
+  | noSymbol
+  /-- Symbol is undef-weak and BFS returned no provider. gabi 05
+      binds `S = 0`. -/
+  | weakUnresolved
+  /-- Symbol resolved: either locally defined or via `Resolve.Table`. -/
+  | resolved (ref : Resolve.SymRef n)
+  deriving Repr
+
+namespace RelocTarget
+
+/-- Extract the resolved provider, if any. Used by the bake step
+    where both `noSymbol` and `weakUnresolved` collapse to `S = 0`. -/
+def symRef? : RelocTarget n → Option (Resolve.SymRef n)
+  | .resolved ref => some ref
+  | _             => none
+
+/-- Human-readable tag for diagnostics. -/
+def tag : RelocTarget n → String
+  | .noSymbol       => "none"
+  | .weakUnresolved => "weak"
+  | .resolved _     => "ok"
+
+end RelocTarget
+
+/-- One planned relocation, owned by `seg`. `target` discriminates the
+    three resolution outcomes (no symbol / weak unresolved / resolved
+    provider). `Materialize.bakeReloc` collapses the two unresolved
+    cases to `S = 0`. The `covered` witness carries the 8-byte-window
+    containment from the parent segment forward into the planned tree. -/
 structure RelocEntry (n : Nat) (seg : Segment) where
   /-- Per-arch relocation type (`R_*`); the low 32 bits of `r_info`. -/
   type     : UInt32
@@ -49,8 +79,8 @@ structure RelocEntry (n : Nat) (seg : Segment) where
   r_offset : UInt64
   /-- Addend `A` (gabi `r_addend`; bit pattern of a signed sxword). -/
   addend   : UInt64
-  /-- Resolved symbol provider, or `none` for `R_*_NONE` / unresolved. -/
-  target   : Option (Resolve.SymRef n)
+  /-- Resolution outcome — see `RelocTarget`. -/
+  target   : RelocTarget n
   /-- 8-byte write window fits in `[seg.vaddr, seg.vaddr + seg.memsz)`.
       Inherited from the `coversRela` subtype on `Segment.rela` /
       `Segment.jmprel`; preserved through `planOne` so the
@@ -63,18 +93,23 @@ structure RelocEntry (n : Nat) (seg : Segment) where
 
 /-- Resolve which `(objectIdx, symIdx)` provides the symbol value
     `S`. Local-defined symbols stay in the referrer; undef refs hop
-    via `Resolve.Table`. Returns `none` when the symbol isn't
-    defined (unresolved weak refs leave `S = 0`). -/
+    via `Resolve.Table` (`.found ref` → resolved; `.weakUndef` →
+    weakUnresolved; strongUndef is impossible at planning time —
+    `Plan.ofObjects` rejected it earlier). -/
 private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (symIdx : Nat) :
-    Option (Resolve.SymRef elfs.size) :=
+    RelocTarget elfs.size :=
   match elfs[objectIdx].symtab[symIdx]? with
-  | none       => none
+  | none       => .noSymbol  -- caller bug: out-of-range symIdx
   | some entry =>
     if !entry.isUndef then
-      some ⟨objectIdx, symIdx⟩
+      .resolved ⟨objectIdx, symIdx⟩
     else
-      (rt.index.get? (objectIdx.val, symIdx)).bind Resolve.Resolution.target?
+      match rt.index.get? (objectIdx.val, symIdx) with
+      | some (.found ref)  => .resolved ref
+      | some .weakUndef    => .weakUnresolved
+      | some .strongUndef  => .weakUnresolved  -- unreachable; Plan.ofObjects rejects
+      | none               => .noSymbol         -- caller bug
 
 /-- Plan one rela: resolve target, preserve the `coversRela` witness
     from the parent segment. -/
@@ -82,8 +117,8 @@ def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (seg : Segment) (r : RawRela)
     (h_cov : coversRela seg.vaddr seg.memsz r.r_offset) :
     RelocEntry elfs.size seg :=
-  let target :=
-    if r.sym == 0 then none
+  let target : RelocTarget elfs.size :=
+    if r.sym == 0 then .noSymbol
     else resolveTarget elfs rt objectIdx r.sym.toNat
   { type := r.type, r_offset := r.r_offset, addend := r.r_addend, target,
     covered := h_cov }

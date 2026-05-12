@@ -54,14 +54,14 @@ private def fitsLow32 (v : UInt64) : Bool :=
 -- Symbol-value resolution: `S = base[target] + symtab[target].value`.
 -- ============================================================================
 
-/-- Resolve `S` for a `RelocEntry.target`. `none` (R_*_NONE,
-    unresolved weak) yields `S = 0`. Out-of-bounds `symIdx` (caller
-    bug) also yields `0`; the formula then sees `S = 0`, which is a
+/-- Resolve `S` for a `RelocEntry.target`. Unresolved cases
+    (`noSymbol`, `weakUnresolved`) and out-of-bounds `symIdx` (caller
+    bug) yield `S = 0`; the formula then sees `S = 0`, which is a
     valid input for every reloc type. -/
 private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     (h_bases : bases.size = elfs.size)
-    (target : Option (Resolve.SymRef elfs.size)) : UInt64 :=
-  match target with
+    (target : Reloc.RelocTarget elfs.size) : UInt64 :=
+  match target.symRef? with
   | none => 0
   | some ref =>
     let provBase := bases[ref.objectIdx.val]'(by

@@ -177,7 +177,8 @@ def debug (path : String) : IO Unit := do
     for h2 : segI in [:ep.segments.size] do
       let sp := ep.segments[segI]
       for entry in sp.relocs do
-        let symValue : UInt64 := match entry.target with
+        let symRef := entry.target.symRef?
+        let symValue : UInt64 := match symRef with
           | none => 0
           | some ref =>
             match bases[ref.objectIdx.val]? with
@@ -192,8 +193,9 @@ def debug (path : String) : IO Unit := do
         | none     => pure ()
         | some res =>
           let symName : String := match entry.target with
-            | none => ""
-            | some ref =>
+            | .noSymbol       => ""
+            | .weakUnresolved => "<weak>"
+            | .resolved ref   =>
               (elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?)
                 |>.bind (·.name)).getD "?"
           let typeStr := padR (toString entry.type) 2
