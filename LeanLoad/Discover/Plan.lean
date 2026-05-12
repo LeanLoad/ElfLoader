@@ -102,13 +102,22 @@ structure LoadedObject where
     Dep edges are *not* stored. The only downstream consumer is
     `LeanLoad.Init.computeOrder` (init/fini), which re-derives them
     from `obj.elf.needed`. -/
-abbrev ObjectList := { a : Array LoadedObject // 0 < a.size }
+abbrev ObjectList := { a : Array LoadedObject //
+  0 < a.size ∧ (a.map (·.name)).toList.Nodup }
 
 namespace ObjectList
 
+/-- Non-emptiness witness — the first half of `ObjectList.property`. -/
+def sizePos (g : ObjectList) : 0 < g.val.size := g.property.1
+
+/-- Names of the loaded objects are pairwise distinct — the second
+    half of `ObjectList.property`. Used by `Init.buildDeps` to argue
+    the `name → index` map is injective. -/
+def namesNodup (g : ObjectList) : (g.val.map (·.name)).toList.Nodup := g.property.2
+
 /-- The main executable — total because the subtype carries the
     non-emptiness witness. -/
-def main (g : ObjectList) : LoadedObject := g.val[0]'g.property
+def main (g : ObjectList) : LoadedObject := g.val[0]'g.sizePos
 
 end ObjectList
 
@@ -160,34 +169,10 @@ def step (objs : Array LoadedObject) (work : List WorkItem) : StepResult :=
     if alreadyLoaded objs sn then .skip rest
     else .resolve sn rp rest
 
-/-- Pure integration: given a freshly resolved + parsed + elaborated
-    dep, update `(objs, work)`. Performs the *post-canonicalisation*
-    dedup using `elf.soname.getD path` — the post-parse soname may
-    differ from the `DT_NEEDED` string we resolved through, and the
-    path fallback dedups multiple aliases of the same file. -/
-def integrate (objs : Array LoadedObject) (rest : List WorkItem)
-    (path : String) (handle : Runtime.FileHandle)
-    (elf : Elaborate.Elf) :
-    Array LoadedObject × List WorkItem :=
-  let canonical := canonicalName path elf
-  if alreadyLoaded objs canonical then
-    (objs, rest)
-  else
-    let obj : LoadedObject :=
-      { name := canonical, handle, elf }
-    let newPairs : List WorkItem :=
-      elf.needed.toList.map (fun n => (elf.runpath, n))
-    (objs.push obj, rest ++ newPairs)
-
-/-- `integrate` only ever pushes (or no-ops); preserves the
-    `0 < .size` lower bound that `ObjectList` carries. Used by
-    `discoverLoop` to thread the non-emptiness invariant. -/
-theorem integrate_size_pos (objs : Array LoadedObject) (rest : List WorkItem)
-    (path : String) (handle : Runtime.FileHandle)
-    (elf : Elaborate.Elf) (h : 0 < objs.size) :
-    0 < (integrate objs rest path handle elf).fst.size := by
-  by_cases hh : alreadyLoaded objs (canonicalName path elf) <;>
-    simp [integrate, hh, Array.size_push, h]
+/-- New work items spawned by a freshly elaborated elf: one per
+    `DT_NEEDED` entry, tagged with the providing object's runpath. -/
+def workOfElf (elf : Elaborate.Elf) : List WorkItem :=
+  elf.needed.toList.map (fun n => (elf.runpath, n))
 
 -- ============================================================================
 -- Soundness theorems for the BFS dedup primitive.

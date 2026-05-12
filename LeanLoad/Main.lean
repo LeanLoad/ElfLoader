@@ -109,7 +109,7 @@ def debug (path : String) : IO Unit := do
   let elfs    := g.val.map (·.elf)
   let handles := g.val.map (·.handle)
   have h_size : handles.size = elfs.size := by simp [elfs, handles]
-  have _h_pos  : 0 < elfs.size := by simp [elfs]; exact g.property
+  have _h_pos  : 0 < elfs.size := by simp [elfs]; exact g.sizePos
   let mainElf := g.main.elf
 
   IO.eprintln "\n== 2. Parse + Elaborate (per-object Elf views) =="

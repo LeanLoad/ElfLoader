@@ -61,22 +61,23 @@ def resolveSoname (soname : String) (ctx : SearchContext) : IO (Option String) :
 -- ============================================================================
 
 /-- BFS loop: dispatches each `step` decision from `Plan.Discover` to
-    the right IO action, then `integrate`s the result. Recurses on
-    `fuel`; the planner's natural termination (visited dedup) is
-    invisible to Lean, so we cap with a generous bound.
-
-    Threads the `0 < objs.size` invariant: every branch either keeps
-    `objs` unchanged or appends via `integrate` (which only pushes or
-    no-ops), preserving the bound. -/
+    the right IO action, then integrates the result inline so both
+    invariants (non-emptiness and name-`Nodup`) are derived at the
+    push site. Recurses on `fuel`; the planner's natural termination
+    (visited dedup) is invisible to Lean, so we cap with a generous
+    bound. -/
 private def discoverLoop (envPath : Option String) (fuel : Nat)
-    (objs : Array LoadedObject) (h : 0 < objs.size) (work : List WorkItem) :
+    (objs : Array LoadedObject)
+    (h_pos : 0 < objs.size)
+    (h_nodup : (objs.map (·.name)).toList.Nodup)
+    (work : List WorkItem) :
     IO ObjectList := do
   match fuel with
-  | 0 => pure (Subtype.mk objs h)
+  | 0 => pure ⟨objs, h_pos, h_nodup⟩
   | fuel + 1 =>
     match step objs work with
-    | .done => pure (Subtype.mk objs h)
-    | .skip rest => discoverLoop envPath fuel objs h rest
+    | .done => pure ⟨objs, h_pos, h_nodup⟩
+    | .skip rest => discoverLoop envPath fuel objs h_pos h_nodup rest
     | .resolve sn rp rest =>
       let ctx : SearchContext := { runpath := rp, envPath, defaults := #[] }
       match ← resolveSoname sn ctx with
@@ -84,24 +85,38 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
         throw (IO.userError s!"discover: cannot find '{sn}' (runpath={rp}, env={envPath})")
       | some path =>
         let (handle, elf) ← readAndParse path
-        let result := integrate objs rest path handle elf
-        have h' : 0 < result.fst.size := integrate_size_pos objs rest path handle elf h
-        discoverLoop envPath fuel result.fst h' result.snd
+        let canonical := canonicalName path elf
+        let obj : LoadedObject := { name := canonical, handle, elf }
+        match h_fresh : alreadyLoaded objs canonical with
+        | true =>
+          -- Post-canonicalisation dedup hit. `obj` is dropped; both
+          -- proofs carry forward unchanged.
+          discoverLoop envPath fuel objs h_pos h_nodup rest
+        | false =>
+          -- Append and derive both invariants from the dedup miss.
+          let objs' := objs.push obj
+          have h_pos' : 0 < objs'.size := by
+            show 0 < (objs.push obj).size
+            rw [Array.size_push]; omega
+          have h_nodup' : (objs'.map (·.name)).toList.Nodup :=
+            nodup_names_push_of_alreadyLoaded_false objs obj h_nodup h_fresh
+          discoverLoop envPath fuel objs' h_pos' h_nodup' (rest ++ workOfElf elf)
 
 /-- Walk `DT_NEEDED` from `mainPath` transitively. Returns an
     `ObjectList` containing main and all reachable dependencies in
-    BFS order — non-emptiness witnessed at the type level. -/
+    BFS order — non-emptiness and name-`Nodup` witnessed at the type
+    level. -/
 def discover (mainPath : String) : IO ObjectList := do
   let (mainHandle, mainElf) ← readAndParse mainPath
   let envPath ← IO.getEnv "LD_LIBRARY_PATH"
   let mainName := canonicalName mainPath mainElf
   let initObjs : Array LoadedObject :=
     #[{ name := mainName, handle := mainHandle, elf := mainElf }]
-  have h : 0 < initObjs.size := Nat.zero_lt_one
-  let initWork : List WorkItem :=
-    mainElf.needed.toList.map (fun n => (mainElf.runpath, n))
+  have h_pos : 0 < initObjs.size := Nat.zero_lt_one
+  have h_nodup : (initObjs.map (·.name)).toList.Nodup := by
+    simp [initObjs]
   -- Fuel: a generous cap. Real binaries land in the low tens; 4096
   -- leaves headroom and still discharges termination at type-check.
-  discoverLoop envPath 4096 initObjs h initWork
+  discoverLoop envPath 4096 initObjs h_pos h_nodup (workOfElf mainElf)
 
 end LeanLoad.Discover
