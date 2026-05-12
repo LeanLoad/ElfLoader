@@ -105,34 +105,46 @@ def build (bp : BasedPlan) :
       (loader bug — mmaps collide or extend outside the reservation)"
 
 -- ============================================================================
--- Init address resolution: ctor entries → flat absolute addresses.
+-- Ctor / dtor address resolution: init-array / fini-array entries →
+-- flat absolute addresses.
 -- ============================================================================
 
-/-- Constructor function addresses to call, in init order. Walks
-    `order` forward (init); fini callers reverse the result.
+/-- Collect function addresses to call, from a per-elf array selector
+    (`(·.initArr)` for ctors, `(·.finiArr)` for dtors), iterating elves
+    in `order`. Walks the selected array forward.
 
-    For each elf, walks `elf.initArr`: ET_DYN entries are relative
-    (add base); ET_EXEC are absolute. Zero entries are skipped — gabi
-    leaves them unspecified, but historical practice (and the table
-    layout where zero-terminators are common) treats them as no-ops.
+    For each elf, each entry's runtime address is: ET_DYN entries get
+    the chosen base added; ET_EXEC entries are absolute. Zero entries
+    are skipped — gabi leaves them unspecified, but historical
+    practice (where zero-terminators are common) treats them as
+    no-ops.
 
     `order : Array (Fin n)` carries the bound at the type level; both
     `lp.elfs[…]` and `bases[…]` are total — no `[]?` needed. -/
-def initAddrs (lp : LoadPlan n) (bases : Array UInt64)
-    (h_bases : bases.size = n) (order : Array (Fin n)) : Array UInt64 :=
+def collectAddrs (lp : LoadPlan n) (bases : Array UInt64)
+    (h_bases : bases.size = n) (order : Array (Fin n))
+    (arrOf : Elaborate.Elf → Array UInt64) : Array UInt64 :=
   Id.run do
     let mut addrs : Array UInt64 := #[]
     for objectIdx in order do
       let ep   := lp.elfs[objectIdx.val]'(by rw [lp.elfs_size]; exact objectIdx.isLt)
       let base := bases[objectIdx.val]'(by rw [h_bases]; exact objectIdx.isLt)
       let isExec := ep.elf.elfType == .exec
-      for entry in ep.elf.initArr do
+      for entry in arrOf ep.elf do
         let fnAddr := if isExec then entry else base + entry
         if fnAddr != 0 then addrs := addrs.push fnAddr
     return addrs
 
-/-- One-shot ctor address resolution from a `BasedPlan`. -/
+/-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
 def ctorAddrs (bp : BasedPlan) : Array UInt64 :=
-  initAddrs bp.plan.load bp.bases bp.bases_size bp.plan.initOrder
+  collectAddrs bp.plan.load bp.bases bp.bases_size bp.plan.initOrder (·.initArr)
+
+/-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
+    so deepest-dep fini runs after shallower fini, mirroring init's
+    "deps first" order. gabi 08 mandates a partial order; reverse-init
+    is glibc / musl's conventional choice. -/
+def dtorAddrs (bp : BasedPlan) : Array UInt64 :=
+  collectAddrs bp.plan.load bp.bases bp.bases_size
+    bp.plan.initOrder.reverse (·.finiArr)
 
 end LeanLoad.Materialize
