@@ -1,24 +1,20 @@
 /-
-Builder: turn the pure-pipeline `Plan` aggregate into a
-safety-witnessed `LoadOps` tree ready for `runSafe`.
+Builder: turn a `BasedPlan` into a safety-witnessed `LoadOps` tree
+ready for `runSafe`.
 
 Two top-level entry points:
-  • `build`     — pure: `(plan, rsv, h_total) → safety-witnessed
-                  LoadOps`. Takes the `Plan` aggregate, the IO-side
-                  `Reserve`, and a coherence proof
-                  `rsv.len = plan.load.totalSpan` (typically threaded
-                  off `Reserve.run`'s subtype). Returns a witnessed
-                  `{ lo : LoadOps n // …5 safety predicates… }`. The
+  • `build`     — pure: `BasedPlan → safety-witnessed LoadOps`.
+                  Returns a witnessed
+                  `{ lo : LoadOps bp.n // …5 safety predicates… }`. The
                   five `MmapsDisjoint` / `*Contained` predicates are
                   established at construction time via an internal
                   decidable check; a future pass replaces that check
-                  with a structural proof (the lemma library in
-                  `Plan/Layout.lean` covers per-segment `pageEndAddr`
-                  bounds, `assignBases_at_toNat`, `cumOffset_mono`,
-                  `totalSpan_eq` — the remaining gluing across slot
-                  kinds + tree levels is ~200-300 lines but
-                  mechanical).
-  • `ctorAddrs` — pure: `(plan, rsv) → Array UInt64`. Resolves each
+                  with a structural proof rooted in
+                  `BasedPlan.base_plus_advance_le_rsv_end` and the
+                  per-segment bounds in `Plan/Layout.lean`
+                  (`ofSegmentCore_pageVaddr_add_fileOverlayLen_le_pageEndAddr`,
+                  `pageEndAddr_le_advance`, …).
+  • `ctorAddrs` — pure: `BasedPlan → Array UInt64`. Resolves each
                   init-array entry through the per-elf base, in DFS
                   post-order; ET_DYN entries get the chosen base
                   added, ET_EXEC entries are absolute, zero entries
@@ -30,7 +26,7 @@ Two top-level entry points:
 
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Reloc
-import LeanLoad.Plan.Aggregate
+import LeanLoad.Materialize.BasedPlan
 
 namespace LeanLoad.Materialize
 
@@ -39,40 +35,42 @@ open LeanLoad.Plan (LoadPlan ElfPlan SegmentPlan)
 open LeanLoad.Elaborate (Elf Formula)
 
 -- ============================================================================
--- Builder: Reserve + LoadPlan + handles + formula → LoadOps tree.
+-- Builder: BasedPlan → LoadOps tree.
 -- ============================================================================
 
-/-- Internal: assemble the unwitnessed `LoadOps n` tree from `plan`
-    and `rsv`. Used by `build`, which then runs the safety predicates
-    over the result. -/
-private def buildCore (plan : Plan.Plan) (rsv : Reserve) :
-    Except String (LoadOps plan.objects.val.size) := do
+/-- Internal: assemble the unwitnessed `LoadOps bp.n` tree from a
+    `BasedPlan`. Used by `build`, which then runs the safety
+    predicates over the result. -/
+private def buildCore (bp : BasedPlan) :
+    Except String (LoadOps bp.n) := do
+  let plan := bp.plan
   let lp := plan.load
   let elfs := plan.objectElfs
-  let handles := plan.objectHandles
   let formula := plan.formula
-  let n := plan.objects.val.size
+  let n := bp.n
   have h_elfs    : elfs.size    = n := plan.objectElfs_size
-  have h_handles : handles.size = n := plan.objectHandles_size
   have h_lp_elfs : lp.elfs.size = n := lp.elfs_size
-  let bases := Plan.assignBases rsv.addr lp
-  have h_bases_n : bases.size = n :=
-    (Plan.assignBases_size rsv.addr lp).trans h_lp_elfs
+  let bases := bp.bases
+  have h_bases_n : bases.size = n := bp.bases_size
   have h_bases : bases.size = elfs.size := h_bases_n.trans h_elfs.symm
   have h_n_eq : n = elfs.size := h_elfs.symm
   let mut lo : Array (ElfOps n) := #[]
   for h : i in [:lp.elfs.size] do
     let ep := lp.elfs[i]
-    let handle := handles[i]'(by rw [h_handles, ← h_lp_elfs]; exact h.upper)
-    let base := bases[i]'(by rw [h_bases_n, ← h_lp_elfs]; exact h.upper)
+    have hi_n : i < n := by rw [← h_lp_elfs]; exact h.upper
+    let handle := (plan.objects.val[i]'hi_n).handle
+    let base := bases[i]'(by rw [h_bases_n]; exact hi_n)
     let mut segments : Array (SegmentOps n) := #[]
     for h2 : segI in [:ep.segments.size] do
       let sp := ep.segments[segI]
       let (mmap, zero, mprotect) := setupSlots sp handle base
-      -- `sp.relocs : Array (RelocEntry n)`; bakeSegmentRelocs wants
-      -- `Array (RelocEntry elfs.size)`. Rewriting along `n = elfs.size`.
-      let relocs : Array (Reloc.RelocEntry elfs.size) := h_n_eq ▸ sp.relocs
-      let stores ← bakeSegmentRelocs formula elfs bases h_bases base relocs
+      -- `sp.relocs : Array (RelocEntry n sp.segment)`; bakeSegmentRelocs
+      -- wants `Array (RelocEntry elfs.size sp.segment)`. Rewriting
+      -- along `n = elfs.size` preserves the segment parameter.
+      let relocs : Array (Reloc.RelocEntry elfs.size sp.segment) :=
+        h_n_eq ▸ sp.relocs
+      let stores ←
+        bakeSegmentRelocs formula elfs bases h_bases base sp.segment relocs
       segments := segments.push
         { plan := sp, mmap, zero, stores, mprotect }
     lo := lo.push { base, segments }
@@ -81,31 +79,17 @@ private def buildCore (plan : Plan.Plan) (rsv : Reserve) :
 /-- Witnessed build: assemble the `LoadOps` tree and gate it through
     the five decidable safety predicates
     (`MmapsDisjoint` / `*Contained`) parameterised on the reservation
-    `[rsv.addr, +rsv.len)`. The `h_total : rsv.len = plan.load.totalSpan`
-    precondition is the missing fact that `Materialize.safe` used to
-    re-check at runtime — threading it from `Reserve.run`'s subtype
-    means we can connect the reservation size to `LoadPlan.totalSpan`
-    structurally.
+    `[bp.rsv.addr, +bp.rsv.len)`.
 
     Returns the witnessed tree on success. Failure means a planner
     bug (the OS would otherwise raise SIGSEGV / mmap failure); the
     body of the proof discharge is residual — see file docstring.
 
     Callers consume the result via `LoadOps.runSafe`. -/
-def build (plan : Plan.Plan) (rsv : Reserve)
-    (_h_total : rsv.len = plan.load.totalSpan) :
-    Except String { lo : LoadOps plan.objects.val.size //
-      MmapsDisjoint lo ∧
-      MmapsContained rsv.addr rsv.len lo ∧
-      ZerosContained rsv.addr rsv.len lo ∧
-      StoresContained rsv.addr rsv.len lo ∧
-      MprotectsContained rsv.addr rsv.len lo } := do
-  let lo ← buildCore plan rsv
-  if h : MmapsDisjoint lo ∧
-         MmapsContained rsv.addr rsv.len lo ∧
-         ZerosContained rsv.addr rsv.len lo ∧
-         StoresContained rsv.addr rsv.len lo ∧
-         MprotectsContained rsv.addr rsv.len lo then
+def build (bp : BasedPlan) :
+    Except String { lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo } := do
+  let lo ← buildCore bp
+  if h : Safe bp.rsv.addr bp.rsv.len lo then
     .ok ⟨lo, h⟩
   else
     .error "Materialize.build: planned ops violate safety invariants \
@@ -138,15 +122,8 @@ def initAddrs (lp : LoadPlan n) (bases : Array UInt64)
         if fnAddr != 0 then addrs := addrs.push fnAddr
     return addrs
 
-/-- One-shot ctor address resolution from a `Plan` + reservation
-    base. The two derived arrays (`bases`, `initOrder`) are typed at
-    the same `objects.val.size`, so no coherence proofs leak into the
-    caller. -/
-def ctorAddrs (plan : Plan.Plan) (rsv : Reserve) : Array UInt64 :=
-  let lp := plan.load
-  let bases := Plan.assignBases rsv.addr lp
-  have h_bases : bases.size = plan.objects.val.size :=
-    (Plan.assignBases_size _ _).trans lp.elfs_size
-  initAddrs lp bases h_bases plan.initOrder
+/-- One-shot ctor address resolution from a `BasedPlan`. -/
+def ctorAddrs (bp : BasedPlan) : Array UInt64 :=
+  initAddrs bp.plan.load bp.bases bp.bases_size bp.plan.initOrder
 
 end LeanLoad.Materialize

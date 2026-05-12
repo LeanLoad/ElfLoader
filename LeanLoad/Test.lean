@@ -113,7 +113,9 @@ private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except St
     let ep := lp.elfs[i]
     let base := bases[i]'(by rw [h_bases]; rw [← lp.elfs_size]; exact h.upper)
     for sp in ep.segments do
-      stores := stores ++ (← Materialize.bakeSegmentRelocs formula elfs bases h_bases base sp.relocs)
+      stores := stores ++
+        (← Materialize.bakeSegmentRelocs formula elfs bases h_bases base
+              sp.segment sp.relocs)
   check (stores.size > 0) "expected nonzero baked Store ops"
 
 -- Realize (mmap + overlays + zeroout + mprotect + patch writes +

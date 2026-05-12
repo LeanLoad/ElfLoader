@@ -40,4 +40,5 @@ import LeanLoad.Plan.Aggregate
 
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Reloc
+import LeanLoad.Materialize.BasedPlan
 import LeanLoad.Materialize.Build

@@ -385,5 +385,8 @@ private def exampleReserve : Reserve :=
     (Materialize.StoresContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
 #guard decide
     (Materialize.MprotectsContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
+-- The five predicates bundled into one Prop; same vacuous truth.
+#guard decide
+    (Materialize.Safe exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
 
 end LeanLoad.Example

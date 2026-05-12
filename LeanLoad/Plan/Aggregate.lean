@@ -51,22 +51,14 @@ namespace Plan
 
 /-- Project the elf array of the bundled object list — convenience
     for `Materialize.build` (which needs `Array Elf` parallel to
-    `load.elfs`). The size lemma `objects_elfs_size` says it has
-    size `objects.val.size`. -/
+    `load.elfs` for `bakeSegmentRelocs`). The size lemma
+    `objectElfs_size` says it has size `objects.val.size`. -/
 def objectElfs (p : Plan) : Array Elf :=
   p.objects.val.map (·.elf)
 
 theorem objectElfs_size (p : Plan) :
     p.objectElfs.size = p.objects.val.size := by
   unfold objectElfs; simp
-
-/-- Project the file-handle array of the bundled object list. -/
-def objectHandles (p : Plan) : Array Runtime.FileHandle :=
-  p.objects.val.map (·.handle)
-
-theorem objectHandles_size (p : Plan) :
-    p.objectHandles.size = p.objects.val.size := by
-  unfold objectHandles; simp
 
 /-- Per-arch relocation formula, picked off the main elf's
     `e_machine`. -/

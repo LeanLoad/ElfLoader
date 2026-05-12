@@ -4,7 +4,7 @@ Layout planning — base-free.
 Each PT_LOAD `Segment` lifts to a `SegmentPlan n` whose page math is
 precomputed once and stored: `pageVaddr`, `pageLength`, `pageInset`,
 `fileOverlayLen`, `fileOffset`, `partialBssLen`, `prot`. The plan
-also carries its own `relocs : Array (RelocEntry n)` — there is no
+also carries its own `relocs : Array (RelocEntry n segment)` — there is no
 parallel relocation tree. Every offset is relative to `base = 0`;
 the materializer adds the chosen base when emitting structured slots.
 
@@ -78,16 +78,18 @@ structure SegmentPlan (n : Nat) where
   /-- POSIX `PROT_*` bits derived from gabi `PF_*`. -/
   prot           : UInt32
   /-- Planned relocations targeting this segment, in `seg.rela ++
-      seg.jmprel` order. `Materialize.bakeSegmentRelocs` reads this
-      directly. -/
-  relocs         : Array (RelocEntry n)
+      seg.jmprel` order. Each entry carries its `coversRela` witness
+      keyed to `segment` so `Materialize.StoresContained` is
+      structurally provable. `Materialize.bakeSegmentRelocs` reads
+      this directly. -/
+  relocs         : Array (RelocEntry n segment)
 
 namespace SegmentPlan
 
 /-- Compute the page-math view of a `Segment` without filling in
     relocs. Callers supply `relocs` separately (typically via
     `Reloc.planSegment`). -/
-def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (RelocEntry n)) :
+def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (RelocEntry n s)) :
     SegmentPlan n :=
   let ea             := effectiveAlign s.align
   let pageVaddr      := alignDown s.vaddr ea
@@ -129,27 +131,27 @@ private theorem vaddr_add_memsz_toNat (s : Segment) :
 
 /-- Projection: the stored `pageVaddr` is exactly `alignDown vaddr ea`. -/
 @[simp] theorem ofSegmentCore_pageVaddr (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageVaddr =
       alignDown s.vaddr (effectiveAlign s.align) := rfl
 
 /-- Projection: the stored `pageLength` is `alignUp (vaddr+memsz) ea -
     alignDown vaddr ea`. -/
 @[simp] theorem ofSegmentCore_pageLength (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageLength =
       alignUp (s.vaddr + s.memsz) (effectiveAlign s.align) -
       alignDown s.vaddr (effectiveAlign s.align) := rfl
 
 /-- Projection: the stored `pageInset` is `vaddr - alignDown vaddr ea`. -/
 @[simp] theorem ofSegmentCore_pageInset (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageInset =
       s.vaddr - alignDown s.vaddr (effectiveAlign s.align) := rfl
 
 /-- Projection: the stored `fileOverlayLen` is `alignUp (pageInset+filesz) ea`. -/
 @[simp] theorem ofSegmentCore_fileOverlayLen (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).fileOverlayLen =
       alignUp ((s.vaddr - alignDown s.vaddr (effectiveAlign s.align)) +
                s.filesz) (effectiveAlign s.align) := rfl
@@ -157,14 +159,14 @@ private theorem vaddr_add_memsz_toNat (s : Segment) :
 /-- Projection: the stored `partialBssLen` is `fileOverlayLen -
     (pageInset + filesz)`. -/
 @[simp] theorem ofSegmentCore_partialBssLen (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).partialBssLen =
       (ofSegmentCore n s relocs).fileOverlayLen -
       ((ofSegmentCore n s relocs).pageInset + s.filesz) := rfl
 
 /-- Projection: the stored `segment` is `s` itself. -/
 @[simp] theorem ofSegmentCore_segment (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).segment = s := rfl
 
 /-- `alignDown s.vaddr ea ≤ alignUp (s.vaddr + s.memsz) ea` —
@@ -189,7 +191,7 @@ private theorem pageVaddr_le_pageEnd_raw (s : Segment) :
 
 /-- `pageEndAddr.toNat = (alignUp (vaddr + memsz) ea).toNat`. -/
 theorem ofSegmentCore_pageEndAddr_toNat (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageEndAddr.toNat =
     (alignUp (s.vaddr + s.memsz) (effectiveAlign s.align)).toNat := by
   show ((ofSegmentCore n s relocs).pageVaddr +
@@ -208,7 +210,7 @@ theorem ofSegmentCore_pageEndAddr_toNat (n : Nat) (s : Segment)
 
 /-- `pageEndAddr.toNat ≤ vaddr + memsz + ea` — key upper bound. -/
 theorem ofSegmentCore_pageEndAddr_le (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageEndAddr.toNat ≤
     s.vaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat := by
   rw [ofSegmentCore_pageEndAddr_toNat]
@@ -222,7 +224,7 @@ theorem ofSegmentCore_pageEndAddr_le (n : Nat) (s : Segment)
 
 /-- `pageEndAddr.toNat < 2^64` (no wrap). -/
 theorem ofSegmentCore_pageEndAddr_lt (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageEndAddr.toNat < 2 ^ 64 := by
   have h := ofSegmentCore_pageEndAddr_le n s relocs
   have h_no_wrap : s.vaddr.toNat + s.memsz.toNat +
@@ -231,7 +233,7 @@ theorem ofSegmentCore_pageEndAddr_lt (n : Nat) (s : Segment)
 
 /-- `pageVaddr + pageLength = pageEndAddr` (in `Nat`, no wrap). Mprotect bound. -/
 theorem ofSegmentCore_pageVaddr_add_pageLength (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageVaddr.toNat +
     (ofSegmentCore n s relocs).pageLength.toNat =
     (ofSegmentCore n s relocs).pageEndAddr.toNat := by
@@ -254,7 +256,7 @@ theorem ofSegmentCore_pageVaddr_add_pageLength (n : Nat) (s : Segment)
 
 /-- `vaddr + memsz ≤ pageEndAddr` (in `Nat`). Store bound. -/
 theorem ofSegmentCore_vaddr_add_memsz_le_pageEndAddr (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n)) :
+    (relocs : Array (RelocEntry n s)) :
     s.vaddr.toNat + s.memsz.toNat ≤
     (ofSegmentCore n s relocs).pageEndAddr.toNat := by
   rw [ofSegmentCore_pageEndAddr_toNat, ← vaddr_add_memsz_toNat]
@@ -276,7 +278,7 @@ theorem effectiveAlign_le_succ (align : UInt64) :
 
 /-- `pageVaddr + fileOverlayLen ≤ pageEndAddr` (in `Nat`). Mmap/Zero bound. -/
 theorem ofSegmentCore_pageVaddr_add_fileOverlayLen_le_pageEndAddr (n : Nat)
-    (s : Segment) (relocs : Array (RelocEntry n)) :
+    (s : Segment) (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).pageVaddr.toNat +
     (ofSegmentCore n s relocs).fileOverlayLen.toNat ≤
     (ofSegmentCore n s relocs).pageEndAddr.toNat := by

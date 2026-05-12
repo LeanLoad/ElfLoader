@@ -26,23 +26,16 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
 /-- Run all planned slots inside the kernel-picked reservation,
     allocate the kernel-style stack, and `execAndJump` to entry.
     **Does not return.** -/
-private def realize (rsv : Reserve)
-    (witnessed : { lo : Materialize.LoadOps n //
-      Materialize.MmapsDisjoint lo ∧
-      Materialize.MmapsContained rsv.addr rsv.len lo ∧
-      Materialize.ZerosContained rsv.addr rsv.len lo ∧
-      Materialize.StoresContained rsv.addr rsv.len lo ∧
-      Materialize.MprotectsContained rsv.addr rsv.len lo })
-    (mainElf : Elf)
+private def realize (bp : Materialize.BasedPlan)
+    (witnessed : { lo : Materialize.LoadOps bp.n //
+      Materialize.Safe bp.rsv.addr bp.rsv.len lo })
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
-  Materialize.LoadOps.runSafe rsv.addr rsv.len witnessed
+  Materialize.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
-  let mainEo ← match witnessed.val[0]? with
-    | some eo => pure eo
-    | none    => throw (IO.userError "realize: empty load tree")
-  let mainBase := mainEo.base
+  let mainElf := bp.plan.objects.main.elf
+  let mainBase := bp.mainBase
   let stack ← Reserve.run stackBytes
   let entry  := mainBase + mainElf.entry
   let phdrVa := mainBase + mainElf.phoff
@@ -82,11 +75,11 @@ def load (path : String) : IO Unit := do
   let g ← Discover.discover path
   let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
   let rsvW ← Reserve.run plan.load.totalSpan
-  let rsv := rsvW.val
-  have h_total : rsv.len = plan.load.totalSpan := rsvW.property
-  let witnessed ← IO.ofExcept (Materialize.build plan rsv h_total)
-  let ctorAddrs := Materialize.ctorAddrs plan rsv
-  realize rsv witnessed plan.objects.main.elf ctorAddrs path
+  let bp : Materialize.BasedPlan :=
+    { plan, rsv := rsvW.val, h_total := rsvW.property }
+  let witnessed ← IO.ofExcept (Materialize.build bp)
+  let ctorAddrs := Materialize.ctorAddrs bp
+  realize bp witnessed ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
@@ -123,7 +116,6 @@ def debug (path : String) : IO Unit := do
 
   -- One-shot pure-pipeline build. Every later stage reads from `plan`.
   let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
-  let mainElf := plan.objects.main.elf
 
   IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
   let providerName (r : Resolve.SymRef plan.objects.val.size) : String :=
@@ -155,13 +147,12 @@ def debug (path : String) : IO Unit := do
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
   let lp := plan.load
   let rsvW ← Reserve.run lp.totalSpan
-  let rsv := rsvW.val
-  have h_total : rsv.len = lp.totalSpan := rsvW.property
-  IO.eprintln s!"  reservation = [0x{Nat.hex rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
-  let bases := Plan.assignBases rsv.addr lp
-  have h_bases : bases.size = plan.objects.val.size :=
-    (Plan.assignBases_size rsv.addr lp).trans lp.elfs_size
-  for h : i in [:plan.objects.val.size] do
+  let bp : Materialize.BasedPlan :=
+    { plan, rsv := rsvW.val, h_total := rsvW.property }
+  IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
+  let bases := bp.bases
+  have h_bases : bases.size = bp.n := bp.bases_size
+  for h : i in [:bp.n] do
     let base := bases[i]'(by rw [h_bases]; exact h.upper)
     let obj := plan.objects.val[i]
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
@@ -177,7 +168,7 @@ def debug (path : String) : IO Unit := do
   let formula := plan.formula
   let elfs := plan.objectElfs
   let labelW := 16
-  for h : i in [:plan.objects.val.size] do
+  for h : i in [:bp.n] do
     let obj  := plan.objects.val[i]
     let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW
@@ -208,7 +199,7 @@ def debug (path : String) : IO Unit := do
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + entry.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let witnessed ← IO.ofExcept (Materialize.build plan rsv h_total)
+  let witnessed ← IO.ofExcept (Materialize.build bp)
   let lo := witnessed.val
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
@@ -216,11 +207,11 @@ def debug (path : String) : IO Unit := do
     {lo.mprotects.size} mprotects across {lo.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
-  let ctorAddrs := Materialize.ctorAddrs plan rsv
+  let ctorAddrs := Materialize.ctorAddrs bp
   IO.eprintln s!"planned {ctorAddrs.size} constructor address(es)"
 
   IO.eprintln "\n== 7. LoadOps.runSafe → callCtors → execAndJump (does not return) =="
-  realize rsv witnessed mainElf ctorAddrs path
+  realize bp witnessed ctorAddrs path
 
 end LeanLoad.Main
 

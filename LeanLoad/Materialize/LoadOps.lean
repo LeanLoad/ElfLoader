@@ -183,6 +183,34 @@ instance (rsvAddr rsvLen : UInt64) (lo : LoadOps n) :
   unfold MprotectsContained; infer_instance
 
 -- ============================================================================
+-- Safe — the five safety predicates bundled into one Prop. This is
+-- the witness `LoadOps.runSafe` consumes; `Materialize.build` produces
+-- it via a decidable check (and, eventually, a structural proof).
+-- Bundled rather than re-expanded at every call site so consumer
+-- signatures stay short.
+-- ============================================================================
+
+/-- All five safety predicates over a load tree, bundled. -/
+structure Safe (rsvAddr rsvLen : UInt64) (lo : LoadOps n) : Prop where
+  mmapsDisjoint      : MmapsDisjoint lo
+  mmapsContained     : MmapsContained rsvAddr rsvLen lo
+  zerosContained     : ZerosContained rsvAddr rsvLen lo
+  storesContained    : StoresContained rsvAddr rsvLen lo
+  mprotectsContained : MprotectsContained rsvAddr rsvLen lo
+
+instance (rsvAddr rsvLen : UInt64) (lo : LoadOps n) :
+    Decidable (Safe rsvAddr rsvLen lo) :=
+  decidable_of_iff
+    (MmapsDisjoint lo ∧
+     MmapsContained rsvAddr rsvLen lo ∧
+     ZerosContained rsvAddr rsvLen lo ∧
+     StoresContained rsvAddr rsvLen lo ∧
+     MprotectsContained rsvAddr rsvLen lo)
+    ⟨fun ⟨a, b, c, d, e⟩ => ⟨a, b, c, d, e⟩,
+     fun s => ⟨s.mmapsDisjoint, s.mmapsContained, s.zerosContained,
+               s.storesContained, s.mprotectsContained⟩⟩
+
+-- ============================================================================
 -- IO interpreter — dispatches each slot in protocol order.
 -- ============================================================================
 
@@ -199,12 +227,7 @@ private def LoadOps.runUnsafe (lo : LoadOps n) : IO Unit :=
     range that bounds every slot. The witness fields are erased; the
     IO behaviour is identical to a plain per-slot dispatch. -/
 def LoadOps.runSafe (rsvAddr rsvLen : UInt64)
-    (lo : { lo : LoadOps n //
-      MmapsDisjoint lo ∧
-      MmapsContained rsvAddr rsvLen lo ∧
-      ZerosContained rsvAddr rsvLen lo ∧
-      StoresContained rsvAddr rsvLen lo ∧
-      MprotectsContained rsvAddr rsvLen lo }) : IO Unit :=
+    (lo : { lo : LoadOps n // Safe rsvAddr rsvLen lo }) : IO Unit :=
   LoadOps.runUnsafe lo.val
 
 end LeanLoad.Materialize

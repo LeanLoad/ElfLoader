@@ -24,17 +24,24 @@ namespace LeanLoad.Reloc
 
 open LeanLoad
 open LeanLoad.Parse (RawRela)
-open LeanLoad.Elaborate (Elf Segment)
+open LeanLoad.Elaborate (Elf Segment coversRela)
 
 -- ============================================================================
 -- RelocEntry — one rela's planning result. Base-free.
+-- Parameterised by the owning segment so the `coversRela` witness
+-- (inherited from `Segment.rela` / `Segment.jmprel`'s subtype) can be
+-- preserved through planning. `Materialize.StoresContained` needs
+-- `r_offset + 8 ≤ seg.vaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
 
-/-- One planned relocation. `target` is the resolved provider of the
-    symbol value `S`: a local definition resolves to `(this object,
-    sym)`; an undef ref resolves through `Resolve.Table`; `r.sym = 0`
-    or unresolved-weak yields `none` (formula sees `S = 0`). -/
-structure RelocEntry (n : Nat) where
+/-- One planned relocation, owned by `seg`. `target` is the resolved
+    provider of the symbol value `S`: a local definition resolves to
+    `(this object, sym)`; an undef ref resolves through
+    `Resolve.Table`; `r.sym = 0` or unresolved-weak yields `none`
+    (formula sees `S = 0`). The `covered` witness carries the
+    8-byte-window containment from the parent segment forward into
+    the planned tree. -/
+structure RelocEntry (n : Nat) (seg : Segment) where
   /-- Per-arch relocation type (`R_*`); the low 32 bits of `r_info`. -/
   type     : UInt32
   /-- Segment-relative byte offset for the patch. The absolute address
@@ -44,6 +51,11 @@ structure RelocEntry (n : Nat) where
   addend   : UInt64
   /-- Resolved symbol provider, or `none` for `R_*_NONE` / unresolved. -/
   target   : Option (Resolve.SymRef n)
+  /-- 8-byte write window fits in `[seg.vaddr, seg.vaddr + seg.memsz)`.
+      Inherited from the `coversRela` subtype on `Segment.rela` /
+      `Segment.jmprel`; preserved through `planOne` so the
+      materializer can prove `StoresContained` structurally. -/
+  covered  : coversRela seg.vaddr seg.memsz r_offset
 
 -- ============================================================================
 -- Symbol target resolution. Base-free.
@@ -64,25 +76,31 @@ private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     else
       (rt.index.get? (objectIdx.val, symIdx)).bind Resolve.Resolution.target?
 
-/-- Plan one rela: resolve target, capture the rest as-is. -/
+/-- Plan one rela: resolve target, preserve the `coversRela` witness
+    from the parent segment. -/
 def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
-    (objectIdx : Fin elfs.size) (r : RawRela) : RelocEntry elfs.size :=
+    (objectIdx : Fin elfs.size) (seg : Segment) (r : RawRela)
+    (h_cov : coversRela seg.vaddr seg.memsz r.r_offset) :
+    RelocEntry elfs.size seg :=
   let target :=
     if r.sym == 0 then none
     else resolveTarget elfs rt objectIdx r.sym.toNat
-  { type := r.type, r_offset := r.r_offset, addend := r.r_addend, target }
+  { type := r.type, r_offset := r.r_offset, addend := r.r_addend, target,
+    covered := h_cov }
 
 /-- Plan one segment's relas (then jmprel — both go through the same
     formula at materialize time). Used by `Plan.Layout` when
-    constructing each `SegmentPlan`. -/
+    constructing each `SegmentPlan`. The `coversRela` witness on each
+    `seg.rela` / `seg.jmprel` entry is threaded into the planned
+    `RelocEntry`'s `covered` field. -/
 def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (seg : Segment) :
-    Array (RelocEntry elfs.size) := Id.run do
-  let mut acc : Array (RelocEntry elfs.size) := #[]
+    Array (RelocEntry elfs.size seg) := Id.run do
+  let mut acc : Array (RelocEntry elfs.size seg) := #[]
   for entry in seg.rela do
-    acc := acc.push (planOne elfs rt objectIdx entry.val)
+    acc := acc.push (planOne elfs rt objectIdx seg entry.val entry.property)
   for entry in seg.jmprel do
-    acc := acc.push (planOne elfs rt objectIdx entry.val)
+    acc := acc.push (planOne elfs rt objectIdx seg entry.val entry.property)
   return acc
 
 end LeanLoad.Reloc

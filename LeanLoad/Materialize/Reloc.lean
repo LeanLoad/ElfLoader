@@ -24,7 +24,7 @@ namespace LeanLoad.Materialize
 
 open LeanLoad
 open LeanLoad.Reloc (RelocEntry)
-open LeanLoad.Elaborate (Elf Formula FormulaInputs FormulaResult PatchSize)
+open LeanLoad.Elaborate (Elf Segment Formula FormulaInputs FormulaResult PatchSize)
 
 -- ============================================================================
 -- 32-bit overflow check.
@@ -79,7 +79,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     relocation overflow. -/
 private def bakeReloc (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (entry : RelocEntry elfs.size) :
+    (base : UInt64) (seg : Segment) (entry : RelocEntry elfs.size seg) :
     Except String (Option Store) := do
   let symValue := symValueOf elfs bases h_bases entry.target
   let inputs : FormulaInputs :=
@@ -102,11 +102,11 @@ private def bakeReloc (formula : Formula) (elfs : Array Elf)
 /-- Bake every entry in one segment into a flat `Array Store`. -/
 def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (relocs : Array (RelocEntry elfs.size)) :
+    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry elfs.size seg)) :
     Except String (Array Store) := do
   let mut acc : Array Store := #[]
   for entry in relocs do
-    match ← bakeReloc formula elfs bases h_bases base entry with
+    match ← bakeReloc formula elfs bases h_bases base seg entry with
     | none    => pure ()
     | some w  => acc := acc.push w
   return acc
