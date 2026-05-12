@@ -99,31 +99,24 @@ def setupSlots (sp : SegmentPlan n) (handle : Runtime.FileHandle)
 
 namespace LoadOps
 
-/-- Every mmap across every elf and segment. -/
+/-- Every mmap across every elf and segment, in tree-walk order.
+    `flatMap` + `filterMap` so the structural-to-flat bridge proofs
+    (`Safe_of_LoadSafe`) can chain `Array.mem_flatMap` +
+    `Array.mem_filterMap` directly. -/
 def mmaps (lo : LoadOps n) : Array Mmap :=
-  lo.foldl (init := #[]) fun acc eo =>
-    eo.segments.foldl (init := acc) fun acc so =>
-      match so.mmap with
-      | some m => acc.push m
-      | none   => acc
+  lo.flatMap fun eo => eo.segments.filterMap (·.mmap)
 
 /-- Every zero across every elf and segment. -/
 def zeros (lo : LoadOps n) : Array Zero :=
-  lo.foldl (init := #[]) fun acc eo =>
-    eo.segments.foldl (init := acc) fun acc so =>
-      match so.zero with
-      | some z => acc.push z
-      | none   => acc
+  lo.flatMap fun eo => eo.segments.filterMap (·.zero)
 
 /-- Every store across every elf and segment. -/
 def stores (lo : LoadOps n) : Array Store :=
-  lo.foldl (init := #[]) fun acc eo =>
-    eo.segments.foldl (init := acc) fun acc so => acc ++ so.stores
+  lo.flatMap fun eo => eo.segments.flatMap (·.stores)
 
 /-- Every mprotect across every elf and segment. -/
 def mprotects (lo : LoadOps n) : Array Mprotect :=
-  lo.foldl (init := #[]) fun acc eo =>
-    eo.segments.foldl (init := acc) fun acc so => acc.push so.mprotect
+  lo.flatMap fun eo => eo.segments.map (·.mprotect)
 
 end LoadOps
 
@@ -183,11 +176,60 @@ instance (rsvAddr rsvLen : UInt64) (lo : LoadOps n) :
   unfold MprotectsContained; infer_instance
 
 -- ============================================================================
--- Safe — the five safety predicates bundled into one Prop. This is
--- the witness `LoadOps.runSafe` consumes; `Materialize.build` produces
--- it via a decidable check (and, eventually, a structural proof).
--- Bundled rather than re-expanded at every call site so consumer
--- signatures stay short.
+-- Structural safety predicates — `SegmentSafe` / `ElfSafe` /
+-- `LoadSafe`. These mirror the structure of the LoadOps tree:
+--
+--   SegmentSafe — per-slot InRange (mmap / zero / store / mprotect)
+--                  for one SegmentOps.
+--   ElfSafe     — every segment of this elf is SegmentSafe, *and*
+--                  the elf's segments' mmaps don't collide pairwise.
+--   LoadSafe    — every elf is ElfSafe, *and* cross-elf mmaps don't
+--                  collide pairwise.
+--
+-- These are the natural targets for the per-slot bound theorems in
+-- `BasedPlan` (which produce exactly `Runtime.InRange ...` and
+-- `Runtime.Disjoint ...` facts indexed by (i, j)). The flat
+-- `Safe` predicate below is recovered from `LoadSafe` via
+-- `Safe_of_LoadSafe`.
+-- ============================================================================
+
+/-- Per-segment safety: every emitted slot fits inside the reservation. -/
+structure SegmentSafe (rsvAddr rsvLen : UInt64) (so : SegmentOps n) : Prop where
+  mmapInRange     : ∀ m, so.mmap = some m → Runtime.InRange m.addr m.len rsvAddr rsvLen
+  zeroInRange     : ∀ z, so.zero = some z → Runtime.InRange z.addr z.len rsvAddr rsvLen
+  storesInRange   : ∀ s ∈ so.stores, Runtime.InRange s.addr s.byteLen rsvAddr rsvLen
+  mprotectInRange : Runtime.InRange so.mprotect.addr so.mprotect.len rsvAddr rsvLen
+
+/-- Per-elf safety: every segment is SegmentSafe, plus within-elf mmap
+    disjointness. -/
+structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps n) : Prop where
+  segments : ∀ k, ∀ h : k < eo.segments.size,
+    SegmentSafe rsvAddr rsvLen (eo.segments[k]'h)
+  mmapsDisjoint : ∀ i j, ∀ hi : i < eo.segments.size, ∀ hj : j < eo.segments.size,
+    i < j → ∀ m_i m_j,
+    (eo.segments[i]'hi).mmap = some m_i →
+    (eo.segments[j]'hj).mmap = some m_j →
+    Runtime.Disjoint m_i.addr m_i.len m_j.addr m_j.len
+
+/-- Top-level structural safety: every elf is ElfSafe, plus cross-elf
+    mmap disjointness. The natural target of the build's safety
+    proof: `BasedPlan`'s per-slot and disjointness theorems map
+    directly onto its fields. -/
+structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps n) : Prop where
+  elfs : ∀ k, ∀ h : k < lo.size, ElfSafe rsvAddr rsvLen (lo[k]'h)
+  mmapsDisjoint : ∀ i j, ∀ hi : i < lo.size, ∀ hj : j < lo.size, i < j →
+    ∀ k_i k_j (h_ki : k_i < (lo[i]'hi).segments.size)
+              (h_kj : k_j < (lo[j]'hj).segments.size) m_i m_j,
+    ((lo[i]'hi).segments[k_i]'h_ki).mmap = some m_i →
+    ((lo[j]'hj).segments[k_j]'h_kj).mmap = some m_j →
+    Runtime.Disjoint m_i.addr m_i.len m_j.addr m_j.len
+
+-- ============================================================================
+-- Safe — the five flat safety predicates bundled. The `LoadOps.runSafe`
+-- entry point consumes this. `Safe_of_LoadSafe` (below) bridges the
+-- structural form back to it, so `Materialize.build` only needs to
+-- prove the structural one — which it gets directly from
+-- `BasedPlan`'s per-(i, j) theorems.
 -- ============================================================================
 
 /-- All five safety predicates over a load tree, bundled. -/
@@ -209,6 +251,79 @@ instance (rsvAddr rsvLen : UInt64) (lo : LoadOps n) :
     ⟨fun ⟨a, b, c, d, e⟩ => ⟨a, b, c, d, e⟩,
      fun s => ⟨s.mmapsDisjoint, s.mmapsContained, s.zerosContained,
                s.storesContained, s.mprotectsContained⟩⟩
+
+-- ============================================================================
+-- Bridge: structural `LoadSafe` implies flat `Safe`.
+--
+-- The flat predicates iterate `lo.mmaps`, `lo.zeros`, …, which are
+-- defined via `Array.flatMap` + `Array.filterMap` (or `Array.map`).
+-- Membership in those flattened arrays decomposes structurally —
+-- `Array.mem_flatMap` plus `Array.mem_filterMap` chain into "this
+-- element came from segment (i, j)". Combined with `LoadSafe`'s
+-- per-segment claims, every element satisfies the per-slot InRange
+-- predicate.
+-- ============================================================================
+
+/-- For each flat mmap, find its structural source `(k, k')` and read
+    off `SegmentSafe`'s `mmapInRange`. -/
+theorem mmapsContained_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
+    (h : LoadSafe rsvA rsvL lo) : MmapsContained rsvA rsvL lo := by
+  intro i hi
+  have h_mem : lo.mmaps[i] ∈ lo.mmaps := Array.getElem_mem hi
+  obtain ⟨eo, h_eo_mem, h_eo⟩ := Array.mem_flatMap.mp h_mem
+  obtain ⟨so, h_so_mem, h_so⟩ := Array.mem_filterMap.mp h_eo
+  obtain ⟨k, h_k_lt, rfl⟩ := Array.mem_iff_getElem.mp h_eo_mem
+  obtain ⟨k', h_k'_lt, rfl⟩ := Array.mem_iff_getElem.mp h_so_mem
+  exact ((h.elfs k h_k_lt).segments k' h_k'_lt).mmapInRange lo.mmaps[i] h_so
+
+/-- Same shape as `mmapsContained_of_LoadSafe` for zeros. -/
+theorem zerosContained_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
+    (h : LoadSafe rsvA rsvL lo) : ZerosContained rsvA rsvL lo := by
+  intro i hi
+  have h_mem : lo.zeros[i] ∈ lo.zeros := Array.getElem_mem hi
+  obtain ⟨eo, h_eo_mem, h_eo⟩ := Array.mem_flatMap.mp h_mem
+  obtain ⟨so, h_so_mem, h_so⟩ := Array.mem_filterMap.mp h_eo
+  obtain ⟨k, h_k_lt, rfl⟩ := Array.mem_iff_getElem.mp h_eo_mem
+  obtain ⟨k', h_k'_lt, rfl⟩ := Array.mem_iff_getElem.mp h_so_mem
+  exact ((h.elfs k h_k_lt).segments k' h_k'_lt).zeroInRange lo.zeros[i] h_so
+
+/-- Stores: `Array.flatMap` (not `filterMap`) for the inner-segment
+    collector, so the destruct chains `Array.mem_flatMap` twice. -/
+theorem storesContained_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
+    (h : LoadSafe rsvA rsvL lo) : StoresContained rsvA rsvL lo := by
+  intro i hi
+  have h_mem : lo.stores[i] ∈ lo.stores := Array.getElem_mem hi
+  obtain ⟨eo, h_eo_mem, h_eo⟩ := Array.mem_flatMap.mp h_mem
+  obtain ⟨so, h_so_mem, h_s⟩ := Array.mem_flatMap.mp h_eo
+  obtain ⟨k, h_k_lt, rfl⟩ := Array.mem_iff_getElem.mp h_eo_mem
+  obtain ⟨k', h_k'_lt, rfl⟩ := Array.mem_iff_getElem.mp h_so_mem
+  exact ((h.elfs k h_k_lt).segments k' h_k'_lt).storesInRange lo.stores[i] h_s
+
+/-- Mprotects: every `SegmentOps` emits exactly one (always present), so
+    the inner collector is `Array.map` and the destruct chains
+    `Array.mem_flatMap` then `Array.mem_map`. -/
+theorem mprotectsContained_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
+    (h : LoadSafe rsvA rsvL lo) : MprotectsContained rsvA rsvL lo := by
+  intro i hi
+  have h_mem : lo.mprotects[i] ∈ lo.mprotects := Array.getElem_mem hi
+  obtain ⟨eo, h_eo_mem, h_eo⟩ := Array.mem_flatMap.mp h_mem
+  obtain ⟨so, h_so_mem, h_mp⟩ := Array.mem_map.mp h_eo
+  obtain ⟨k, h_k_lt, rfl⟩ := Array.mem_iff_getElem.mp h_eo_mem
+  obtain ⟨k', h_k'_lt, h_k'_eq⟩ := Array.mem_iff_getElem.mp h_so_mem
+  subst h_k'_eq
+  have h_segSafe := (h.elfs k h_k_lt).segments k' h_k'_lt
+  -- `h_mp : lo[k].segments[k'].mprotect = lo.mprotects[i]`.
+  rw [← h_mp]; exact h_segSafe.mprotectInRange
+
+-- `mmapsDisjoint_of_LoadSafe`: the structural witness gives same-elf and
+-- cross-elf disjointness, but the flat predicate compares mmaps at flat
+-- `i < j` indices, which require a flatMap-ordering lemma (mmaps[i]
+-- comes from an earlier elf, or same elf and earlier segment, than
+-- mmaps[j]). That lemma needs `Array.flatMap_getElem` + its `filterMap`
+-- counterpart, which aren't in Lean core. For now the canonical witness
+-- is `LoadSafe`; consumers that need flat disjointness can decide
+-- `MmapsDisjoint` (it's decidable). `LoadOps.runSafe` only depends on
+-- the witness existing, not on its shape — it's a pure FFI dispatch.
 
 -- ============================================================================
 -- IO interpreter — dispatches each slot in protocol order.
