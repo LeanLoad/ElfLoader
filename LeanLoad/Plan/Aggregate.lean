@@ -1,21 +1,35 @@
 /-
 Top-level pure-pipeline aggregate.
 
-A `Plan` bundles the four base-free planner outputs — `Discover`'s
-`ObjectList`, `Resolve.Table`, `LoadPlan`, and `Init.order` — under
-one structure parameterised by the object count `objects.val.size`.
+A `Plan` bundles the four base-free planner outputs under one
+structure parameterised by the object count `objects.val.size`:
+
+  · `objects   : ObjectList` — main + transitive deps in BFS order.
+                 Carries non-emptiness + name-Nodup invariants.
+  · `resolve   : Resolve.Table objects.val.size` — per-undef-ref
+                 resolution outcome. `ofObjects` rejects when a
+                 `strongUndef` remains.
+  · `load      : LoadPlan objects.val.size` — page math, per-elf
+                 advance + cumulative span, plus per-segment
+                 invariants (`pageEnd_lt` etc.).
+  · `initOrder : Array (Fin objects.val.size)` — DFS post-order
+                 init sequence over the dep DAG.
+
 Every contained index (`SymRef`, `RelocEntry.target`, `initOrder`,
-`bases`) is typed at the same `n`, so consumers (`Materialize.build`,
-`Materialize.initAddrs`) thread a single object instead of a fan of
-parallel arrays + coherence proofs.
+the per-elf `bases` computed later) is typed at the same `n`, so
+consumers (`Materialize.build`, `Materialize.ctorAddrs`) thread one
+object instead of parallel arrays + coherence proofs.
 
 `Plan.ofObjects` is the single fallible construction:
-  • Builds the resolve table; rejects when strong undef remains.
-  • Plans every elf's segments and relocations (`LoadPlan.ofElfs`).
-  • Computes the DFS post-order init sequence.
+  1. Build the resolve table; reject if any strong undef remains.
+  2. Plan every elf's segments and relocations (`LoadPlan.ofElfs`).
+     This is where `SegmentPlan`'s per-segment invariants are
+     discharged and `ElfPlan.segmentsSorted` is validated.
+  3. Compute the DFS post-order init sequence.
 
 The IO bookend (`Main.load` / `Main.debug`) calls `Plan.ofObjects`
-once and then passes the whole `Plan` to materialize / debug print.
+once, wraps the result in a `Materialize.BasedPlan` together with
+the IO-supplied `Reserve`, and passes that down to materialize.
 -/
 
 import LeanLoad.Discover.Plan
