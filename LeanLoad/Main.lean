@@ -104,6 +104,7 @@ def debug (path : String) : IO Unit := do
       IO.eprintln s!"  needed     = {elf.needed}"
     IO.eprintln s!"  symtab     = {elf.symtab.size} entries"
     IO.eprintln s!"  initArr    = {elf.initArr.size} ctor(s)"
+    IO.eprintln s!"  finiArr    = {elf.finiArr.size} dtor(s)"
     IO.eprintln s!"  segments   ({elf.segments.size}):"
     for h2 : segI in [:elf.segments.size] do
       let seg := elf.segments[segI]
@@ -210,7 +211,9 @@ def debug (path : String) : IO Unit := do
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
   let ctorAddrs := Materialize.ctorAddrs bp
-  IO.eprintln s!"planned {ctorAddrs.size} constructor address(es)"
+  let dtorAddrs := Materialize.dtorAddrs bp
+  IO.eprintln s!"planned {ctorAddrs.size} constructor address(es), \
+    {dtorAddrs.size} destructor address(es)"
 
   IO.eprintln "\n== 7. LoadOps.runSafe → callCtors → execAndJump (does not return) =="
   realize bp witnessed ctorAddrs path
