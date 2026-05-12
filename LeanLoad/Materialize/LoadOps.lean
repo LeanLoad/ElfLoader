@@ -93,6 +93,49 @@ def setupSlots (sp : SegmentPlan n) (handle : Runtime.FileHandle)
   (mmap, zero, mprotect)
 
 -- ============================================================================
+-- `setupSlots` characterisation. The four slot positions are simple
+-- closed forms of `(base, sp)`; these lemmas extract them so the
+-- `SegmentSafe` construction below can invoke the matching
+-- `BasedPlan.segment_*_in_rsv` theorem directly.
+-- ============================================================================
+
+/-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
+    length `sp.fileOverlayLen`. -/
+theorem setupSlots_mmap_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+    (base : UInt64) (m : Mmap) (h : (setupSlots sp handle base).1 = some m) :
+    m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
+  unfold setupSlots at h
+  simp only at h
+  by_cases h_fb : sp.hasFileBacked
+  · rw [if_pos h_fb] at h
+    injection h with h_eq
+    rw [← h_eq]; exact ⟨rfl, rfl⟩
+  · rw [if_neg h_fb] at h; cases h
+
+/-- The zero slot, when present, sits at
+    `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz` of length
+    `sp.partialBssLen`. -/
+theorem setupSlots_zero_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+    (base : UInt64) (z : Zero) (h : (setupSlots sp handle base).2.1 = some z) :
+    z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz ∧
+    z.len = sp.partialBssLen := by
+  unfold setupSlots at h
+  simp only at h
+  by_cases h_pb : sp.hasPartialBss
+  · rw [if_pos h_pb] at h
+    injection h with h_eq
+    rw [← h_eq]; exact ⟨rfl, rfl⟩
+  · rw [if_neg h_pb] at h; cases h
+
+/-- The mprotect slot always sits at `base + sp.pageVaddr` of length
+    `sp.pageLength`. -/
+theorem setupSlots_mprotect_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+    (base : UInt64) :
+    (setupSlots sp handle base).2.2.addr = base + sp.pageVaddr ∧
+    (setupSlots sp handle base).2.2.len = sp.pageLength := by
+  exact ⟨rfl, rfl⟩
+
+-- ============================================================================
 -- Slot collectors: walk the tree and gather one slot kind. Used by
 -- the safety predicates below.
 -- ============================================================================
