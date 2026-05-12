@@ -49,6 +49,15 @@ private def parseTest (elf : Elaborate.Elf) : Except String Unit := do
   check (elf.needed.any (· == "libbar.so"))
     s!"libbar.so not in NEEDED: {elf.needed}"
   check elf.runpath.isSome "expected DT_RUNPATH set"
+  -- Ctor / dtor arrays: the existence of `Elf` already proves the
+  -- entries are in executable PT_LOADs (via `initArrInExecSeg` /
+  -- `finiArrInExecSeg`); these checks confirm the parser populated
+  -- them so a future bug that loses `DT_INIT_ARRAY` / `DT_FINI_ARRAY`
+  -- doesn't slip through silently.
+  check (elf.initArr.size > 0) "expected ≥ 1 DT_INIT_ARRAY entry"
+  -- gcc/clang link in __libc_atexit-style finalizers, so a normal
+  -- ET_DYN main has at least one fini entry.
+  check (elf.finiArr.size > 0) "expected ≥ 1 DT_FINI_ARRAY entry"
 
 private def discoverTest (g : ObjectList) : Except String Unit := do
   let names := g.val.map (·.name)
