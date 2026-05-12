@@ -115,8 +115,13 @@ def discover (mainPath : String) : IO ObjectList := do
   have h_pos : 0 < initObjs.size := Nat.zero_lt_one
   have h_nodup : (initObjs.map (·.name)).toList.Nodup := by
     simp [initObjs]
-  -- Fuel: a generous cap. Real binaries land in the low tens; 4096
-  -- leaves headroom and still discharges termination at type-check.
+  -- Fuel: a cap that's invisible in practice. Each iteration either
+  -- drops a work item (`.skip` / `.done` / dedup-hit branch) or pushes
+  -- one new object; both monotone toward termination. A real binary's
+  -- transitive `DT_NEEDED` closure has unique sonames bounded by the
+  -- filesystem state, so the BFS terminates in O(closure size). Real
+  -- binaries land in the low tens of objects; 4096 lets us discharge
+  -- structural recursion without ever throttling discovery.
   discoverLoop envPath 4096 initObjs h_pos h_nodup (workOfElf mainElf)
 
 end LeanLoad.Discover
