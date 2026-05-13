@@ -1,7 +1,7 @@
 /-
 Per-segment plan — base-free.
 
-A `SegmentPlan n` lifts one PT_LOAD `Segment` into the loader's view:
+A `SegmentLayout n` lifts one PT_LOAD `Segment` into the loader's view:
 page math precomputed once, stored as fields, plus the five
 per-segment invariants the materialize-stage safety proofs read by
 direct projection (`sp.pageEnd_lt`, `sp.fileOverlay_le_pageLength`, …):
@@ -42,11 +42,11 @@ open LeanLoad.Plan.Reloc (RelocEntry)
 
 -- ============================================================================
 -- Raw page-arithmetic helpers — about `Segment` + alignDown/alignUp
--- expressions, no `SegmentPlan` reference. Used by `SegmentPlan.ofSegmentCore`
+-- expressions, no `SegmentLayout` reference. Used by `SegmentLayout.ofSegmentCore`
 -- to discharge each per-segment invariant field.
 -- ============================================================================
 
-namespace SegmentPlan
+namespace SegmentLayout
 
 /-- `vaddr + memsz` doesn't wrap, given `Segment.addrBound`. -/
 private theorem vaddr_add_memsz_toNat (s : Segment) :
@@ -86,7 +86,7 @@ private theorem pageVaddr_le_pageEnd_raw (s : Segment) :
   omega
 
 /-- `(alignUp (s.vaddr + s.memsz) ea).toNat ≤ s.vaddr + s.memsz + ea`.
-    Exposed for `Plan.Layout`'s `ElfPlan.ofElf` proof. -/
+    Exposed for `Plan.Layout`'s `ElfLayout.ofElf` proof. -/
 theorem alignUp_vm_le (s : Segment) :
     (alignUp (s.vaddr + s.memsz) (effectiveAlign s.align)).toNat ≤
     s.vaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat := by
@@ -120,7 +120,7 @@ private theorem vm_le_alignUp_vm (s : Segment) :
 
 /-- The `pageEnd - pageVaddr` UInt64 subtraction equals the Nat-level
     difference `pageEnd.toNat - pageVaddr.toNat`.
-    Exposed for `Plan.Layout`'s `ElfPlan.ofElf` proof. -/
+    Exposed for `Plan.Layout`'s `ElfLayout.ofElf` proof. -/
 theorem pageLength_toNat (s : Segment) :
     (alignUp (s.vaddr + s.memsz) (effectiveAlign s.align) -
       alignDown s.vaddr (effectiveAlign s.align)).toNat =
@@ -139,7 +139,7 @@ private theorem pageVaddr_add_pageLength_raw (s : Segment) :
   omega
 
 /-- The `pageVaddr + pageLength < 2^64` bound — used as
-    `SegmentPlan.pageEnd_lt`. -/
+    `SegmentLayout.pageEnd_lt`. -/
 private theorem raw_pageEnd_lt (s : Segment) :
     (alignDown s.vaddr (effectiveAlign s.align)).toNat +
     (alignUp (s.vaddr + s.memsz) (effectiveAlign s.align) -
@@ -147,7 +147,7 @@ private theorem raw_pageEnd_lt (s : Segment) :
   rw [pageVaddr_add_pageLength_raw]; exact alignUp_vm_lt s
 
 /-- The `vaddr + memsz ≤ pageVaddr + pageLength` bound — used as
-    `SegmentPlan.vaddr_memsz_le_pageEnd`. -/
+    `SegmentLayout.vaddr_memsz_le_pageEnd`. -/
 private theorem raw_vaddr_memsz_le_pageEnd (s : Segment) :
     s.vaddr.toNat + s.memsz.toNat ≤
     (alignDown s.vaddr (effectiveAlign s.align)).toNat +
@@ -156,7 +156,7 @@ private theorem raw_vaddr_memsz_le_pageEnd (s : Segment) :
   rw [pageVaddr_add_pageLength_raw]; exact vm_le_alignUp_vm s
 
 /-- The `pageVaddr + pageInset = vaddr` equality — used as
-    `SegmentPlan.pageInset_eq_vaddr`. -/
+    `SegmentLayout.pageInset_eq_vaddr`. -/
 private theorem raw_pageInset_eq_vaddr (s : Segment) :
     (alignDown s.vaddr (effectiveAlign s.align)).toNat +
     (s.vaddr - alignDown s.vaddr (effectiveAlign s.align)).toNat =
@@ -228,7 +228,7 @@ private theorem pageVaddr_add_fileOverlayLen_le_pageEnd (s : Segment) :
   · rw [h_vf_eq, h_vm_eq]; omega
 
 /-- The `fileOverlayLen ≤ pageLength` bound — used as
-    `SegmentPlan.fileOverlay_le_pageLength`. -/
+    `SegmentLayout.fileOverlay_le_pageLength`. -/
 private theorem raw_fileOverlay_le_pageLength (s : Segment) :
     (alignUp ((s.vaddr - alignDown s.vaddr (effectiveAlign s.align)) +
               s.filesz) (effectiveAlign s.align)).toNat ≤
@@ -238,7 +238,7 @@ private theorem raw_fileOverlay_le_pageLength (s : Segment) :
   omega
 
 /-- The `pageInset + filesz + partialBssLen ≤ pageLength` bound —
-    used as `SegmentPlan.zero_end_le_pageLength`. -/
+    used as `SegmentLayout.zero_end_le_pageLength`. -/
 private theorem raw_zero_end_le_pageLength (s : Segment) :
     (s.vaddr - alignDown s.vaddr (effectiveAlign s.align)).toNat +
     s.filesz.toNat +
@@ -294,10 +294,10 @@ private theorem raw_zero_end_le_pageLength (s : Segment) :
   rw [h_partial_eq, h_pi_filesz_eq]
   omega
 
-end SegmentPlan
+end SegmentLayout
 
 -- ============================================================================
--- SegmentPlan n — one PT_LOAD with page math + per-segment invariants
+-- SegmentLayout n — one PT_LOAD with page math + per-segment invariants
 -- + per-segment relocs. Base-free: every offset is relative to base = 0.
 -- ============================================================================
 
@@ -305,11 +305,11 @@ end SegmentPlan
     precomputed once via `ofSegmentCore`; addresses are relative to
     `base = 0`. Per-segment invariants live as Prop fields so consumers
     project them directly (`sp.pageEnd_lt`) — there is no
-    `∀ j, ∀ h : j < segs.size, …` quantifier on `ElfPlan` to peel.
+    `∀ j, ∀ h : j < segs.size, …` quantifier on `ElfLayout` to peel.
 
     `relocs` is the per-segment planned-relocation array (built parallel
     to construction in `Plan.Layout.ofElf`). -/
-structure SegmentPlan (n : Nat) where
+structure SegmentLayout (n : Nat) where
   /-- Underlying gabi segment. Carries `rela`/`jmprel` for reloc
       planning and the `addrBound` invariant for proofs. -/
   segment        : Segment
@@ -356,13 +356,13 @@ structure SegmentPlan (n : Nat) where
       this directly. -/
   relocs         : Array (RelocEntry n segment)
 
-namespace SegmentPlan
+namespace SegmentLayout
 
 /-- Compute the page-math view of a `Segment` and discharge each
     per-segment invariant. Callers supply `relocs` separately
     (typically via `Reloc.planSegment`). -/
 def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (RelocEntry n s)) :
-    SegmentPlan n :=
+    SegmentLayout n :=
   let ea             := effectiveAlign s.align
   let pageVaddr      := alignDown s.vaddr ea
   let pageEnd        := alignUp (s.vaddr + s.memsz) ea
@@ -387,26 +387,26 @@ def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (RelocEntry n s)) :
 /-- Compute the loader view of a `Segment`, planning its relocations
     against the global elf array. -/
 def ofSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
-    (objectIdx : Fin elfs.size) (s : Segment) : SegmentPlan elfs.size :=
+    (objectIdx : Fin elfs.size) (s : Segment) : SegmentLayout elfs.size :=
   ofSegmentCore elfs.size s (Reloc.planSegment elfs rt objectIdx s)
 
 /-- One past the last byte of the mmap'd range, base-relative. -/
-def pageEndAddr (sp : SegmentPlan n) : UInt64 := sp.pageVaddr + sp.pageLength
+def pageEndAddr (sp : SegmentLayout n) : UInt64 := sp.pageVaddr + sp.pageLength
 
 /-- `pageEndAddr.toNat = pageVaddr.toNat + pageLength.toNat` — the
     `pageEnd_lt` invariant rules out wrap. Saves the inline
     `UInt64.toNat_add` + `mod_eq_of_lt` ritual every per-slot
     `Materialize` proof would otherwise duplicate. -/
-theorem pageEndAddr_toNat (sp : SegmentPlan n) :
+theorem pageEndAddr_toNat (sp : SegmentLayout n) :
     sp.pageEndAddr.toNat = sp.pageVaddr.toNat + sp.pageLength.toNat := by
   show (sp.pageVaddr + sp.pageLength).toNat = _
   rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt sp.pageEnd_lt
 
 /-- True when the segment has any file-backed bytes. -/
-def hasFileBacked (sp : SegmentPlan n) : Bool := sp.fileOverlayLen > 0
+def hasFileBacked (sp : SegmentLayout n) : Bool := sp.fileOverlayLen > 0
 
 /-- True when there are partial-page BSS bytes to zero. -/
-def hasPartialBss (sp : SegmentPlan n) : Bool := sp.partialBssLen > 0
+def hasPartialBss (sp : SegmentLayout n) : Bool := sp.partialBssLen > 0
 
 -- ============================================================================
 -- Closed-form projections — `rfl` because each field's stored value is
@@ -446,6 +446,6 @@ def hasPartialBss (sp : SegmentPlan n) : Bool := sp.partialBssLen > 0
     (relocs : Array (RelocEntry n s)) :
     (ofSegmentCore n s relocs).segment = s := rfl
 
-end SegmentPlan
+end SegmentLayout
 
 end LeanLoad.Plan

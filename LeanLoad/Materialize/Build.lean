@@ -33,7 +33,7 @@ Two top-level entry points:
 `LoadOps.runSafe`. There is no separate `safe` entry point.
 
 The two recursive constructions (segments-of-an-elf, elves-of-the-
-load) share one generic helper, `buildSafeArray`: given a `count`
+layout) share one generic helper, `buildSafeArray`: given a `count`
 and a per-index `Except`-returning step, it threads a per-index
 invariant `P k b` through `count` push extensions. Both
 `buildElfSegments` and `buildLoadElves` are thin wrappers — the
@@ -47,14 +47,14 @@ import LeanLoad.Materialize.BasedPlan
 namespace LeanLoad.Materialize
 
 open LeanLoad
-open LeanLoad.Plan (LoadPlan ElfPlan SegmentPlan)
+open LeanLoad.Plan (Layout ElfLayout SegmentLayout)
 open LeanLoad.Elaborate (Elf Formula)
 
 -- ============================================================================
 -- buildSafeArray — generic helper for "build an array of `count`
 -- elements, each satisfying a per-index invariant `P k b`". Used by
 -- `buildElfSegments` (segments-of-an-elf) and `buildLoadElves`
--- (elves-of-the-load). Both were nearly-identical 70-line aux
+-- (elves-of-the-layout). Both were nearly-identical 70-line aux
 -- functions before extraction.
 -- ============================================================================
 
@@ -386,7 +386,7 @@ def build (bp : BasedPlan) :
 
     `order : Array (Fin n)` carries the bound at the type level; both
     `lp.elfs[…]` and `bases[…]` are total — no `[]?` needed. -/
-def collectAddrs (lp : LoadPlan n) (bases : Array UInt64)
+def collectAddrs (lp : Layout n) (bases : Array UInt64)
     (h_bases : bases.size = n) (order : Array (Fin n))
     (arrOf : Elaborate.Elf → Array UInt64) : Array UInt64 :=
   Id.run do
@@ -402,14 +402,14 @@ def collectAddrs (lp : LoadPlan n) (bases : Array UInt64)
 
 /-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
 def ctorAddrs (bp : BasedPlan) : Array UInt64 :=
-  collectAddrs bp.plan.load bp.bases bp.bases_size bp.plan.initOrder (·.initArr)
+  collectAddrs bp.plan.layout bp.bases bp.bases_size bp.plan.initOrder (·.initArr)
 
 /-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
     so deepest-dep fini runs after shallower fini, mirroring init's
     "deps first" order. gabi 08 mandates a partial order; reverse-init
     is glibc / musl's conventional choice. -/
 def dtorAddrs (bp : BasedPlan) : Array UInt64 :=
-  collectAddrs bp.plan.load bp.bases bp.bases_size
+  collectAddrs bp.plan.layout bp.bases bp.bases_size
     bp.plan.initOrder.reverse (·.finiArr)
 
 end LeanLoad.Materialize

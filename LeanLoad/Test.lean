@@ -92,11 +92,11 @@ private def resolveTest (g : ObjectList) : Except String Unit := do
 private def testAnchor : UInt64 := 0x80000000
 
 private def layoutTest (g : ObjectList) : Except String Unit := do
-  -- `LoadPlan.ofElfs` succeeds → returns a `LoadPlan elfs.size` with
+  -- `Layout.ofElfs` succeeds → returns a `Layout elfs.size` with
   -- per-elf `segmentsSorted` and per-segment relocs woven in.
   let elfs := g.val.map (·.elf)
   let rt := Resolve.buildTable elfs
-  let _ ← LoadPlan.ofElfs elfs rt
+  let _ ← Layout.ofElfs elfs rt
   .ok ()
 
 private def orderTest (g : ObjectList) : Except String Unit := do
@@ -109,7 +109,7 @@ private def orderTest (g : ObjectList) : Except String Unit := do
 private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
   let elfs := g.val.map (·.elf)
   let rt := Resolve.buildTable elfs
-  let lp ← LoadPlan.ofElfs elfs rt
+  let lp ← Layout.ofElfs elfs rt
   let totalEntries := lp.elfs.foldl (init := 0) fun acc ep =>
     ep.segments.foldl (init := acc) fun acc sp => acc + sp.relocs.size
   check (totalEntries > 0) "expected nonzero planned relocations"

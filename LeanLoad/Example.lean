@@ -13,7 +13,7 @@ stages plus boundary-rejection cases that span more than one file:
      rejection paths a malformed binary takes through `elaborate`.
 
   3. **Plan walkthrough** — symbol resolution (`Plan/Resolve`),
-     base assignment (`Plan/Layout`), and the `SegmentPlan` view
+     base assignment (`Plan/Layout`), and the `SegmentLayout` view
      over a segment (base-free).
 
   4. **Materialize** — the `Array MemoryOp` derived from a
@@ -254,7 +254,7 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
 #guard
   let elfs : Array Elaborate.Elf := #[synthElf (elfType := .dyn)]
   let rt := Resolve.buildTable elfs
-  match LoadPlan.ofElfs elfs rt with
+  match Layout.ofElfs elfs rt with
   | .ok lp => assignBases exampleAnchor lp == #[exampleAnchor]
   | .error _ => false
 
@@ -285,20 +285,20 @@ private def stackingExample : Option (Array UInt64) := do
                   (segmentsNonOverlap := nonOverlap_singleton seg)
   let elfs := #[libElf, libElf, libElf]
   let rt := Resolve.buildTable elfs
-  match LoadPlan.ofElfs elfs rt with
+  match Layout.ofElfs elfs rt with
   | .ok lp => some (assignBases exampleAnchor lp)
   | .error _ => none
 
 #guard stackingExample = some #[exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000]
 
 -- ============================================================================
--- 4. Realize plan: `SegmentPlan` views and `Array MemoryOp` shapes.
+-- 4. Realize plan: `SegmentLayout` views and `Array MemoryOp` shapes.
 --
--- `SegmentPlan` is the base-free loader view of a segment; absolute
+-- `SegmentLayout` is the base-free loader view of a segment; absolute
 -- addresses come from `base + sp.pageVaddr` at materialize time.
 -- ============================================================================
 
--- ---- 4a. SegmentPlan view: base-free page math. ----------------------------
+-- ---- 4a. SegmentLayout view: base-free page math. ----------------------------
 
 /-- A 0x2000-byte BSS-only segment at vaddr 0 (page-aligned). With
     `filesz = 0` and `memsz = 0x2000`, this is two pages of pure BSS
@@ -310,8 +310,8 @@ private def bssOnlySeg : Option Segment :=
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
   (Segment.ofPhdr phdr #[] #[]).toOption
 
-private def bssOnlyPlan : Option (SegmentPlan 0) :=
-  bssOnlySeg.map (fun s => SegmentPlan.ofSegmentCore 0 s #[])
+private def bssOnlyPlan : Option (SegmentLayout 0) :=
+  bssOnlySeg.map (fun s => SegmentLayout.ofSegmentCore 0 s #[])
 
 -- The plan's mmap'd range is `[pageVaddr, pageVaddr + pageLength)`,
 -- absolute addresses computed as `base + pageVaddr`.
@@ -363,7 +363,7 @@ private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- pa
 private def slotCount (seg : Option Segment) : Option Nat :=
   seg.map fun s =>
     let (mmap, zero, _mp) :=
-      Materialize.setupSlots (SegmentPlan.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
+      Materialize.setupSlots (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
     (if mmap.isSome then 1 else 0) + (if zero.isSome then 1 else 0) + 1
 
 #guard slotCount bssOnlySeg     = some 1  -- mprotect only

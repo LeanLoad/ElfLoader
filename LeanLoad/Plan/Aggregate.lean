@@ -9,7 +9,7 @@ structure parameterised by the object count `objects.val.size`:
   · `resolve   : Resolve.Table objects.val.size` — per-undef-ref
                  resolution outcome. `ofObjects` rejects when a
                  `strongUndef` remains.
-  · `load      : LoadPlan objects.val.size` — page math, per-elf
+  · `layout      : Layout objects.val.size` — page math, per-elf
                  advance + cumulative span, plus per-segment
                  invariants (`pageEnd_lt` etc.).
   · `initOrder : Array (Fin objects.val.size)` — DFS post-order
@@ -22,9 +22,9 @@ object instead of parallel arrays + coherence proofs.
 
 `Plan.ofObjects` is the single fallible construction:
   1. Build the resolve table; reject if any strong undef remains.
-  2. Plan every elf's segments and relocations (`LoadPlan.ofElfs`).
-     This is where `SegmentPlan`'s per-segment invariants are
-     discharged and `ElfPlan.segmentsSorted` is validated.
+  2. Plan every elf's segments and relocations (`Layout.ofElfs`).
+     This is where `SegmentLayout`'s per-segment invariants are
+     discharged and `ElfLayout.segmentsSorted` is validated.
   3. Compute the DFS post-order init sequence.
 
 The IO bookend (`Main.load` / `Main.debug`) calls `Plan.ofObjects`
@@ -54,10 +54,10 @@ structure Plan where
       rejects when any entry is `strongUndef`. -/
   resolve   : Resolve.Table objects.val.size
   /-- Page math + per-segment relocations, with `elfs_size` tying
-      `load.elfs` to the object count. -/
-  load      : LoadPlan objects.val.size
+      `layout.elfs` to the object count. -/
+  layout      : Layout objects.val.size
   /-- DFS post-order over the dep DAG; `Fin n` typed so
-      `Materialize.initAddrs` indexes `load.elfs` and `bases`
+      `Materialize.initAddrs` indexes `layout.elfs` and `bases`
       totally. -/
   initOrder : Array (Fin objects.val.size)
 
@@ -65,7 +65,7 @@ namespace Plan
 
 /-- Project the elf array of the bundled object list — convenience
     for `Materialize.build` (which needs `Array Elf` parallel to
-    `load.elfs` for `bakeSegmentRelocs`). The size lemma
+    `layout.elfs` for `bakeSegmentRelocs`). The size lemma
     `objectElfs_size` says it has size `objects.val.size`. -/
 def objectElfs (p : Plan) : Array Elf :=
   p.objects.val.map (·.elf)
@@ -82,7 +82,7 @@ def formula (p : Plan) : Elaborate.Formula :=
 /-- Build a `Plan` from a discovered object list. Fails with a typed
     error if:
       • any strong undef remains unresolved, or
-      • `LoadPlan.ofElfs` rejects the layout (page-aligned overlap or
+      • `Layout.ofElfs` rejects the layout (page-aligned overlap or
         UInt64 cumulative-span overflow). -/
 def ofObjects (objs : ObjectList) : Except String Plan := do
   let elfs := objs.val.map (·.elf)
@@ -95,9 +95,9 @@ def ofObjects (objs : ObjectList) : Except String Plan := do
   if let some u := resolve.missing[0]? then
     .error s!"Plan.ofObjects: {resolve.missing.size} unresolved strong symbol(s); \
       first: {u.name}"
-  let load ← LoadPlan.ofElfsSized elfs h_size resolve
+  let layout ← Layout.ofElfsSized elfs h_size resolve
   let initOrder := Init.order objs
-  return { objects := objs, resolve, load, initOrder }
+  return { objects := objs, resolve, layout, initOrder }
 
 end Plan
 

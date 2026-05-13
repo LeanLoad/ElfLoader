@@ -33,7 +33,7 @@ open LeanLoad.Plan (cumOffset cumOffset_succ_of_lt cumOffset_mono
 structure BasedPlan where
   plan    : Plan.Plan
   rsv     : Reserve
-  h_total : rsv.len = plan.load.totalSpan
+  h_total : rsv.len = plan.layout.totalSpan
 
 namespace BasedPlan
 
@@ -42,14 +42,14 @@ namespace BasedPlan
 abbrev n (bp : BasedPlan) : Nat := bp.plan.objects.val.size
 
 /-- Per-elf base addresses inside the reservation. `abbrev` so
-    `bp.bases[i]` reduces to `assignBases bp.rsv.addr bp.plan.load`
+    `bp.bases[i]` reduces to `assignBases bp.rsv.addr bp.plan.layout`
     transparently in proofs. Hot consumers bind once via
     `let bases := bp.bases` to avoid re-materialising the array. -/
 abbrev bases (bp : BasedPlan) : Array UInt64 :=
-  assignBases bp.rsv.addr bp.plan.load
+  assignBases bp.rsv.addr bp.plan.layout
 
 theorem bases_size (bp : BasedPlan) : bp.bases.size = bp.n :=
-  (assignBases_size _ _).trans bp.plan.load.elfs_size
+  (assignBases_size _ _).trans bp.plan.layout.elfs_size
 
 /-- `0 < bp.n` — the main executable is always present. -/
 theorem n_pos (bp : BasedPlan) : 0 < bp.n :=
@@ -61,7 +61,7 @@ theorem bases_size_pos (bp : BasedPlan) : 0 < bp.bases.size := by
 /-- Global no-wrap: `rsv.addr + totalSpan` fits in UInt64. Falls out
     of `Reserve.noWrap` plus `h_total`. -/
 theorem rsv_noWrap (bp : BasedPlan) :
-    bp.rsv.addr.toNat + bp.plan.load.totalSpan.toNat < 2 ^ 64 := by
+    bp.rsv.addr.toNat + bp.plan.layout.totalSpan.toNat < 2 ^ 64 := by
   rw [← bp.h_total]; exact bp.rsv.noWrap
 
 -- ============================================================================
@@ -72,8 +72,8 @@ theorem rsv_noWrap (bp : BasedPlan) :
 -- ============================================================================
 
 /-- `i`-th elf plan, indexed totally by `Fin bp.n`. -/
-abbrev elfAt (bp : BasedPlan) (i : Fin bp.n) : Plan.ElfPlan bp.n :=
-  bp.plan.load.elfs[i.val]'(by rw [bp.plan.load.elfs_size]; exact i.isLt)
+abbrev elfAt (bp : BasedPlan) (i : Fin bp.n) : Plan.ElfLayout bp.n :=
+  bp.plan.layout.elfs[i.val]'(by rw [bp.plan.layout.elfs_size]; exact i.isLt)
 
 /-- `i`-th elf's base address. -/
 abbrev baseAt (bp : BasedPlan) (i : Fin bp.n) : UInt64 :=
@@ -85,16 +85,16 @@ abbrev handleAt (bp : BasedPlan) (i : Fin bp.n) : Runtime.FileHandle :=
 
 /-- `(i, j)`-th segment plan. -/
 abbrev segAt (bp : BasedPlan) (i : Fin bp.n)
-    (j : Fin (bp.elfAt i).segments.size) : Plan.SegmentPlan bp.n :=
+    (j : Fin (bp.elfAt i).segments.size) : Plan.SegmentLayout bp.n :=
   (bp.elfAt i).segments[j]
 
 /-- Closed-form for `bp.baseAt i`. -/
 theorem baseAt_toNat (bp : BasedPlan) (i : Fin bp.n) :
     (bp.baseAt i).toNat =
-    bp.rsv.addr.toNat + cumOffset bp.plan.load.elfs i.val := by
-  have h_lp : i.val < bp.plan.load.elfs.size := by
-    rw [bp.plan.load.elfs_size]; exact i.isLt
-  exact assignBases_at_toNat bp.rsv.addr bp.plan.load bp.rsv_noWrap i.val h_lp
+    bp.rsv.addr.toNat + cumOffset bp.plan.layout.elfs i.val := by
+  have h_lp : i.val < bp.plan.layout.elfs.size := by
+    rw [bp.plan.layout.elfs_size]; exact i.isLt
+  exact assignBases_at_toNat bp.rsv.addr bp.plan.layout bp.rsv_noWrap i.val h_lp
 
 /-- Workhorse: the i-th elf's `[base, base + advance)` fits inside
     `[rsv.addr, rsv.addr + rsv.len)` in `Nat`. Every per-slot
@@ -102,17 +102,17 @@ theorem baseAt_toNat (bp : BasedPlan) (i : Fin bp.n) :
 theorem base_plus_advance_le_rsv_end (bp : BasedPlan) (i : Fin bp.n) :
     (bp.baseAt i).toNat + (bp.elfAt i).advance.toNat ≤
     bp.rsv.addr.toNat + bp.rsv.len.toNat := by
-  have h_lp : i.val < bp.plan.load.elfs.size := by
-    rw [bp.plan.load.elfs_size]; exact i.isLt
+  have h_lp : i.val < bp.plan.layout.elfs.size := by
+    rw [bp.plan.layout.elfs_size]; exact i.isLt
   show (bp.baseAt i).toNat +
-       (bp.plan.load.elfs[i.val]'h_lp).advance.toNat ≤ _
-  rw [bp.baseAt_toNat i, bp.h_total, bp.plan.load.totalSpan_eq]
-  have h_succ : cumOffset bp.plan.load.elfs i.val +
-                (bp.plan.load.elfs[i.val]'h_lp).advance.toNat =
-                cumOffset bp.plan.load.elfs (i.val + 1) :=
+       (bp.plan.layout.elfs[i.val]'h_lp).advance.toNat ≤ _
+  rw [bp.baseAt_toNat i, bp.h_total, bp.plan.layout.totalSpan_eq]
+  have h_succ : cumOffset bp.plan.layout.elfs i.val +
+                (bp.plan.layout.elfs[i.val]'h_lp).advance.toNat =
+                cumOffset bp.plan.layout.elfs (i.val + 1) :=
     (cumOffset_succ_of_lt _ h_lp).symm
-  have h_mono : cumOffset bp.plan.load.elfs (i.val + 1) ≤
-                cumOffset bp.plan.load.elfs bp.plan.load.elfs.size :=
+  have h_mono : cumOffset bp.plan.layout.elfs (i.val + 1) ≤
+                cumOffset bp.plan.layout.elfs bp.plan.layout.elfs.size :=
     cumOffset_mono _ h_lp
   omega
 
@@ -120,11 +120,11 @@ theorem base_plus_advance_le_rsv_end (bp : BasedPlan) (i : Fin bp.n) :
     `baseAt_toNat` + `cumOffset_mono` + `totalSpan_eq`. -/
 theorem baseAt_le_rsv_end (bp : BasedPlan) (i : Fin bp.n) :
     (bp.baseAt i).toNat ≤ bp.rsv.addr.toNat + bp.rsv.len.toNat := by
-  have h_lp : i.val < bp.plan.load.elfs.size := by
-    rw [bp.plan.load.elfs_size]; exact i.isLt
-  rw [bp.baseAt_toNat i, bp.h_total, bp.plan.load.totalSpan_eq]
-  have h_mono : cumOffset bp.plan.load.elfs i.val ≤
-                cumOffset bp.plan.load.elfs bp.plan.load.elfs.size :=
+  have h_lp : i.val < bp.plan.layout.elfs.size := by
+    rw [bp.plan.layout.elfs_size]; exact i.isLt
+  rw [bp.baseAt_toNat i, bp.h_total, bp.plan.layout.totalSpan_eq]
+  have h_mono : cumOffset bp.plan.layout.elfs i.val ≤
+                cumOffset bp.plan.layout.elfs bp.plan.layout.elfs.size :=
     cumOffset_mono _ (Nat.le_of_lt h_lp)
   omega
 
@@ -144,17 +144,17 @@ theorem base_plus_advance_le_base (bp : BasedPlan) (i₁ i₂ : Fin bp.n)
     (h_lt : i₁ < i₂) :
     (bp.baseAt i₁).toNat + (bp.elfAt i₁).advance.toNat ≤
     (bp.baseAt i₂).toNat := by
-  have h_lp₁ : i₁.val < bp.plan.load.elfs.size := by
-    rw [bp.plan.load.elfs_size]; exact i₁.isLt
+  have h_lp₁ : i₁.val < bp.plan.layout.elfs.size := by
+    rw [bp.plan.layout.elfs_size]; exact i₁.isLt
   show (bp.baseAt i₁).toNat +
-       (bp.plan.load.elfs[i₁.val]'h_lp₁).advance.toNat ≤ _
+       (bp.plan.layout.elfs[i₁.val]'h_lp₁).advance.toNat ≤ _
   rw [bp.baseAt_toNat i₁, bp.baseAt_toNat i₂]
-  have h_succ : cumOffset bp.plan.load.elfs i₁.val +
-                (bp.plan.load.elfs[i₁.val]'h_lp₁).advance.toNat =
-                cumOffset bp.plan.load.elfs (i₁.val + 1) :=
+  have h_succ : cumOffset bp.plan.layout.elfs i₁.val +
+                (bp.plan.layout.elfs[i₁.val]'h_lp₁).advance.toNat =
+                cumOffset bp.plan.layout.elfs (i₁.val + 1) :=
     (cumOffset_succ_of_lt _ h_lp₁).symm
-  have h_mono : cumOffset bp.plan.load.elfs (i₁.val + 1) ≤
-                cumOffset bp.plan.load.elfs i₂.val :=
+  have h_mono : cumOffset bp.plan.layout.elfs (i₁.val + 1) ≤
+                cumOffset bp.plan.layout.elfs i₂.val :=
     cumOffset_mono _ h_lt
   omega
 
@@ -207,7 +207,7 @@ theorem segment_base_add_pageVaddr_toNat (bp : BasedPlan) (i : Fin bp.n)
 theorem rsv_addr_le_baseAt (bp : BasedPlan) (i : Fin bp.n) :
     bp.rsv.addr.toNat ≤ (bp.baseAt i).toNat := by
   rw [bp.baseAt_toNat i]
-  have h_cum_nonneg : 0 ≤ Plan.cumOffset bp.plan.load.elfs i.val := Nat.zero_le _
+  have h_cum_nonneg : 0 ≤ Plan.cumOffset bp.plan.layout.elfs i.val := Nat.zero_le _
   omega
 
 /-- The mmap range fits in the reservation. -/
@@ -273,7 +273,7 @@ theorem segment_zeroRange_in_rsv (bp : BasedPlan) (i : Fin bp.n)
 -- ============================================================================
 -- Disjointness lemmas. Two flavours:
 --   • within-elf — same `i`, distinct segments `j₁ < j₂`. Pulls
---     `Plan.Sorted` (page-aligned non-overlap from ElfPlan) into a
+--     `Plan.Sorted` (page-aligned non-overlap from ElfLayout) into a
 --     `Runtime.Disjoint` claim about the mmap'd ranges.
 --   • cross-elf  — distinct elves `i₁ < i₂`. Uses the existing
 --     `base_plus_advance_le_base` for the dominant inequality.
@@ -283,7 +283,7 @@ theorem segment_zeroRange_in_rsv (bp : BasedPlan) (i : Fin bp.n)
 -- ============================================================================
 
 /-- Within an elf: page-aligned segment ranges don't overlap. Lifts
-    `Plan.Sorted` (the existing ElfPlan invariant) from `pageEndAddr ≤
+    `Plan.Sorted` (the existing ElfLayout invariant) from `pageEndAddr ≤
     pageVaddr` to `base + pageEnd ≤ base + pageVaddr'`. -/
 theorem within_elf_pageRange_disjoint (bp : BasedPlan) (i : Fin bp.n)
     (j₁ j₂ : Fin (bp.elfAt i).segments.size) (h_lt : j₁ < j₂) :

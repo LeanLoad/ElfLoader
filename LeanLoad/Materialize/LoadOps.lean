@@ -4,7 +4,7 @@ the typed slot records (`Mmap` / `Zero` / `Store` / `Mprotect`)
 defined in `Runtime`.
 
 Stage boundary:
-  • `Plan/` produces base-free facts: `LoadPlan n` (page math,
+  • `Plan/` produces base-free facts: `Layout n` (page math,
     `objectSpan`, `totalSpan`, per-segment relocs), `Resolve.Table`,
     `Init.order`. None of those know an mmap base.
   • `Materialize/` consumes those plus the IO-supplied reservation
@@ -13,7 +13,7 @@ Stage boundary:
     flat `Array` intermediate.
 
 The natural number parameter `n` is the elf count, threaded through
-from `SegmentPlan n` (for the per-segment `RelocEntry n`s).
+from `SegmentLayout n` (for the per-segment `RelocEntry n`s).
 
 Per-segment shape (the "realize protocol"):
   1. *Mmap* — `Option Mmap` — `mmapFile` for the file-backed prefix,
@@ -32,7 +32,7 @@ Hierarchy:
 
 Safety witness: `LoadSafe` mirrors the tree structure
 (`SegmentSafe` per slot, `ElfSafe` per elf, `LoadSafe` across the
-load) and is built constructively by `Materialize.build` from
+layout) and is built constructively by `Materialize.build` from
 `BasedPlan`'s per-(i, j) `InRange` / `Disjoint` theorems. There is
 no separate flat predicate — `runSafe` consumes a `LoadSafe`
 witness directly.
@@ -44,7 +44,7 @@ import LeanLoad.Runtime
 namespace LeanLoad.Materialize
 
 open LeanLoad
-open LeanLoad.Plan (SegmentPlan)
+open LeanLoad.Plan (SegmentLayout)
 
 -- ============================================================================
 -- Hierarchy: SegmentOps n → ElfOps n → LoadOps n.
@@ -53,7 +53,7 @@ open LeanLoad.Plan (SegmentPlan)
 /-- Per-segment ops bundle: the base-free plan + the 4 typed slots
     for the segment-realize protocol. -/
 structure SegmentOps (n : Nat) where
-  plan     : SegmentPlan n
+  plan     : SegmentLayout n
   mmap     : Option Mmap
   zero     : Option Zero
   stores   : Array Store
@@ -68,14 +68,14 @@ structure ElfOps (n : Nat) where
 abbrev LoadOps (n : Nat) := Array (ElfOps n)
 
 -- ============================================================================
--- Construction helper — compute the setup slots from a SegmentPlan.
+-- Construction helper — compute the setup slots from a SegmentLayout.
 -- Reloc stores are added separately by `Materialize.bakeSegmentRelocs`.
 -- ============================================================================
 
 /-- Setup slots (mmap, zero, mprotect) for one segment at the chosen
     base. The mmap is widened with `PROT_WRITE` so reloc stores can
     land before `mprotect` flips to final perms. -/
-def setupSlots (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) :
     Option Mmap × Option Zero × Mprotect :=
   let absVaddr := base + sp.pageVaddr
@@ -103,7 +103,7 @@ def setupSlots (sp : SegmentPlan n) (handle : Runtime.FileHandle)
 
 /-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
     length `sp.fileOverlayLen`. -/
-theorem setupSlots_mmap_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+theorem setupSlots_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) (m : Mmap) (h : (setupSlots sp handle base).1 = some m) :
     m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
   unfold setupSlots at h
@@ -117,7 +117,7 @@ theorem setupSlots_mmap_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
 /-- The zero slot, when present, sits at
     `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz` of length
     `sp.partialBssLen`. -/
-theorem setupSlots_zero_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+theorem setupSlots_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) (z : Zero) (h : (setupSlots sp handle base).2.1 = some z) :
     z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz ∧
     z.len = sp.partialBssLen := by
@@ -131,7 +131,7 @@ theorem setupSlots_zero_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
 
 /-- The mprotect slot always sits at `base + sp.pageVaddr` of length
     `sp.pageLength`. -/
-theorem setupSlots_mprotect_eq (sp : SegmentPlan n) (handle : Runtime.FileHandle)
+theorem setupSlots_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) :
     (setupSlots sp handle base).2.2.addr = base + sp.pageVaddr ∧
     (setupSlots sp handle base).2.2.len = sp.pageLength := by
@@ -215,7 +215,7 @@ private def SegmentOps.runUnsafe (so : SegmentOps n) : IO Unit := do
 private def LoadOps.runUnsafe (lo : LoadOps n) : IO Unit :=
   lo.forM fun eo => eo.segments.forM SegmentOps.runUnsafe
 
-/-- Interpret a `LoadSafe`-witnessed load tree. The witness fields
+/-- Interpret a `LoadSafe`-witnessed layout tree. The witness fields
     are erased; IO behaviour is identical to a plain per-slot
     dispatch. -/
 def LoadOps.runSafe (rsvAddr rsvLen : UInt64)

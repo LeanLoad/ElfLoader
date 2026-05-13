@@ -74,15 +74,15 @@ private def Nat.hex12 (n : Nat) : String :=
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
   let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
-  let rsvW ← Reserve.run plan.load.totalSpan
+  let rsvW ← Reserve.run plan.layout.totalSpan
   let bp : Materialize.BasedPlan :=
     { plan, rsv := rsvW.val, h_total := rsvW.property }
   let witnessed ← IO.ofExcept (Materialize.build bp)
   let ctorAddrs := Materialize.ctorAddrs bp
   realize bp witnessed ctorAddrs path
 
-/-- `--debug`: same as `load` but with a stage-by-stage summary on
-    stderr. Like `load`, this transfers control and does not return. -/
+/-- `--debug`: same as `layout` but with a stage-by-stage summary on
+    stderr. Like `layout`, this transfers control and does not return. -/
 def debug (path : String) : IO Unit := do
   IO.eprintln "== 1. Discover (BFS over DT_NEEDED) =="
   let g ← Discover.discover path
@@ -146,7 +146,7 @@ def debug (path : String) : IO Unit := do
     weak missing: {plan.resolve.weakMissing.size}"
 
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
-  let lp := plan.load
+  let lp := plan.layout
   let rsvW ← Reserve.run lp.totalSpan
   let bp : Materialize.BasedPlan :=
     { plan, rsv := rsvW.val, h_total := rsvW.property }

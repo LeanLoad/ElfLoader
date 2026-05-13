@@ -142,7 +142,7 @@ structure Mprotect where
 @[inline] def Store.byteLen (s : Store) : UInt64 := s.size.toUInt64
 
 /-- Anon reservation: address + length + the no-wrap proof every
-    downstream safety predicate relies on. Used both for the per-load
+    downstream safety predicate relies on. Used both for the per-layout
     object reservation and for the loaded program's stack.
 
     A successful `mmap(MAP_ANONYMOUS)` on Linux always satisfies
@@ -186,7 +186,7 @@ namespace Reserve
     `Runtime.mmapAnon` extern and validates the no-wrap property at
     runtime. The returned subtype carries the proof `r.len = len`, so
     callers (e.g. `Materialize.build`) can connect the reservation
-    size to a `LoadPlan`'s `totalSpan` without recourse to an IO-side
+    size to a `Layout`'s `totalSpan` without recourse to an IO-side
     coherence lemma.
 
     The validation is essentially free (one comparison) and the

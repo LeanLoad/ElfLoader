@@ -10,12 +10,12 @@ Carried as struct fields:
   - gabi-07 per-segment invariants (`fileszLeMemsz`, `alignPow2`,
     `alignCong`),
   - LeanLoad's 48-bit address-space bound (`addrBound`), which lets
-    page-arithmetic proofs in `Plan.SegmentPlan` ignore UInt64 wrap,
+    page-arithmetic proofs in `Plan.SegmentLayout` ignore UInt64 wrap,
   - the per-segment dynamic relocations grouped by their `coversRela`
     witness.
 
 This file is *gabi-only*. mmap semantics (page-aligned addresses,
-BSS bounds, POSIX `PROT_*`) live on `Plan.SegmentPlan`, which couples a
+BSS bounds, POSIX `PROT_*`) live on `Plan.SegmentLayout`, which couples a
 segment with its chosen mmap base.
 -/
 
@@ -35,7 +35,7 @@ def PF_R : UInt32 := 0x4
 
 /-- Typed segment permission — generic 3-bit `read/write/execute`
     view. Decouples the gabi `PF_*` parse from the POSIX `PROT_*`
-    that `mprotect` consumes (translation lives in `Plan.SegmentPlan`). -/
+    that `mprotect` consumes (translation lives in `Plan.SegmentLayout`). -/
 structure Prot where
   read  : Bool
   write : Bool
@@ -72,7 +72,7 @@ instance (vaddr memsz r_offset : UInt64) :
 
 -- ============================================================================
 -- Segment — gabi-07 byte fields + invariants. mmap-stage semantics
--- live on `Plan.SegmentPlan`.
+-- live on `Plan.SegmentLayout`.
 -- ============================================================================
 
 /-- A PT_LOAD segment: gabi-07 byte fields, the gabi per-segment
@@ -99,7 +99,7 @@ structure Segment where
   alignCong : align = 0 ∨ vaddr % align = offset % align
   /-- 48-bit address-space bound. **Not gabi.** LeanLoad assumes
       Linux's 48-bit virtual-address ceiling and small page-sized
-      alignment; the bound is what lets `Plan.SegmentPlan`'s
+      alignment; the bound is what lets `Plan.SegmentLayout`'s
       page-arithmetic proofs ignore UInt64 wrap. -/
   addrBound : vaddr.toNat + memsz.toNat + align.toNat < 2 ^ 48
   /-- General `Rela` relocations. -/

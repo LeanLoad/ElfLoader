@@ -1,27 +1,27 @@
 /-
 Layout planning — base-free.
 
-Each PT_LOAD `Segment` is lifted into a `SegmentPlan n` by
-`Plan.SegmentPlan` (page math + per-segment invariants + relocs).
+Each PT_LOAD `Segment` is lifted into a `SegmentLayout n` by
+`Plan.SegmentLayout` (page math + per-segment invariants + relocs).
 This file assembles those into per-elf and global structures:
 
-  • `ElfPlan n` — one elf's `SegmentPlan`s, its `advance` (per-elf
+  • `ElfLayout n` — one elf's `SegmentLayout`s, its `advance` (per-elf
     cursor), plus `segmentsSorted` (page-aligned ranges don't
     overlap) and `pageEndAddr_le_advance` (each segment fits in
     `advance`).
-  • `LoadPlan n` — every elf's `ElfPlan` plus the cumulative
+  • `Layout n` — every elf's `ElfLayout` plus the cumulative
     `totalSpan` and the `totalSpan_eq` Nat↔UInt64 bridge.
 
 The natural number parameter `n` is the elf count: every
 `RelocEntry` indexes the global elf array with `Fin n`.
 
-`LoadPlan.ofElfs` builds the whole tree in one pass: it consumes
+`Layout.ofElfs` builds the whole tree in one pass: it consumes
 `(elfs, resolveTable)` and produces a fully-planned
-`LoadPlan elfs.size`. Per-elf page-aligned non-overlap is validated
+`Layout elfs.size`. Per-elf page-aligned non-overlap is validated
 as part of construction — failure is rare (modern toolchains never
 emit overlapping page ranges) but possible in principle.
 
-Once a `LoadPlan` exists, `assignBases base lp` is total: it stacks
+Once a `Layout` exists, `assignBases base lp` is total: it stacks
 each elf by `alignUp objectSpan 0x1000` from the IO-supplied base.
 The closed-form bound `assignBases_at_toNat` feeds
 `Materialize.BasedPlan.bases_at_toNat`.
@@ -30,7 +30,7 @@ Spec: gabi 07 § Program Header (page-aligned mmap views, base
 assignment, span over loadable segments).
 -/
 
-import LeanLoad.Plan.SegmentPlan
+import LeanLoad.Plan.SegmentLayout
 
 namespace LeanLoad.Plan
 
@@ -80,17 +80,17 @@ theorem UInt64.toNat_max (a b : UInt64) :
     is ≤ the next one's `pageVaddr`. Base-free; translation
     invariant. Same shape as `Elaborate.Sorted`, but on the
     page-aligned ranges. -/
-def Sorted (segs : Array (SegmentPlan n)) : Prop :=
+def Sorted (segs : Array (SegmentLayout n)) : Prop :=
   ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
     i < j → segs[i].pageEndAddr ≤ segs[j].pageVaddr
 
-instance (segs : Array (SegmentPlan n)) : Decidable (Sorted segs) := by
+instance (segs : Array (SegmentLayout n)) : Decidable (Sorted segs) := by
   unfold Sorted; infer_instance
 
 -- ============================================================================
--- ElfPlan n — one elf's SegmentPlans + advance + cross-segment bounds.
+-- ElfLayout n — one elf's SegmentLayouts + advance + cross-segment bounds.
 -- Per-segment bounds (pageEnd_lt, fileOverlay_le_pageLength, …) live
--- on each `SegmentPlan`; `ElfPlan` only carries the genuinely
+-- on each `SegmentLayout`; `ElfLayout` only carries the genuinely
 -- cross-segment / per-elf properties.
 -- ============================================================================
 
@@ -103,10 +103,10 @@ instance (segs : Array (SegmentPlan n)) : Decidable (Sorted segs) := by
     Construction (`ofElf`) is fallible: it fails when the page-
     aligned non-overlap validation rejects the elf, or if the
     `advance` computation would wrap UInt64 (impossible on Linux). -/
-structure ElfPlan (n : Nat) where
+structure ElfLayout (n : Nat) where
   elf            : Elf
   /-- Parallel to `elf.segments`, lifted to the loader view + relocs. -/
-  segments       : Array (SegmentPlan n)
+  segments       : Array (SegmentLayout n)
   /-- Per-elf cursor advance: at least `alignUp (max pageEndAddr) 0x1000`,
       possibly more if the no-wrap dance demands. The reservation
       reserves exactly `advance` bytes per elf via `assignBases`. -/
@@ -118,9 +118,9 @@ structure ElfPlan (n : Nat) where
   pageEndAddr_le_advance : ∀ (i : Nat) (h : i < segments.size),
     segments[i].pageEndAddr.toNat ≤ advance.toNat
 
-namespace ElfPlan
+namespace ElfLayout
 
-/-- Build an `ElfPlan n`, validating page-aligned non-overlap.
+/-- Build an `ElfLayout n`, validating page-aligned non-overlap.
     `Elaborate.Sorted` and `Elaborate.NonOverlap` are on raw vaddrs;
     after page-rounding, small-alignment edge cases can collapse two
     segments onto the same page (modern toolchains never emit this,
@@ -129,11 +129,11 @@ namespace ElfPlan
     Reloc planning happens here too: each segment's `relocs` field is
     filled by `Reloc.planSegment`. -/
 def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
-    (objectIdx : Fin elfs.size) : Except String (ElfPlan elfs.size) :=
+    (objectIdx : Fin elfs.size) : Except String (ElfLayout elfs.size) :=
   let e := elfs[objectIdx]
-  let segs : Array (SegmentPlan elfs.size) :=
+  let segs : Array (SegmentLayout elfs.size) :=
     e.segments.map fun s =>
-      SegmentPlan.ofSegmentCore elfs.size s
+      SegmentLayout.ofSegmentCore elfs.size s
         (Reloc.planSegment elfs rt objectIdx s)
   if h_sorted : Sorted segs then
     let objectSpan : UInt64 := segs.foldl (init := 0) fun acc sp =>
@@ -144,7 +144,7 @@ def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
         segs[i].pageEndAddr.toNat ≤ 2 ^ 48 := by
       intro i h_lt
       have h_lt_e : i < e.segments.size := h_size_eq ▸ h_lt
-      have h_eq : segs[i]'h_lt = SegmentPlan.ofSegmentCore elfs.size
+      have h_eq : segs[i]'h_lt = SegmentLayout.ofSegmentCore elfs.size
           (e.segments[i]'h_lt_e)
           (Reloc.planSegment elfs rt objectIdx (e.segments[i]'h_lt_e)) := by
         show (e.segments.map _)[i]'h_lt = _
@@ -152,30 +152,30 @@ def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
       rw [h_eq]
       -- pageEndAddr.toNat ≤ vaddr + memsz + ea, and that's < 2^48.
       have h_addr := (e.segments[i]'h_lt_e).addrBound
-      have h_ea := SegmentPlan.effectiveAlign_le_succ
+      have h_ea := SegmentLayout.effectiveAlign_le_succ
         (e.segments[i]'h_lt_e).align
       have h_2_48 : (2:Nat)^48 < 2^64 := by decide
       -- pageEndAddr = pageVaddr + pageLength = alignUp (vaddr + memsz) ea (toNat).
-      show ((SegmentPlan.ofSegmentCore _ _ _).pageVaddr +
-            (SegmentPlan.ofSegmentCore _ _ _).pageLength).toNat ≤ _
-      have h_pl := (SegmentPlan.ofSegmentCore elfs.size
+      show ((SegmentLayout.ofSegmentCore _ _ _).pageVaddr +
+            (SegmentLayout.ofSegmentCore _ _ _).pageLength).toNat ≤ _
+      have h_pl := (SegmentLayout.ofSegmentCore elfs.size
         (e.segments[i]'h_lt_e)
         (Reloc.planSegment elfs rt objectIdx
           (e.segments[i]'h_lt_e))).pageEnd_lt
-      have h_vm_le := (SegmentPlan.ofSegmentCore elfs.size
+      have h_vm_le := (SegmentLayout.ofSegmentCore elfs.size
         (e.segments[i]'h_lt_e)
         (Reloc.planSegment elfs rt objectIdx
           (e.segments[i]'h_lt_e))).vaddr_memsz_le_pageEnd
-      simp only [SegmentPlan.ofSegmentCore_segment] at h_vm_le
+      simp only [SegmentLayout.ofSegmentCore_segment] at h_vm_le
       rw [UInt64.toNat_add, Nat.mod_eq_of_lt h_pl]
       -- now goal: pageVaddr.toNat + pageLength.toNat ≤ 2^48
       -- We know vaddr + memsz ≤ pageVaddr + pageLength.
       -- And pageVaddr ≤ vaddr (alignDown). So pageLength = pageEnd - pageVaddr,
       -- pageEnd = alignUp (vaddr + memsz) ea ≤ vaddr + memsz + ea < 2^48.
-      simp only [SegmentPlan.ofSegmentCore_pageVaddr,
-                 SegmentPlan.ofSegmentCore_pageLength]
-      rw [SegmentPlan.pageLength_toNat]
-      have h_au_le := SegmentPlan.alignUp_vm_le (e.segments[i]'h_lt_e)
+      simp only [SegmentLayout.ofSegmentCore_pageVaddr,
+                 SegmentLayout.ofSegmentCore_pageLength]
+      rw [SegmentLayout.pageLength_toNat]
+      have h_au_le := SegmentLayout.alignUp_vm_le (e.segments[i]'h_lt_e)
       have h_ad_le : (alignDown (e.segments[i]'h_lt_e).vaddr
                        (effectiveAlign (e.segments[i]'h_lt_e).align)).toNat ≤
                      (e.segments[i]'h_lt_e).vaddr.toNat :=
@@ -233,18 +233,18 @@ def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
           segmentsSorted := h_sorted,
           pageEndAddr_le_advance := h_bound }
   else
-    .error "ElfPlan.ofElf: PT_LOAD page-aligned ranges overlap"
+    .error "ElfLayout.ofElf: PT_LOAD page-aligned ranges overlap"
 
-end ElfPlan
+end ElfLayout
 
 -- ============================================================================
--- Cumulative offset (free function over `Array (ElfPlan n)`) — sum of
+-- Cumulative offset (free function over `Array (ElfLayout n)`) — sum of
 -- `advance.toNat` for `k < n`, in `Nat` to dodge UInt64 wrap. The
 -- canonical Nat-side anchor for every safety bound.
 -- ============================================================================
 
 /-- Sum of `(elfs[k].advance).toNat` for `k < n`, in `Nat`. -/
-def cumOffset (elfs : Array (ElfPlan m)) : Nat → Nat
+def cumOffset (elfs : Array (ElfLayout m)) : Nat → Nat
   | 0 => 0
   | n + 1 =>
     if h : n < elfs.size then
@@ -252,16 +252,16 @@ def cumOffset (elfs : Array (ElfPlan m)) : Nat → Nat
     else
       cumOffset elfs n
 
-@[simp] theorem cumOffset_zero (elfs : Array (ElfPlan m)) :
+@[simp] theorem cumOffset_zero (elfs : Array (ElfLayout m)) :
     cumOffset elfs 0 = 0 := rfl
 
-theorem cumOffset_succ_of_lt (elfs : Array (ElfPlan m)) {n : Nat}
+theorem cumOffset_succ_of_lt (elfs : Array (ElfLayout m)) {n : Nat}
     (h : n < elfs.size) :
     cumOffset elfs (n + 1) = cumOffset elfs n + (elfs[n].advance).toNat := by
   show (if h : n < elfs.size then _ + _ else _) = _
   rw [dif_pos h]
 
-theorem cumOffset_mono (elfs : Array (ElfPlan m)) {a b : Nat} (h : a ≤ b) :
+theorem cumOffset_mono (elfs : Array (ElfLayout m)) {a b : Nat} (h : a ≤ b) :
     cumOffset elfs a ≤ cumOffset elfs b := by
   induction b with
   | zero =>
@@ -279,7 +279,7 @@ theorem cumOffset_mono (elfs : Array (ElfPlan m)) {a b : Nat} (h : a ≤ b) :
       exact Nat.le_refl _
 
 -- ============================================================================
--- LoadPlan n — every elf's plan + the cumulative reservation span.
+-- Layout n — every elf's plan + the cumulative reservation span.
 -- The `totalSpan_eq` field connects the UInt64 `totalSpan` to the
 -- Nat `cumOffset full` so safety proofs can chain via `Nat`
 -- arithmetic. The `elfs_size` field ties the elf array length to `n`
@@ -290,8 +290,8 @@ theorem cumOffset_mono (elfs : Array (ElfPlan m)) {a b : Nat} (h : a ≤ b) :
     `Reserve.run` at the IO boundary; `totalSpan_eq` says it equals
     the `cumOffset` Nat sum (no UInt64 wrap during construction).
     `elfs_size` ties the elf array length to `n`. -/
-structure LoadPlan (n : Nat) where
-  elfs      : Array (ElfPlan n)
+structure Layout (n : Nat) where
+  elfs      : Array (ElfLayout n)
   /-- The elf array has exactly `n` entries — every consumer indexes
       totally with `Fin n`. -/
   elfs_size : elfs.size = n
@@ -301,61 +301,61 @@ structure LoadPlan (n : Nat) where
       Discharged in `ofElfs` by checking the sum fits in UInt64. -/
   totalSpan_eq : totalSpan.toNat = cumOffset elfs elfs.size
 
-namespace LoadPlan
+namespace Layout
 
 /-- Convenience: `lp.cumOffset n` over the elf array. -/
-def cumOffset (lp : LoadPlan n) (k : Nat) : Nat :=
+def cumOffset (lp : Layout n) (k : Nat) : Nat :=
   _root_.LeanLoad.Plan.cumOffset lp.elfs k
 
 /-- Tail-recursive accumulator that lifts each `Elf` through
-    `ElfPlan.ofElf` while maintaining `acc.size = i`. -/
-private def buildElfPlans (elfs : Array Elf) (rt : Resolve.Table elfs.size)
+    `ElfLayout.ofElf` while maintaining `acc.size = i`. -/
+private def buildElfLayouts (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (i : Nat) (h : i ≤ elfs.size)
-    (acc : { a : Array (ElfPlan elfs.size) // a.size = i }) :
-    Except String { a : Array (ElfPlan elfs.size) // a.size = elfs.size } :=
+    (acc : { a : Array (ElfLayout elfs.size) // a.size = i }) :
+    Except String { a : Array (ElfLayout elfs.size) // a.size = elfs.size } :=
   if heq : i = elfs.size then
     .ok ⟨acc.val, heq ▸ acc.property⟩
   else
     have hi : i < elfs.size := Nat.lt_of_le_of_ne h heq
-    match ElfPlan.ofElf elfs rt ⟨i, hi⟩ with
+    match ElfLayout.ofElf elfs rt ⟨i, hi⟩ with
     | .error e => .error e
     | .ok ep =>
-      let acc' : { a : Array (ElfPlan elfs.size) // a.size = i + 1 } :=
+      let acc' : { a : Array (ElfLayout elfs.size) // a.size = i + 1 } :=
         ⟨acc.val.push ep, by rw [Array.size_push, acc.property]⟩
-      buildElfPlans elfs rt (i + 1) hi acc'
+      buildElfLayouts elfs rt (i + 1) hi acc'
 termination_by elfs.size - i
 
 /-- Build the full base-free plan from raw elfs + resolve table. Each
-    elf goes through `ElfPlan.ofElf`, which validates page-aligned
+    elf goes through `ElfLayout.ofElf`, which validates page-aligned
     non-overlap and plans each segment's relocations. Computes the
     `Nat` cumulative span and checks it fits in UInt64 so the
-    resulting `LoadPlan` carries the `totalSpan_eq` invariant. -/
+    resulting `Layout` carries the `totalSpan_eq` invariant. -/
 def ofElfs (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
-    Except String (LoadPlan elfs.size) := do
-  let elfPlans ← buildElfPlans elfs rt 0 (Nat.zero_le _) ⟨#[], by simp⟩
+    Except String (Layout elfs.size) := do
+  let elfLayouts ← buildElfLayouts elfs rt 0 (Nat.zero_le _) ⟨#[], by simp⟩
   let totalNat :=
-    _root_.LeanLoad.Plan.cumOffset elfPlans.val elfPlans.val.size
+    _root_.LeanLoad.Plan.cumOffset elfLayouts.val elfLayouts.val.size
   if h : totalNat < 2 ^ 64 then
     return {
-      elfs := elfPlans.val,
-      elfs_size := elfPlans.property,
+      elfs := elfLayouts.val,
+      elfs_size := elfLayouts.property,
       totalSpan := UInt64.ofNat totalNat,
       totalSpan_eq := by
         show totalNat % 2 ^ 64 = _
         exact Nat.mod_eq_of_lt h }
   else
-    .error s!"LoadPlan.ofElfs: cumulative span {totalNat} exceeds UInt64"
+    .error s!"Layout.ofElfs: cumulative span {totalNat} exceeds UInt64"
 
-/-- Sized variant of `ofElfs` — returns `LoadPlan n` for any `n` equal
+/-- Sized variant of `ofElfs` — returns `Layout n` for any `n` equal
     to `elfs.size`. The `subst h_size; exact ofElfs elfs rt` body
     absorbs the `▸` cast at the wrapper, so `Plan.ofObjects` can write
-    `LoadPlan.ofElfsSized elfs h_size rt : LoadPlan objs.val.size`
+    `Layout.ofElfsSized elfs h_size rt : Layout objs.val.size`
     without an outer rewrite. -/
 def ofElfsSized {n : Nat} (elfs : Array Elf) (h_size : elfs.size = n)
-    (rt : Resolve.Table n) : Except String (LoadPlan n) := by
+    (rt : Resolve.Table n) : Except String (Layout n) := by
   subst h_size; exact ofElfs elfs rt
 
-end LoadPlan
+end Layout
 
 -- ============================================================================
 -- Base assignment via `Array.ofFn` + `cumOffset`. Per-index lemma
@@ -363,13 +363,13 @@ end LoadPlan
 -- definition.
 -- ============================================================================
 
-/-- Stack each elf at `base + cumOffset i`. Total: every `LoadPlan`
+/-- Stack each elf at `base + cumOffset i`. Total: every `Layout`
     produces a valid bases array of size `n`. -/
-def assignBases (base : UInt64) (lp : LoadPlan n) : Array UInt64 :=
+def assignBases (base : UInt64) (lp : Layout n) : Array UInt64 :=
   Array.ofFn fun (i : Fin lp.elfs.size) =>
     base + UInt64.ofNat (cumOffset lp.elfs i.val)
 
-theorem assignBases_size (base : UInt64) (lp : LoadPlan n) :
+theorem assignBases_size (base : UInt64) (lp : Layout n) :
     (assignBases base lp).size = lp.elfs.size := by
   unfold assignBases; simp
 
@@ -377,7 +377,7 @@ theorem assignBases_size (base : UInt64) (lp : LoadPlan n) :
     the global no-wrap precondition `rsvAddr.toNat + lp.totalSpan.toNat
     < 2^64` (which `Reserve.noWrap` discharges). Falls out of
     `Array.getElem_ofFn` plus a small ofNat reduction. -/
-theorem assignBases_at_toNat (base : UInt64) (lp : LoadPlan n)
+theorem assignBases_at_toNat (base : UInt64) (lp : Layout n)
     (h_no_wrap : base.toNat + lp.totalSpan.toNat < 2 ^ 64)
     (i : Nat) (h : i < lp.elfs.size) :
     ((assignBases base lp)[i]'(by rw [assignBases_size]; exact h)).toNat =

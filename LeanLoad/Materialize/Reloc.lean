@@ -5,7 +5,7 @@ Phase 2 of 2 in the relocation pipeline:
 
   1. **Plan** (`Plan/Reloc.lean`) — `RawRela → RelocEntry n seg`. Pure,
      base-free; resolves the symbol reference and stores the result on
-     each `SegmentPlan.relocs`.
+     each `SegmentLayout.relocs`.
   2. **Bake** (this file) — `RelocEntry n seg + base → Option Store`.
      Looks up the symbol's absolute value `S = base[target] +
      symtab[target].value` (or 0 when `target = noSymbol`/

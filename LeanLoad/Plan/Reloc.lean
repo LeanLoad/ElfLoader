@@ -8,7 +8,7 @@ Phase 1 of 2 in the relocation pipeline:
      `noSymbol`, `weakUnresolved`, `resolved ref`) and bundles it with
      the rela's `type` / `r_offset` / `addend` and the inherited
      `coversRela` witness. *Base-free*: no field knows about an mmap
-     base. Result lives on each `SegmentPlan.relocs`.
+     base. Result lives on each `SegmentLayout.relocs`.
   2. **Bake** (`Materialize/Reloc.lean`) — `RelocEntry n seg + base →
      Option Store`. Computes the absolute place and symbol value once
      a reservation base is chosen, then turns each entry into a
@@ -29,8 +29,8 @@ Key types:
     structurally (via `BasedPlan.segment_storeRange_in_rsv`).
 
 This file owns `RelocEntry` and the per-rela planner (`planOne`).
-The per-segment planner is called from `Plan/SegmentPlan.lean`'s
-`ofSegment` — each `SegmentPlan` carries its own `relocs` array,
+The per-segment planner is called from `Plan/SegmentLayout.lean`'s
+`ofSegment` — each `SegmentLayout` carries its own `relocs` array,
 so there's no parallel relocation tree to construct or zip later.
 -/
 
@@ -118,8 +118,8 @@ structure RelocEntry (n : Nat) (seg : Segment) where
       • `symtab[symIdx]? = none` — malformed ELF whose rela's `r.sym`
         index exceeds the dynsym size. Could be ruled out structurally
         by adding `r.sym.toNat < symtab.size` to the `Segment.rela` /
-        `jmprel` subtypes; cascade through Segment/SegmentPlan/ElfPlan.
-      • `.strongUndef` — `Plan.ofObjects` rejects load when any
+        `jmprel` subtypes; cascade through Segment/SegmentLayout/ElfLayout.
+      • `.strongUndef` — `Plan.ofObjects` rejects layout when any
         strong-undef remains, but the *type* of `Resolve.Table` does
         not yet witness "no strongUndef". A `noStrongUndef` field
         threaded through that rejection would let the match drop
@@ -155,7 +155,7 @@ def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
 
 /-- Plan one segment's relas (then jmprel — both go through the same
     formula at materialize time). Used by `Plan.Layout` when
-    constructing each `SegmentPlan`. The `coversRela` witness on each
+    constructing each `SegmentLayout`. The `coversRela` witness on each
     `seg.rela` / `seg.jmprel` entry is threaded into the planned
     `RelocEntry`'s `covered` field. -/
 def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)

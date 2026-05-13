@@ -27,7 +27,7 @@ stage re-checks it — the witness travels in the type.
 
   • Plan — pure, base-free. Takes `ObjectList`, produces:
       · `Resolve.Table` — symbol BFS results (no strong-undef).
-      · `LoadPlan` — per-elf `SegmentPlan`s with page math +
+      · `Layout` — per-elf `SegmentLayout`s with page math +
         per-segment relocs, plus the cumulative span (`totalSpan`).
         Carries the no-wrap invariants needed for materialize-time
         safety proofs (`pageEnd_lt`, `fileOverlay_le`,
@@ -62,7 +62,7 @@ import LeanLoad.Discover.Plan
 import LeanLoad.Discover.IO
 
 import LeanLoad.Plan.Align
-import LeanLoad.Plan.SegmentPlan
+import LeanLoad.Plan.SegmentLayout
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Reloc
