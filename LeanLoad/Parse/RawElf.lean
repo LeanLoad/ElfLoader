@@ -86,12 +86,12 @@ end Example
 -- ============================================================================
 
 /-- The raw byte-decode of an ELF file. Output of `parse`, input to
-    `Elaborate.elaborate`. -/
+    `Elaborate.elaborate`. The `.dynamic` array is fully consumed
+    inside `parse` to derive every other field, so it isn't carried
+    forward — `Elaborate` and downstream stages never look at it. -/
 structure RawElf where
   header  : RawEhdr
   phdrs   : Array RawPhdr
-  /-- The `.dynamic` array, empty if no `PT_DYNAMIC`. -/
-  dyn     : Array RawDyn
   /-- The dynamic string table (`DT_STRTAB`), empty if absent. -/
   strtab  : RawStrtab
   /-- Dynamic symbol table (`DT_SYMTAB`). Empty if no hash entry
@@ -235,7 +235,7 @@ def parse (h : Runtime.FileHandle) : IO RawElf := do
   let finiArr  ← parseSizedTable 8           h phdrs dyn DT_FINI_ARRAY DT_FINI_ARRAYSZ "DT_FINI_ARRAY"
 
   return {
-    header, phdrs, dyn, strtab, symtab, needed, soname, runpath,
+    header, phdrs, strtab, symtab, needed, soname, runpath,
     rela, jmprel, initArr, finiArr
   }
 
