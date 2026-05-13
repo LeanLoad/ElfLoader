@@ -85,7 +85,8 @@ def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
   -- Don't destructure `setupSlots` — keep the projection form so the
   -- characterisation lemmas (`setupSlots_*_eq`) align on the goal.
   let slots := setupSlots sp handle base
-  let relocs : Array (Reloc.RelocEntry elfs.size sp.segment) := h_n_eq ▸ sp.relocs
+  let relocs : Array (Plan.Reloc.RelocEntry elfs.size sp.segment) :=
+    h_n_eq ▸ sp.relocs
   -- Use `match h_bake : ... with` to bind the bakeReloc equation so the
   -- storesInRange proof can invoke `bakeSegmentRelocs_storesInvariant`
   -- with the literal equation as `h_out`.

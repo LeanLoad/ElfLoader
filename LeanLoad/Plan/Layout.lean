@@ -64,7 +64,7 @@ namespace LeanLoad.Plan
 open LeanLoad
 open LeanLoad.Parse
 open LeanLoad.Elaborate (Elf Segment)
-open LeanLoad.Reloc (RelocEntry)
+open LeanLoad.Plan.Reloc (RelocEntry)
 
 -- ============================================================================
 -- Raw page-arithmetic helpers — about `Segment` + alignDown/alignUp

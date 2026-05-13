@@ -23,7 +23,7 @@ import LeanLoad.Elaborate.Reloc
 namespace LeanLoad.Materialize
 
 open LeanLoad
-open LeanLoad.Reloc (RelocEntry)
+open LeanLoad.Plan.Reloc (RelocEntry)
 open LeanLoad.Elaborate (Elf Segment Formula FormulaInputs FormulaResult PatchSize)
 
 -- ============================================================================
@@ -60,7 +60,7 @@ private def fitsLow32 (v : UInt64) : Bool :=
     valid input for every reloc type. -/
 private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     (h_bases : bases.size = elfs.size)
-    (target : Reloc.RelocTarget elfs.size) : UInt64 :=
+    (target : Plan.Reloc.RelocTarget elfs.size) : UInt64 :=
   match target.symRef? with
   | none => 0
   | some ref =>

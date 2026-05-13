@@ -27,7 +27,7 @@ Address resolution (turn the order + bases + initArr into the flat
 import LeanLoad.Discover.Plan
 import LeanLoad.Elaborate.Elf
 
-namespace LeanLoad.Init
+namespace LeanLoad.Plan.Init
 
 open LeanLoad
 open LeanLoad.Discover
@@ -118,4 +118,4 @@ section Example
 #guard (computeOrder #[#[1, 2], #[3], #[3], #[]] 4).map (·.val) = #[3, 1, 2, 0]
 end Example
 
-end LeanLoad.Init
+end LeanLoad.Plan.Init

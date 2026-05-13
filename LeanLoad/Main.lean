@@ -119,7 +119,7 @@ def debug (path : String) : IO Unit := do
   let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
 
   IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
-  let providerName (r : Resolve.SymRef plan.objects.val.size) : String :=
+  let providerName (r : Plan.Resolve.SymRef plan.objects.val.size) : String :=
     plan.objects.val[r.objectIdx.val] |>.name
   let nameW := plan.resolve.entries.foldl (init := 0) (fun w (u, _) => max w u.name.length)
   let providerW := plan.resolve.entries.foldl (init := "<unresolved>".length) fun w (_, res) =>

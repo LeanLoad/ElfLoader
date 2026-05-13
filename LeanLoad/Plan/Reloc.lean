@@ -31,7 +31,7 @@ import LeanLoad.Plan.Resolve
 import LeanLoad.Elaborate.Reloc
 import LeanLoad.Elaborate.Elf
 
-namespace LeanLoad.Reloc
+namespace LeanLoad.Plan.Reloc
 
 open LeanLoad
 open LeanLoad.Parse (RawRela)
@@ -171,4 +171,4 @@ def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     acc := acc.push (planOne elfs rt objectIdx seg entry.val entry.property)
   return acc
 
-end LeanLoad.Reloc
+end LeanLoad.Plan.Reloc

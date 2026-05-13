@@ -29,7 +29,7 @@ import LeanLoad.Parse.Structs
 import LeanLoad.Elaborate.Elf
 import Std.Data.HashMap
 
-namespace LeanLoad.Resolve
+namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
 open LeanLoad.Parse
@@ -149,4 +149,4 @@ def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
       symIdx := symIdx + 1
   return { entries, index }
 
-end LeanLoad.Resolve
+end LeanLoad.Plan.Resolve
