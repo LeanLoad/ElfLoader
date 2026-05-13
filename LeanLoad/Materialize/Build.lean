@@ -45,6 +45,85 @@ open LeanLoad.Elaborate (Elf Formula)
 -- Builder: BasedPlan → LoadOps tree.
 -- ============================================================================
 
+-- ============================================================================
+-- buildSegmentSafe — assemble one segment's `SegmentOps` together
+-- with its `SegmentSafe` witness, in one shot. The witness is built
+-- by chaining `setupSlots_*_eq` (closed forms of the slots) with the
+-- matching `BasedPlan.segment_*_in_rsv` theorems. Stores come from
+-- `bakeSegmentRelocs`; their bound is `bakeSegmentRelocs_storesInvariant`
+-- with the universal predicate "byteLen ≤ 8 ∧ addr = base +
+-- entry.r_offset for some entry whose `covered` witness gives
+-- `segment_storeRange_in_rsv`".
+-- ============================================================================
+
+/-- Build one `SegmentOps` + its `SegmentSafe` witness. The only
+    `Except` failure source is `bakeSegmentRelocs`'s 32-bit overflow
+    check — safety itself is established structurally. -/
+def buildSegmentSafe (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
+    (j : Nat) (h_j : j < (bp.plan.load.elfs[i]'(by
+      rw [bp.plan.load.elfs_size]; exact h_i)).segments.size) :
+    Except String { so : SegmentOps bp.n //
+      SegmentSafe bp.rsv.addr bp.rsv.len so } := do
+  have h_lp_i : i < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i
+  let plan := bp.plan
+  let elfs := plan.objectElfs
+  let n := bp.n
+  have h_elfs : elfs.size = n := plan.objectElfs_size
+  have h_bases : bp.bases.size = elfs.size := bp.bases_size.trans h_elfs.symm
+  have h_n_eq : n = elfs.size := h_elfs.symm
+  let ep := plan.load.elfs[i]'h_lp_i
+  let sp := ep.segments[j]'h_j
+  let handle := (plan.objects.val[i]'h_i).handle
+  let base := bp.bases[i]'(by rw [bp.bases_size]; exact h_i)
+  -- Don't destructure `setupSlots` — keep the projection form so the
+  -- characterisation lemmas (`setupSlots_*_eq`) align on the goal.
+  let slots := setupSlots sp handle base
+  let relocs : Array (Reloc.RelocEntry elfs.size sp.segment) := h_n_eq ▸ sp.relocs
+  -- Use `match h_bake : ... with` to bind the bakeReloc equation so the
+  -- storesInRange proof can invoke `bakeSegmentRelocs_storesInvariant`
+  -- with the literal equation as `h_out`.
+  match h_bake : bakeSegmentRelocs plan.formula elfs bp.bases h_bases base
+                   sp.segment relocs with
+  | .error e => .error e
+  | .ok stores =>
+    let so : SegmentOps n :=
+      { plan := sp, mmap := slots.1, zero := slots.2.1,
+        stores, mprotect := slots.2.2 }
+    let h_safe : SegmentSafe bp.rsv.addr bp.rsv.len so := by
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · -- mmapInRange
+        intro m h_m
+        have ⟨h_addr, h_len⟩ := setupSlots_mmap_eq sp handle base m h_m
+        rw [h_addr, h_len]
+        exact bp.segment_mmapRange_in_rsv i h_i j h_j
+      · -- zeroInRange
+        intro z h_z
+        have ⟨h_addr, h_len⟩ := setupSlots_zero_eq sp handle base z h_z
+        rw [h_addr, h_len]
+        exact bp.segment_zeroRange_in_rsv i h_i j h_j
+      · -- storesInRange: every store came from some entry via `bakeReloc`,
+        -- so `addr = base + entry.r_offset` and `byteLen ≤ 8`; combine
+        -- with `entry.covered` and `segment_storeRange_in_rsv`.
+        intro s h_s
+        refine bakeSegmentRelocs_storesInvariant plan.formula elfs bp.bases
+          h_bases base sp.segment relocs
+          (fun s' => Runtime.InRange s'.addr s'.byteLen bp.rsv.addr bp.rsv.len)
+          ?_ stores h_bake s h_s
+        intro e s' h_br
+        obtain ⟨h_addr, _h_size⟩ := bakeReloc_ok_some plan.formula elfs bp.bases
+          h_bases base sp.segment e s' h_br
+        have h_byteLen := bakeReloc_byteLen_le_8 plan.formula elfs bp.bases
+          h_bases base sp.segment e s' h_br
+        rw [h_addr]
+        exact bp.segment_storeRange_in_rsv i h_i j h_j e.r_offset e.covered
+          s'.byteLen h_byteLen
+      · -- mprotectInRange — mprotect is at (base + pageVaddr, pageLength).
+        have ⟨h_addr, h_len⟩ := setupSlots_mprotect_eq sp handle base
+        rw [show so.mprotect = slots.2.2 from rfl, h_addr, h_len]
+        exact bp.segment_mprotectRange_in_rsv i h_i j h_j
+    .ok ⟨so, h_safe⟩
+
 /-- Internal: assemble the unwitnessed `LoadOps bp.n` tree from a
     `BasedPlan`. Used by `build`, which then runs the safety
     predicates over the result. -/
