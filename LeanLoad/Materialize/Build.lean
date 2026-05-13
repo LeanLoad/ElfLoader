@@ -124,9 +124,19 @@ def buildSegmentSafe (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
         exact bp.segment_mprotectRange_in_rsv i h_i j h_j
     .ok ⟨so, h_safe⟩
 
-/-- Internal: assemble the unwitnessed `LoadOps bp.n` tree from a
-    `BasedPlan`. Used by `build`, which then runs the safety
-    predicates over the result. -/
+-- ============================================================================
+-- `buildElfSafe` / `buildLoadSafe` — assemble multi-segment / multi-elf
+-- views with disjointness witnesses. Residual: needs a characterisation
+-- of `Array.mapFinIdxM`'s `getElem` (i.e., the (j, h_j)-th element of
+-- the output is the result of calling the supplied function at index
+-- j) to connect `segsW[j].val.mmap` back to `(setupSlots sp_j _ _).1`
+-- so `within_elf_mmapRange_disjoint` applies. Lean core has
+-- `Array.getElem_mapFinIdxM` only when the monad is Id; under Except
+-- the same shape exists in principle but needs an explicit lemma.
+-- The mechanical chain through `setupSlots_mmap_eq` +
+-- `within_elf_mmapRange_disjoint` is already proven — the remaining
+-- piece is the index-to-source link.
+-- ============================================================================
 private def buildCore (bp : BasedPlan) :
     Except String (LoadOps bp.n) := do
   let plan := bp.plan
