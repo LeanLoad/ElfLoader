@@ -86,35 +86,48 @@ structure LoadedObject where
   elf  : Elaborate.Elf
 
 /-- Output of `Discover` — the loaded objects in BFS discovery order
-    with `main` at index 0. Two invariants live in the type:
+    with `main` at index 0. Carries the structural invariants needed
+    by every downstream consumer:
 
       * `sizePos` — `0 < val.size`. `discover` seeds with main and
         BFS only pushes, so non-emptiness holds by construction.
         Makes `main` total (no `Option`).
 
       * `namesNodup` — names are pairwise distinct. The BFS dedups
-        via canonical SONAME before pushing. `Init.buildDeps` relies
-        on this so its `name → index` map is injective.
+        via canonical SONAME before pushing.
+
+      * `deps` — for each object index `i`, the indices of objects it
+        depends on. Recorded directly during BFS (the source/target
+        pair is known at edge-creation time), so it survives any
+        mismatch between `DT_NEEDED` strings and canonical
+        (`DT_SONAME` / basename) names. `Init.order` consumes this
+        directly — no name-based re-derivation, no silent drops.
+
+      * `depsSize` — `deps.size = val.size`. Maintained by every push.
+
+      * `depsBounds` — every recorded edge target is a valid index
+        into `val`. Maintained because edges only originate from
+        `findLoadedIdx` (iterates `[:objs.size]`) or from the index
+        about to be pushed (always `< objs.size + 1`).
 
     Access pattern: callers peel via `g.val` to use Array methods
-    (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). The
-    structure wrapper is purposefully visible — every `.val` is a
-    reminder that we're stripping a load-bearing invariant. Use
-    `g.main` whenever main is what you want, not `g.val[0]?`.
-
-    Dep edges are *not* stored. The only downstream consumer is
-    `LeanLoad.Init.computeOrder` (init/fini), which re-derives them
-    from `obj.elf.needed`. -/
+    (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). Use `g.main`
+    whenever main is what you want, not `g.val[0]?`. -/
 structure ObjectList where
   /-- The loaded objects, in BFS discovery order. Main at index 0. -/
   val        : Array LoadedObject
+  /-- Per-object dependency indices, recorded during BFS. -/
+  deps       : Array (Array Nat)
   /-- Non-emptiness — `0 < val.size`. Witnessed by `discover` seeding
       with `main` before entering the BFS loop. -/
   sizePos    : 0 < val.size
   /-- Names pairwise distinct. Witnessed by the BFS `alreadyLoaded`
-      dedup check; used by `Init.buildDeps` for an injective
-      `name → index` map. -/
+      dedup check. -/
   namesNodup : (val.map (·.name)).toList.Nodup
+  /-- `deps` is parallel to `val`. -/
+  depsSize   : deps.size = val.size
+  /-- Every recorded edge target is a valid index. -/
+  depsBounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < val.size
 
 namespace ObjectList
 
@@ -141,41 +154,69 @@ def canonicalName (path : String) (elf : Elaborate.Elf) : String :=
 
 /-- The dedup primitive: is some object already loaded under this name?
     Pure; the BFS loop calls it before resolving / parsing each
-    `DT_NEEDED` entry, and a second time after canonicalisation.
-    Soundness lemma: `alreadyLoaded_iff` in `Thm.Discover`. -/
+    `DT_NEEDED` entry, and a second time after canonicalisation. -/
 def alreadyLoaded (objs : Array LoadedObject) (name : String) : Bool :=
   objs.any (·.name == name)
+
+/-- Linear search for an object by name. Defined via `Array.findIdx?`
+    so the size bound (`findLoadedIdx_lt` below) drops out of the core
+    `Array.of_findIdx?_eq_some` characterisation. Used by the BFS to
+    record dep edges to already-loaded objects. -/
+def findLoadedIdx (objs : Array LoadedObject) (name : String) : Option Nat :=
+  objs.findIdx? (·.name == name)
+
+/-- The index returned by `findLoadedIdx` is `< objs.size`. -/
+theorem findLoadedIdx_lt (objs : Array LoadedObject) (name : String) {idx : Nat}
+    (h : findLoadedIdx objs name = some idx) : idx < objs.size := by
+  have h_match := Array.of_findIdx?_eq_some (xs := objs) (p := (·.name == name)) h
+  -- The match yields `objs[idx]? = some _` (else `false = true`).
+  match h_get : objs[idx]? with
+  | some _ =>
+    obtain ⟨h_lt, _⟩ := Array.getElem?_eq_some_iff.mp h_get
+    exact h_lt
+  | none =>
+    rw [h_get] at h_match
+    exact absurd h_match (by simp)
 
 -- ============================================================================
 -- Plan: per-step decision + state integration
 -- ============================================================================
 
-/-- One BFS work item: a `DT_NEEDED` soname, with the runpath of the
-    object that referenced it (used during search-path resolution). -/
-abbrev WorkItem := Option String × String
+/-- One BFS work item: a `DT_NEEDED` soname, with its `(sourceIdx, runpath)`
+    context — `sourceIdx` identifies the object whose `DT_NEEDED` produced
+    this item (so `discoverLoop` can record the dep edge once the target
+    is resolved); `runpath` carries the source's `DT_RUNPATH` for
+    search-path resolution. -/
+abbrev WorkItem := Nat × Option String × String
 
 /-- The result of one BFS step over `(objs, work)`. -/
 inductive StepResult where
   /-- Work queue empty: discovery is complete. -/
   | done
-  /-- Soname already loaded (by pre-resolve dedup): drop and continue. -/
-  | skip (rest : List WorkItem)
+  /-- Soname already loaded: drop the work item, but record the dep
+      edge `sourceIdx → targetIdx`. -/
+  | skip (sourceIdx targetIdx : Nat) (rest : List WorkItem)
   /-- Soname is new: needs IO to resolve to a path, open, and parse,
       then `integrate` the parsed result. -/
-  | resolve (sn : String) (rp : Option String) (rest : List WorkItem)
+  | resolve (sourceIdx : Nat) (sn : String) (rp : Option String)
+            (rest : List WorkItem)
 
-/-- Pure step: examine the work queue's head and decide what to do. -/
+/-- Pure step: examine the work queue's head and decide what to do.
+    The dedup check uses `findLoadedIdx` (returns the matching index
+    for the `.skip` branch's edge recording). -/
 def step (objs : Array LoadedObject) (work : List WorkItem) : StepResult :=
   match work with
-  | []              => .done
-  | (rp, sn) :: rest =>
-    if alreadyLoaded objs sn then .skip rest
-    else .resolve sn rp rest
+  | []                  => .done
+  | (src, rp, sn) :: rest =>
+    match findLoadedIdx objs sn with
+    | some tgt => .skip src tgt rest
+    | none     => .resolve src sn rp rest
 
-/-- New work items spawned by a freshly elaborated elf: one per
-    `DT_NEEDED` entry, tagged with the providing object's runpath. -/
-def workOfElf (elf : Elaborate.Elf) : List WorkItem :=
-  elf.needed.toList.map (fun n => (elf.runpath, n))
+/-- New work items spawned by a freshly elaborated elf at `sourceIdx`:
+    one per `DT_NEEDED` entry, tagged with the providing object's
+    runpath. -/
+def workOfElf (sourceIdx : Nat) (elf : Elaborate.Elf) : List WorkItem :=
+  elf.needed.toList.map (fun n => (sourceIdx, elf.runpath, n))
 
 -- ============================================================================
 -- Soundness theorems for the BFS dedup primitive.

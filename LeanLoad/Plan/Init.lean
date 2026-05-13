@@ -8,8 +8,10 @@ glibc / musl); any valid topological sort would be conformant.
 Reverse-BFS is *not* a valid topological sort on non-tree DAGs and
 would violate the spec.
 
-The dep edges are re-derived here from `obj.elf.needed` rather than
-stored in `ObjectList` — `Discover`'s job is the BFS, not init order.
+The dep edges live on `ObjectList.deps` — recorded by Discover BFS at
+edge-creation time, so the canonical-name dedup that converts
+`DT_NEEDED libfoo.so` → loaded `libfoo.so.1` cannot drop edges
+silently. `Init.order` just projects them and runs DFS post-order.
 
 `order : (g : ObjectList) → Array (Fin g.val.size)` returns
 Fin-indexed object indices so downstream consumers
@@ -24,34 +26,11 @@ Address resolution (turn the order + bases + initArr into the flat
 
 import LeanLoad.Discover.Plan
 import LeanLoad.Elaborate.Elf
-import Std.Data.HashMap
 
 namespace LeanLoad.Init
 
 open LeanLoad
 open LeanLoad.Discover
-
--- ============================================================================
--- Dep edges (re-derived from `obj.elf.needed`)
--- ============================================================================
-
-/-- Resolve each object's `DT_NEEDED` strings to indices in `objects`.
-    Builds a `name → index` map once (O(N)) so each lookup is O(1) on
-    average; total O(N + total NEEDED entries).
-
-    Names in a well-formed `ObjectList` are unique (the BFS dedups via
-    `alreadyLoaded`), so the map insertion order is irrelevant. A
-    `NEEDED` string with no matching object is silently dropped — the
-    BFS would only have failed to resolve it if we'd ignored a hard
-    error upstream, which `discover` doesn't. -/
-def buildDeps (objects : Array LoadedObject) : Array (Array Nat) :=
-  let nameToIdx : Std.HashMap String Nat := Id.run do
-    let mut m : Std.HashMap String Nat := ∅
-    for h : i in [:objects.size] do
-      m := m.insert objects[i].name i
-    return m
-  objects.map fun obj =>
-    obj.elf.needed.filterMap nameToIdx.get?
 
 -- ============================================================================
 -- DFS post-order.
@@ -110,11 +89,12 @@ def computeOrder (deps : Array (Array Nat)) (n : Nat) : Array (Fin n) :=
         order := Array.mkEmpty n }
     (dfs n deps 0 s).order
 
-/-- Init order over a `ObjectList`: builds dep edges, runs DFS
-    post-order. The returned indices are typed `Fin g.val.size` so
-    downstream consumers can index `lp.elfs` / `bases` totally. -/
+/-- Init order over an `ObjectList`: project the BFS-recorded
+    `g.deps` and run DFS post-order. The returned indices are typed
+    `Fin g.val.size` so downstream consumers can index `lp.elfs` /
+    `bases` totally. -/
 def order (g : ObjectList) : Array (Fin g.val.size) :=
-  computeOrder (buildDeps g.val) g.val.size
+  computeOrder g.deps g.val.size
 
 section Example
 -- Three-object DAG: 0 (main) → {1, 2}; 1 → {2}; 2 → ∅.
