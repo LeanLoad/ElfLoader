@@ -1,88 +1,127 @@
 # LeanLoad Design
 
 Verified ELF loader in Lean 4. The verified core is pure Lean; the
-syscall layer sits behind two small `@[extern]` modules.
+syscall layer sits behind one small `@[extern]` module
+(`LeanLoad/Runtime.lean`) plus C shims under `runtime/`.
 
 ## Stages
 
 Pipeline (one row per `--debug` section):
 
-| Stage        | Type | Input → Output                                                         |
-| ------------ | ---- | ---------------------------------------------------------------------- |
-| **Discover** | IO   | path → `LinkMap` (transitive `DT_NEEDED` walk; calls `Parse` per file) |
-| **Resolve**  | pure | `LinkMap` → resolution table (undef ref → providing object/symbol)     |
-| **Layout**   | pure | `LinkMap` → mmap layout + init/fini order                              |
-| **Map**      | IO   | layout → mmap'd regions × kernel-chosen bases                          |
-| **Reloc**    | pure | formula × bases × resolution → `Array Patch`                      |
-| **Apply**    | IO   | walk the writes; poke bytes into mmap'd memory                         |
-| **Exec**     | IO   | call constructors in init order; build kernel-style stack, jump to entry; no return |
+| Stage           | Type | Input → Output                                                                       |
+| --------------- | ---- | ------------------------------------------------------------------------------------ |
+| **Parse**       | IO   | `FileHandle` → `RawElf` (per-section `pread`s; bytes only, no semantic checks)       |
+| **Elaborate**   | pure | `RawElf` → `Except String Elf` (gabi-07 invariants discharged as `Segment`/`Elf` fields) |
+| **Discover**    | IO   | `path → ObjectList` (BFS over `DT_NEEDED`; calls Parse + Elaborate per file; deps recorded inline) |
+| **Plan**        | pure | `ObjectList → Plan` (resolve table + per-elf `LoadPlan` + `initOrder`)               |
+| **Materialize** | pure | `BasedPlan → { lo : LoadOps n // Safe rsv.addr rsv.len lo }` (typed slot tree + structural safety) |
+| **Runtime**     | IO   | witnessed `LoadOps` → `IO Unit` (mmap + zeroout + mprotect + reloc stores + ctor calls + stack + jump; no return) |
 
-## Key types (refinement seam)
+`BasedPlan = Plan + Reserve + h_total : rsv.len = plan.load.totalSpan`,
+constructed once in `Main.load` after `Reserve.run` allocates the
+kernel-picked anon block. The reservation bounds every safety predicate
+in `Materialize`.
 
-| Type                  | Module        | Contract                                                |
-| --------------------- | ------------- | ------------------------------------------------------- |
-| `Parser α`            | `Parse.Bytes` | Stateful read; advances the cursor or returns `Except`. |
-| `ParsedElf`           | `Parse.File`  | Result of decoding one ELF byte sequence.               |
-| `Discover.LinkMap`    | `Discover`    | Transitively-discovered dependency graph (BFS).         |
-| `Resolve.SymRef`      | `Resolve`     | A resolved symbol: `(objectIdx, symIdx)`.               |
-| `Layout.Layout`       | `Layout`      | Layouts + init/fini orders. **Refinement boundary.**    |
-| `Reloc.Formula`       | `Reloc`       | `(type, S, A, B, P) → Option write`. Pluggable per-arch. |
-| `Reloc.Patch`    | `Reloc`       | One planned memory write.                               |
-| `Runtime.Region`      | `Runtime`     | Opaque mmap'd handle (trust seam).                      |
+## Key types
 
-`Parse` (`LeanLoad/Parse/`) is a pure decoder called per file inside
-`Discover` — `ByteArray` → `ParsedElf`. It's the only step that reads
-raw ELF bytes; every later stage operates on typed records.
+| Type                          | Module                       | Contract                                                                                  |
+| ----------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `Parser α`                    | `Parse.Decode`               | Stateful read; advances the cursor or returns `Except`.                                   |
+| `Parse.RawElf`                | `Parse.RawElf`               | Per-file byte decode (header, phdrs, strtab, symtab, needed, soname, runpath, rela, jmprel, init/fini arrays). |
+| `Elaborate.Segment`           | `Elaborate.Segment`          | One PT_LOAD with gabi-07 invariants (`fileszLeMemsz`, `alignPow2`, `alignCong`, `addrBound`) + per-segment relocs in `coversRela` subtype. |
+| `Elaborate.Elf`               | `Elaborate.Elf`              | Per-elf bundle with `Sorted` / `NonOverlap` / `PhdrCovered` / `CtorsInExecSeg` witnesses. |
+| `Discover.ObjectList`         | `Discover.Plan`              | Loaded objects in BFS order + `sizePos` / `namesNodup` / `deps` (recorded during BFS).    |
+| `Resolve.SymRef n`            | `Plan.Resolve`               | Resolved symbol `(objectIdx : Fin n, symIdx : Nat)`.                                      |
+| `Plan.SegmentPlan n`          | `Plan.Layout`                | One `Segment` lifted with page math + 5 per-segment Prop fields (`pageEnd_lt`, …) + per-segment relocs. |
+| `Plan.ElfPlan n`              | `Plan.Layout`                | One elf's `SegmentPlan`s + `advance` + cross-segment proofs (`segmentsSorted`, `pageEndAddr_le_advance`). |
+| `Plan.LoadPlan n`             | `Plan.Layout`                | All elves' `ElfPlan`s + cumulative `totalSpan` + `totalSpan_eq` Nat↔UInt64 bridge.        |
+| `Reloc.RelocEntry n seg`      | `Plan.Reloc`                 | One planned relocation, base-free, with `coversRela` witness inherited from `Segment`.    |
+| `Reloc.Formula`               | `Elaborate.Reloc`            | `(type, S, A, B, P) → Option write`. Pluggable per-arch.                                  |
+| `Plan.Plan`                   | `Plan.Aggregate`             | `objects + resolve + load + initOrder`, all indexed at `objects.val.size`.                |
+| `Materialize.BasedPlan`       | `Materialize.BasedPlan`      | `Plan + Reserve + h_total`. The canonical input to `Materialize.build`.                   |
+| `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
+| `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |
+| `Materialize.Safe`            | `Materialize.LoadOps`        | Five-predicate bundle (mmaps disjoint + 4× contained); `runSafe` accepts only witnessed `LoadOps`. |
+| `Mmap` / `Zero` / `Store` / `Mprotect` / `Reserve` | `Runtime`     | Typed records wrapping each FFI signature.                                                |
 
-Two design rules:
+## Witness flow
 
-1. **The Layout output is the refinement seam.** `Plan.Layout.Layout`
-   (layouts + init/fini order), together with `Reloc.Patch`s
-   from the post-bases planner, is what `Map`/`Apply`/`Exec`
-   consume. Verification targets are stated against it.
-2. **Reloc planning straddles `Map`.** Layout and init order are
-   computed pre-bases; relocation writes are computed post-bases
-   (kernel chooses bases at mmap time). Both are pure (`Layout.lean`,
-   `Reloc.lean`); the `load` orchestration threads bases between
-   them.
+Each stage adds either data or a Prop witness; once witnessed, no
+downstream stage re-checks. The chain:
+
+```
+Parse:       bytes → RawElf
+Elaborate:   RawElf → Elf       + Segment.{fileszLeMemsz, alignPow2,
+                                            alignCong, addrBound, coversRela}
+                                 + Elf.{segmentsSorted, segmentsNonOverlap,
+                                         phdrCovered, initArrInExecSeg,
+                                         finiArrInExecSeg}
+Discover:    path → ObjectList  + sizePos, namesNodup, depsSize, depsBounds
+Plan:        ObjectList → Plan  + per-SegmentPlan (pageEnd_lt /
+                                  fileOverlay_le_pageLength /
+                                  vaddr_memsz_le_pageEnd /
+                                  zero_end_le_pageLength /
+                                  pageInset_eq_vaddr)
+                                 + ElfPlan (segmentsSorted,
+                                            pageEndAddr_le_advance)
+                                 + LoadPlan (elfs_size, totalSpan_eq)
+                                 + Resolve.Table.entries discharges no
+                                   strong-undef remains (rejected at
+                                   ofObjects)
+Materialize: BasedPlan → { lo : LoadOps n // Safe lo }
+                                 (every slot witnessed in-range, mmaps
+                                  pairwise disjoint — chained from
+                                  BasedPlan's per-(i,j) theorems)
+Runtime:     witnessed lo → IO Unit
+                                 (FFI dispatch; no further checks)
+```
 
 ## Trust boundary
 
-- **Verified**: `LeanLoad/Spec/`, `LeanLoad/Parse/`, plus the pure
-  top-level modules (`Resolve.lean`, `Layout.lean`, `Reloc.lean`).
-  Pure Lean; no `IO`; no imports of `Region`, `Exec`'s extern block,
-  or `runtime/`.
-- **Trusted**: `runtime/*` (audited C, ~150 lines), the
-  `@[extern]` declarations in `LeanLoad/Runtime.lean`, plus the IO
-  bodies of `Discover.lean`, `Map.lean`, `Apply.lean`, `Exec.lean`,
-  and `Main.lean`.
+- **Verified (pure Lean, no IO, no `@[extern]`):**
+  `LeanLoad/Parse/`, `LeanLoad/Elaborate/`, `LeanLoad/Plan/`,
+  `LeanLoad/Materialize/` (excluding the IO interpreter at the bottom of
+  `Materialize/LoadOps.lean`).
+- **Trusted:**
+  - `runtime/*.c` — audited C shims (~150 lines).
+  - `LeanLoad/Runtime.lean` — `@[extern]` declarations + the typed slot
+    records' `run` methods + `Reserve.run`.
+  - IO bookends: `LeanLoad/Discover/IO.lean`, `LeanLoad/Main.lean`,
+    plus `LoadOps.runSafe` (which only accepts a `Safe`-witnessed tree
+    but the FFI dispatch itself isn't proved).
 
 A grep for `@[extern]` outside `LeanLoad/Runtime.lean` is a smell.
 
-## What's "spec" and what's "impl"
+## Naming conventions
 
-- **Spec**: gabi/abi transcriptions. Every type, constant, and table
-  in `LeanLoad/Spec/` cites a specific section of gabi 02–08, the
-  AArch64 ELF ABI supplement, etc. The def *is* the spec — there is
-  no second copy.
-- **Impl**: parsers (`Parse/`), pure pipeline (`Resolve.lean`,
-  `Layout.lean`, `Reloc.lean`, `Spec/Reloc/Formula.lean`), IO
-  orchestration (`Discover.lean`, `Map.lean`, `Apply.lean`,
-  `Exec.lean`, `Main.lean`). These implement gabi's prose-level
-  algorithms; we
-  prove properties about them in `Thm.lean`.
-
-The split is enforced by which directory things live in. A reader
-auditing "what does LeanLoad believe about ELF" reads only `Spec/`.
+- **`Parse/X.lean`** — byte decoders. One struct per ELF C type
+  (`Elf64_*`); the def *is* the format. Auto-derived `BytesDecode`
+  instances walk fields in order.
+- **`Elaborate/X.lean`** — typed semantic views over Parse. Validates
+  bytes, lifts to closed enums, and carries gabi-mandated invariants
+  as Prop fields.
+- **Lean module ↔ C file** — `LeanLoad/Runtime.lean` ↔
+  `runtime/runtime.c`. Extern symbols prefixed `leanload_<topic>_<op>`
+  (e.g. `leanload_mmap_anon`, `leanload_exec_run`) so the flat C
+  namespace doesn't collide.
+- **Opaque Lean types named for what they are** (`Reserve`, not
+  `ReservePtr`).
+- **Per-stage namespaces** — `LeanLoad.Parse`, `LeanLoad.Elaborate`,
+  `LeanLoad.Discover`, `LeanLoad.Plan`, `LeanLoad.Resolve`,
+  `LeanLoad.Reloc`, `LeanLoad.Init`, `LeanLoad.Materialize`,
+  `LeanLoad.Runtime`. (The four `LeanLoad.{Resolve,Reloc,Init}` files
+  live under `LeanLoad/Plan/` for proximity to `Plan.Aggregate`; the
+  namespace mismatch is intentional historical baggage that may be
+  cleaned up later.)
 
 ## Scope
 
 **Architecture: AArch64 and x86-64.** Concrete struct types
-(`ElfHeader64`, `Header64` (Phdr), `Rela64`); no 32-bit / typeclass
-abstraction layer. The reloc planner is parametric over a per-arch
-`Formula` type; per-arch tables live under
-`Spec/Reloc/{Aarch64,X86_64}.lean` and `Spec/Reloc/Formula.lean`
-dispatches on `e_machine`.
+(`Elf64_Ehdr`, `Elf64_Phdr`, `Elf64_Sym`, `Elf64_Rela`); no
+32-bit / typeclass abstraction layer. The reloc planner is parametric
+over a per-arch `Formula` type; per-arch tables live in
+`LeanLoad/Elaborate/Reloc.lean` and `formulaFor` dispatches on
+`e_machine`.
 
 **Parser scope: loader-minimal.** A loader does not need to parse
 the full ELF, only what is reachable from program headers and the
@@ -90,42 +129,30 @@ dynamic section.
 
 - Parsed: ELF header; program header table; `PT_DYNAMIC` and the
   `.dynamic` array; dynsym + dynstr (size derived from `DT_HASH`'s
-  `nchain` or — for gnu-only binaries — from walking the
-  `DT_GNU_HASH` chain table); `Rela`/`Rel` and `JMPREL` tables;
-  init/fini arrays.
+  `nchain`); `Rela` and `JMPREL` tables; init/fini arrays.
 - Skipped: section headers, `.text`/`.bss`/`.rodata` section
   metadata, debug info.
 
-## Naming conventions
-
-- **`Spec/X.lean` ↔ gabi/abi chapter X.** Each Spec file's docstring
-  cites its source section.
-- **`Parse/X.lean` ↔ `Spec/X.lean`.** Parser bodies in `Parse/`,
-  types in `Spec/`. One-to-one filename pairing.
-- **Lean module `LeanLoad.Region` ↔ C file `runtime/region.c`.**
-- **Extern symbols prefixed `leanload_<topic>_<op>`:**
-  `leanload_region_mmap_anon`, `leanload_exec_run`. Flat C namespace,
-  so the prefix avoids collisions and aids grep.
-- **Opaque Lean types named for what they are** (`Region`), not how
-  they are implemented — no `Ptr` suffix.
+**Binary type: ET_DYN only.** ET_EXEC inputs are rejected at elaborate
+time.
 
 ## CLI
 
 ```
 leanload <elf>             # load and run; does not return
-leanload --debug   <elf>   # same as `load`, with stage-by-stage prints
+leanload --debug <elf>     # same as `load`, with stage-by-stage prints
 ```
 
 `--debug` runs the full pipeline (mmap, relocate, run ctors, transfer
 control) but prints a header and summary per stage so a developer can
-see which stage misbehaves if the loaded image crashes. The
-dump shows discovered objects, layouts, and init/fini order.
+see which stage misbehaves if the loaded image crashes. The dump shows
+discovered objects, layouts, init/fini order, and planned ops.
 
 ## Debuggability
 
 Three rules that pay off across the project:
 
-1. **`deriving Repr` on every spec/parse/pipeline type.**
+1. **`deriving Repr` on every parse / elaborate / plan type.**
    Then `--debug` is structured by construction.
 2. **Deterministic output.** No timestamps, no hash-iteration order,
    no addresses chosen by ASLR in the plan. Sort everything that has
@@ -140,18 +167,18 @@ Both have a job, and adding one doesn't retire the other:
 
 - **`#guard` checks** colocated with each definition serve *readers*.
   Concrete examples like
-  `formula R_X86_64_RELATIVE { B := 0x10000, A := 0xa90, … } = some { value := 0x10a90, size := 8 }`
+  `formula R_X86_64_RELATIVE { B := 0x10000, A := 0xa90, … } = some { value := 0x10a90, size := .b8 }`
   make a function's contract scannable and fail at elaboration time
   if the table moves under them. Use them anywhere a function does
   nontrivial arithmetic, table lookups, formula evaluation, or
   has interesting edge cases (empty inputs, alignment boundaries,
   symbol-less relocations).
-- **Theorems under `LeanLoad/Thm/`** prove the general invariants
-  the examples can't: totality (every input has a result),
-  width-validity (`r.size ∈ {4,8}`), refinement-seam structural
-  integrity (`fromLinkMap` produces one layout per object,
-  deterministic), VA→file-offset soundness, and so on. One file per
-  topic; each theorem's docstring is its contract.
+- **Theorems live next to the definitions they characterise.**
+  `Plan/Layout.lean`'s `raw_*` lemmas discharge the per-`SegmentPlan`
+  invariants; `Materialize/BasedPlan.lean`'s `segment_*_in_rsv` and
+  `*_disjoint` theorems power the structural `Safe` proof in
+  `Materialize/Build.lean`. There is no separate `Thm/` tree — the
+  proofs live with the code they're about.
 
 A `#guard` shows *what the function does* on a concrete input; the
 theorem shows *what it always does*. The two are complementary
@@ -160,16 +187,17 @@ audit surfaces.
 ## Trust assumptions on the host process
 
 LeanLoad performs in-process loading: the loaded binary's segments
-are `mmap`'d into leanload's own address space, and `transferControl`
+are `mmap`'d into leanload's own address space, and the trampoline
 hands off without first replacing the process image. The IO load
-path (`Map.lean` + `Apply.lean` + `Exec.lean`) is conditioned on:
+path (`Discover.IO` + `Materialize` + `Runtime` + `Main.realize`) is
+conditioned on:
 
-1. **Address-space disjointness.** The virtual-address ranges named
-   by the Layout output do not intersect any mapping currently in
-   use by leanload itself.
+1. **Address-space disjointness.** The reservation returned by
+   `mmapAnon` does not intersect any mapping currently in use by
+   leanload itself. The kernel's anon-mmap guarantees this.
 2. **No concurrent address-space mutation.** No other thread calls
-   `mmap` / `munmap` / `mprotect` / `mremap` during materialise→exec.
-3. **No locks held across `transferControl`.** No host thread holds
+   `mmap` / `munmap` / `mprotect` / `mremap` during materialize→exec.
+3. **No locks held across the trampoline.** No host thread holds
    a libc internal mutex (malloc arena, dynamic-loader lock, …) that
    the loaded binary will then try to acquire.
 4. **Loaded binary uses `__NR_exit_group`, not `__NR_exit`.** The
@@ -186,22 +214,27 @@ fixture-specific instances of the assumptions.
 
 ## Memory ownership
 
-- **Inputs** (ELF files): read via `IO.FS.readBinFile` into a
-  `ByteArray`. Small enough that the copy is free, and `Plan`
-  reasons over pure data.
-- **Outputs** (loaded image): `mmap` regions wrapped as opaque
-  `Region` external objects. Mappings live for the process lifetime;
-  the kernel reclaims at exit.
+- **Inputs** (ELF files): held open as `Runtime.FileHandle`s for the
+  loader's lifetime. Per-section `pread`s — no whole-file `ByteArray`
+  is constructed.
+- **Reservation** (per loaded binary): one `Reserve.run` IO call
+  returns a kernel-picked anon block of size `lp.totalSpan`. Every
+  per-elf base sits inside it; every safety predicate is bounded by
+  it.
+- **Outputs** (loaded image): file overlays mmap'd on top of the
+  reservation; partial-page BSS zeroed in place; `mprotect`'d to
+  final permissions. Mappings live for the process lifetime; the
+  kernel reclaims at exit.
 
 ## Kernel-style exec
 
-The `Exec` stage builds the same stack `execve(2)` would
-(argc/argv/envp/auxv at SP, strings above) and jumps to `e_entry`.
-SP is 16-byte aligned (AArch64 ABI + SysV x86-64 § Initial Stack and
-Register State). Implementation in `runtime/exec.c`; the trampoline
-is per-arch — AArch64 `mov sp, _; br _` and x86-64 `movq _, %rsp;
-xor rbp; xor rdx; jmpq *_`. No return: leanload's process *is* the
-loaded program after the jump.
+The trampoline (`Runtime.execAndJump` → `runtime/exec.c`) builds the
+same stack `execve(2)` would (argc/argv/envp/auxv at SP, strings
+above) and jumps to `e_entry`. SP is 16-byte aligned (AArch64 ABI +
+SysV x86-64 § Initial Stack and Register State). Per-arch trampolines:
+AArch64 `mov sp, _; br _` and x86-64 `movq _, %rsp; xor rbp; xor rdx;
+jmpq *_`. No return: leanload's process *is* the loaded program after
+the jump.
 
 Three non-obvious gotchas:
 
