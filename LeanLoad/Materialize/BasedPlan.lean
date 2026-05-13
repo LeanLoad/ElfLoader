@@ -181,12 +181,7 @@ theorem segment_pageRange_in_rsv (bp : BasedPlan) (i : Fin bp.n)
       (bp.elfAt i).advance.toNat :=
     (bp.elfAt i).pageEndAddr_le_advance j.val j.isLt
   have h_base_advance := bp.base_plus_advance_le_rsv_end i
-  have h_pageEnd_pv : (bp.segAt i j).pageVaddr.toNat +
-      (bp.segAt i j).pageLength.toNat =
-      (bp.segAt i j).pageEndAddr.toNat := by
-    show _ = ((bp.segAt i j).pageVaddr + (bp.segAt i j).pageLength).toNat
-    rw [UInt64.toNat_add]
-    exact (Nat.mod_eq_of_lt (bp.segAt i j).pageEnd_lt).symm
+  have h_pageEnd := (bp.segAt i j).pageEndAddr_toNat
   omega
 
 /-- No-wrap of `base + pageVaddr + pageLength` — falls out of
@@ -300,10 +295,7 @@ theorem within_elf_pageRange_disjoint (bp : BasedPlan) (i : Fin bp.n)
   have h_pe_le_pv_nat : (bp.segAt i j₁).pageEndAddr.toNat ≤
       (bp.segAt i j₂).pageVaddr.toNat :=
     UInt64.le_iff_toNat_le.mp h_pe_le_pv
-  have h_pe_eq : (bp.segAt i j₁).pageEndAddr.toNat =
-      (bp.segAt i j₁).pageVaddr.toNat + (bp.segAt i j₁).pageLength.toNat := by
-    show ((bp.segAt i j₁).pageVaddr + (bp.segAt i j₁).pageLength).toNat = _
-    rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt (bp.segAt i j₁).pageEnd_lt
+  have h_pe_eq := (bp.segAt i j₁).pageEndAddr_toNat
   have h_base_pv₁ := bp.segment_base_add_pageVaddr_toNat i j₁
   have h_base_pv₂ := bp.segment_base_add_pageVaddr_toNat i j₂
   -- Take left disjunct: end of segment j₁ ≤ start of segment j₂.
@@ -346,13 +338,7 @@ theorem cross_elf_pageRange_disjoint (bp : BasedPlan)
   have h_pe₁ : (bp.segAt i₁ j₁).pageVaddr.toNat +
                (bp.segAt i₁ j₁).pageLength.toNat ≤
                (bp.elfAt i₁).advance.toNat := by
-    have h_eq : (bp.segAt i₁ j₁).pageVaddr.toNat +
-                (bp.segAt i₁ j₁).pageLength.toNat =
-                (bp.segAt i₁ j₁).pageEndAddr.toNat := by
-      show _ = ((bp.segAt i₁ j₁).pageVaddr + (bp.segAt i₁ j₁).pageLength).toNat
-      rw [UInt64.toNat_add]
-      exact (Nat.mod_eq_of_lt (bp.segAt i₁ j₁).pageEnd_lt).symm
-    rw [h_eq]
+    rw [← (bp.segAt i₁ j₁).pageEndAddr_toNat]
     exact (bp.elfAt i₁).pageEndAddr_le_advance j₁.val j₁.isLt
   left
   show (bp.baseAt i₁ + (bp.segAt i₁ j₁).pageVaddr).toNat +

@@ -393,6 +393,15 @@ def ofSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
 /-- One past the last byte of the mmap'd range, base-relative. -/
 def pageEndAddr (sp : SegmentPlan n) : UInt64 := sp.pageVaddr + sp.pageLength
 
+/-- `pageEndAddr.toNat = pageVaddr.toNat + pageLength.toNat` — the
+    `pageEnd_lt` invariant rules out wrap. Saves the inline
+    `UInt64.toNat_add` + `mod_eq_of_lt` ritual every per-slot
+    `Materialize` proof would otherwise duplicate. -/
+theorem pageEndAddr_toNat (sp : SegmentPlan n) :
+    sp.pageEndAddr.toNat = sp.pageVaddr.toNat + sp.pageLength.toNat := by
+  show (sp.pageVaddr + sp.pageLength).toNat = _
+  rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt sp.pageEnd_lt
+
 /-- True when the segment has any file-backed bytes. -/
 def hasFileBacked (sp : SegmentPlan n) : Bool := sp.fileOverlayLen > 0
 
