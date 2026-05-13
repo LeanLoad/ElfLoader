@@ -248,6 +248,52 @@ def buildElfSegments (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
     rfl
     (by intro k h_k; exact absurd h_k (by simp))
     (by intro k h_k _; exact absurd h_k (by simp))
+
+-- ============================================================================
+-- buildElfSafe — assemble one elf's `ElfOps` + its `ElfSafe` witness.
+-- Within-elf disjointness chains `mmap_eq` (segment k's built mmap
+-- matches setupSlots's output) with `setupSlots_mmap_eq` (closed form
+-- of (addr, len)) into `within_elf_mmapRange_disjoint`'s conclusion.
+-- ============================================================================
+
+/-- Build one `ElfOps` + its `ElfSafe` witness. -/
+def buildElfSafe (bp : BasedPlan) (i : Nat) (h_i : i < bp.n) :
+    Except String { eo : ElfOps bp.n //
+      ElfSafe bp.rsv.addr bp.rsv.len eo } := do
+  have h_lp_i : i < bp.plan.load.elfs.size := by
+    rw [bp.plan.load.elfs_size]; exact h_i
+  let ⟨segments, h_size, h_safe, h_mmap⟩ ← buildElfSegments bp i h_i h_lp_i
+  let base := bp.bases[i]'(by rw [bp.bases_size]; exact h_i)
+  let handle := (bp.plan.objects.val[i]'h_i).handle
+  let ep := bp.plan.load.elfs[i]'h_lp_i
+  let eo : ElfOps bp.n := { base, segments }
+  let h_elfSafe : ElfSafe bp.rsv.addr bp.rsv.len eo := by
+    refine ⟨?_, ?_⟩
+    · -- Each segment is SegmentSafe.
+      intro k h_k; exact h_safe k h_k
+    · -- Within-elf mmap disjointness: for j₁ < j₂, both segments' mmaps
+      -- come from setupSlots on the corresponding source segments.
+      intro j₁ j₂ h_j₁ h_j₂ h_lt m₁ m₂ h_m₁ h_m₂
+      have h_j₁_src : j₁ < ep.segments.size := by rw [h_size] at h_j₁; exact h_j₁
+      have h_j₂_src : j₂ < ep.segments.size := by rw [h_size] at h_j₂; exact h_j₂
+      -- mmap_eq says: segments[j].mmap = (setupSlots ep.segments[j] _ _).1.
+      have h_mmap_eq₁ := h_mmap j₁ h_j₁ h_j₁_src
+      have h_mmap_eq₂ := h_mmap j₂ h_j₂ h_j₂_src
+      -- segments[j₁].mmap = some m₁, so (setupSlots …).1 = some m₁.
+      have h_su₁ : (setupSlots (ep.segments[j₁]'h_j₁_src) handle base).1 = some m₁ := by
+        rw [← h_mmap_eq₁]; exact h_m₁
+      have h_su₂ : (setupSlots (ep.segments[j₂]'h_j₂_src) handle base).1 = some m₂ := by
+        rw [← h_mmap_eq₂]; exact h_m₂
+      -- Extract m₁, m₂'s addr/len via setupSlots_mmap_eq.
+      have ⟨h_a₁, h_l₁⟩ := setupSlots_mmap_eq (ep.segments[j₁]'h_j₁_src) handle base m₁ h_su₁
+      have ⟨h_a₂, h_l₂⟩ := setupSlots_mmap_eq (ep.segments[j₂]'h_j₂_src) handle base m₂ h_su₂
+      -- Apply the within-elf disjointness.
+      have h_disj := bp.within_elf_mmapRange_disjoint i h_i j₁ j₂ h_j₁_src h_j₂_src h_lt
+      -- Rewrite m₁'s and m₂'s addr/len in the goal.
+      rw [h_a₁, h_l₁, h_a₂, h_l₂]
+      exact h_disj
+  return ⟨eo, h_elfSafe⟩
+
 private def buildCore (bp : BasedPlan) :
     Except String (LoadOps bp.n) := do
   let plan := bp.plan
