@@ -1,19 +1,28 @@
 /-
-Bake the base-free `RelocEntry`s attached to each `SegmentPlan n`
-into typed `Store` ops once a reservation base is known.
+Relocation **baking** — base-aware.
 
-For each entry: look up the symbol's absolute value `S = base[target]
-+ symtab[target].value` (or 0 when `target = none`), feed
-`(S, A, base, place)` into the per-arch `Formula`, and emit a
-4- or 8-byte `Store` at `base + r_offset`. 32-bit writes are
-overflow-checked (psABI per-relocation `OVERFLOW_CHECK`); see the
-banner in this file.
+Phase 2 of 2 in the relocation pipeline:
+
+  1. **Plan** (`Plan/Reloc.lean`) — `RawRela → RelocEntry n seg`. Pure,
+     base-free; resolves the symbol reference and stores the result on
+     each `SegmentPlan.relocs`.
+  2. **Bake** (this file) — `RelocEntry n seg + base → Option Store`.
+     Looks up the symbol's absolute value `S = base[target] +
+     symtab[target].value` (or 0 when `target = noSymbol`/
+     `weakUnresolved`), feeds `(S, A, base, place)` into the per-arch
+     `Formula`, and emits a 4-or-8-byte `Store` at `base + r_offset`.
+     32-bit writes are overflow-checked (psABI per-relocation
+     `OVERFLOW_CHECK`); see the banner below.
+
+The split exists because the kernel picks the per-elf base
+(`Reserve.run`) between phases 1 and 2; phase 1 is pure and runs ahead
+of any IO.
 
 Entry points:
   • `bakeReloc` — one entry → `Option Store` (none for `R_*_NONE`).
   • `bakeSegmentRelocs` — one segment's relas → flat `Array Store`.
 
-Used by `Materialize.build` per segment.
+Used by `Materialize.buildSegmentSafe` (one call per segment).
 -/
 
 import LeanLoad.Plan.Layout

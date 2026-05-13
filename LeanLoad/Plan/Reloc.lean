@@ -1,13 +1,21 @@
 /-
-Relocation planning — base-free.
+Relocation **planning** — base-free.
 
-Per `RawRela` we resolve the symbol reference into a `RelocTarget`
-(three explicit cases: `noSymbol`, `weakUnresolved`, `resolved ref`)
-and bundle that with the rela's `type` / `r_offset` / `addend` and
-the inherited `coversRela` witness into a `RelocEntry n seg`. None
-of these fields knows about an mmap base; the materializer (in
-`Materialize.bakeReloc`) computes the absolute place and the symbol
-value once a reservation base is chosen.
+Phase 1 of 2 in the relocation pipeline:
+
+  1. **Plan** (this file) — `RawRela → RelocEntry n seg`. Resolves the
+     symbol reference into a `RelocTarget` (three explicit cases:
+     `noSymbol`, `weakUnresolved`, `resolved ref`) and bundles it with
+     the rela's `type` / `r_offset` / `addend` and the inherited
+     `coversRela` witness. *Base-free*: no field knows about an mmap
+     base. Result lives on each `SegmentPlan.relocs`.
+  2. **Bake** (`Materialize/Reloc.lean`) — `RelocEntry n seg + base →
+     Option Store`. Computes the absolute place and symbol value once
+     a reservation base is chosen, then turns each entry into a
+     4-or-8-byte `Store` slot. Used by `Materialize.buildSegmentSafe`.
+
+The split exists because the kernel picks the per-elf base (`Reserve.run`)
+between phases 1 and 2; phase 1 is pure and runs ahead of any IO.
 
 Key types:
   • `RelocTarget n` — 3-case inductive replacing the old
@@ -21,10 +29,9 @@ Key types:
     structurally (via `BasedPlan.segment_storeRange_in_rsv`).
 
 This file owns `RelocEntry` and the per-rela planner (`planOne`).
-The per-segment planner lives in `Plan/Layout.lean` — each
-`SegmentPlan` carries its own `relocs` array, so there's no
-parallel-tree-of-relocs to construct or zip against the layout tree
-later. `Materialize.bakeSegmentRelocs` reads `sp.relocs` directly.
+The per-segment planner is called from `Plan/SegmentPlan.lean`'s
+`ofSegment` — each `SegmentPlan` carries its own `relocs` array,
+so there's no parallel relocation tree to construct or zip later.
 -/
 
 import LeanLoad.Plan.Resolve
