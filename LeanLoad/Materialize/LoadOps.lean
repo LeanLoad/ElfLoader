@@ -358,15 +358,59 @@ theorem mprotectsContained_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
   -- `h_mp : lo[k].segments[k'].mprotect = lo.mprotects[i]`.
   rw [← h_mp]; exact h_segSafe.mprotectInRange
 
--- `mmapsDisjoint_of_LoadSafe`: the structural witness gives same-elf and
--- cross-elf disjointness, but the flat predicate compares mmaps at flat
--- `i < j` indices, which require a flatMap-ordering lemma (mmaps[i]
--- comes from an earlier elf, or same elf and earlier segment, than
--- mmaps[j]). That lemma needs `Array.flatMap_getElem` + its `filterMap`
--- counterpart, which aren't in Lean core. For now the canonical witness
--- is `LoadSafe`; consumers that need flat disjointness can decide
--- `MmapsDisjoint` (it's decidable). `LoadOps.runSafe` only depends on
--- the witness existing, not on its shape — it's a pure FFI dispatch.
+/-- Mmaps: chain `List.pairwise_flatMap` (which exists in Lean core)
+    on the toList'd view, then bridge back via `List.pairwise_iff_getElem`.
+    Within-elf pairwise routes through `List.pairwise_filterMap` to
+    `ElfSafe.mmapsDisjoint`; cross-elf chains through `LoadSafe.mmapsDisjoint`. -/
+theorem mmapsDisjoint_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
+    (h : LoadSafe rsvA rsvL lo) : MmapsDisjoint lo := by
+  have h_list : List.Pairwise
+      (fun m₁ m₂ : Mmap => Runtime.Disjoint m₁.addr m₁.len m₂.addr m₂.len)
+      lo.mmaps.toList := by
+    show List.Pairwise _ (LoadOps.mmaps lo).toList
+    unfold LoadOps.mmaps
+    have h_eq : (lo.flatMap fun eo => eo.segments.filterMap (·.mmap)).toList =
+                lo.toList.flatMap (fun eo => (eo.segments.filterMap (·.mmap)).toList) := by
+      rw [Array.flatMap_def, Array.toList_flatten, Array.toList_map]
+      rw [List.flatMap_def, List.map_map]; rfl
+    rw [h_eq, List.pairwise_flatMap]
+    refine ⟨?_, ?_⟩
+    · -- Within-elf: each elf's filterMap'd segment-mmaps are pairwise disjoint.
+      intro eo h_eo_mem
+      rw [Array.toList_filterMap, List.pairwise_filterMap, List.pairwise_iff_getElem]
+      intro a b ha hb h_ab_lt m_a h_ma m_b h_mb
+      rw [Array.mem_toList_iff] at h_eo_mem
+      obtain ⟨k, h_k_lt, rfl⟩ := Array.mem_iff_getElem.mp h_eo_mem
+      rw [Array.length_toList] at ha hb
+      exact (h.elfs k h_k_lt).mmapsDisjoint a b ha hb h_ab_lt m_a m_b h_ma h_mb
+    · -- Cross-elf: any two distinct elves' mmaps are pairwise disjoint.
+      rw [List.pairwise_iff_getElem]
+      intro a b ha hb h_ab_lt x h_x_mem y h_y_mem
+      rw [Array.length_toList] at ha hb
+      rw [Array.mem_toList_iff, Array.mem_filterMap] at h_x_mem h_y_mem
+      obtain ⟨so_x, h_so_x_mem, h_so_x⟩ := h_x_mem
+      obtain ⟨so_y, h_so_y_mem, h_so_y⟩ := h_y_mem
+      obtain ⟨k_x, h_k_x_lt, rfl⟩ := Array.mem_iff_getElem.mp h_so_x_mem
+      obtain ⟨k_y, h_k_y_lt, rfl⟩ := Array.mem_iff_getElem.mp h_so_y_mem
+      exact h.mmapsDisjoint a b ha hb h_ab_lt k_x k_y h_k_x_lt h_k_y_lt x y h_so_x h_so_y
+  -- Bridge `List.Pairwise` on the toList'd view back to the flat array predicate.
+  intro i hi j hj h_ij_lt
+  rw [List.pairwise_iff_getElem] at h_list
+  have hi' : i < lo.mmaps.toList.length := by rw [Array.length_toList]; exact hi
+  have hj' : j < lo.mmaps.toList.length := by rw [Array.length_toList]; exact hj
+  have hres := h_list i j hi' hj' h_ij_lt
+  rwa [Array.getElem_toList, Array.getElem_toList] at hres
+
+/-- All five flat predicates from `LoadSafe`. The last one is the
+    `mmapsDisjoint_of_LoadSafe` bridge proven just above; the others
+    come from the per-slot bridges. -/
+theorem safe_of_LoadSafe (rsvA rsvL : UInt64) (lo : LoadOps n)
+    (h : LoadSafe rsvA rsvL lo) : Safe rsvA rsvL lo where
+  mmapsDisjoint      := mmapsDisjoint_of_LoadSafe rsvA rsvL lo h
+  mmapsContained     := mmapsContained_of_LoadSafe rsvA rsvL lo h
+  zerosContained     := zerosContained_of_LoadSafe rsvA rsvL lo h
+  storesContained    := storesContained_of_LoadSafe rsvA rsvL lo h
+  mprotectsContained := mprotectsContained_of_LoadSafe rsvA rsvL lo h
 
 -- ============================================================================
 -- IO interpreter — dispatches each slot in protocol order.
