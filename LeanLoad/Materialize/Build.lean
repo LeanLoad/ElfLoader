@@ -1,26 +1,31 @@
 /-
 Builder: turn a `BasedPlan` into a safety-witnessed `LoadOps` tree
-ready for `runSafe`.
+ready for `runSafe`. Fully constructive — no decidable safety
+fallback, no `.error` branch for safety.
 
 Two top-level entry points:
   • `build`     — pure: `BasedPlan → safety-witnessed LoadOps`.
-                  Returns a witnessed
-                  `{ lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo }`.
-                  `Safe` bundles the five flat safety predicates
-                  (`MmapsDisjoint` + four `*Contained`). Construction
-                  routes:
-                    · Decidable instance on `Safe` — the runtime
-                      check used today. Generic; works on any
-                      `LoadOps`.
-                    · Structural via `LoadOps.safe_of_LoadSafe`
-                      (proven) — given a `LoadSafe` witness, derive
-                      `Safe`. `LoadSafe` itself follows from
-                      `BasedPlan`'s per-(i, j) theorems
-                      (`segment_*_in_rsv`, `within_elf_*_disjoint`,
-                      `cross_elf_*_disjoint`) once the buildCore-shape
-                      lemma is in place. The flat→tree bridge for
-                      `MmapsDisjoint` goes through
-                      `List.pairwise_flatMap` + `pairwise_filterMap`.
+                  Returns `{ lo : LoadOps bp.n // Safe … lo }`. The
+                  `Safe` witness is built structurally:
+                    1. `buildSegmentSafe` per segment — combines
+                       `setupSlots_*_eq` (closed form of (addr, len))
+                       with `BasedPlan.segment_*_in_rsv` (per-slot
+                       InRange) and `bakeReloc` characterisation +
+                       `bakeSegmentRelocs_storesInvariant`.
+                    2. `buildElfSafe` per elf — assembles
+                       `buildElfSegments`'s output + within-elf
+                       disjointness from
+                       `BasedPlan.within_elf_mmapRange_disjoint`.
+                    3. `buildLoadElves` across elves — threads
+                       `ElfBuildInvariant` so the cross-elf
+                       disjointness in `buildSafe` can chain to
+                       `BasedPlan.cross_elf_mmapRange_disjoint`.
+                    4. `safe_of_LoadSafe` bridges `LoadSafe → Safe`
+                       (4 contained bridges + 1 disjoint bridge via
+                       `List.pairwise_flatMap` + `pairwise_filterMap`).
+                  The only `Except` failure path is `bakeReloc`'s
+                  32-bit overflow check (psABI per-relocation
+                  `OVERFLOW_CHECK`).
   • `ctorAddrs` — pure: `BasedPlan → Array UInt64`. Resolves each
                   init-array entry through the per-elf base, in DFS
                   post-order; ET_DYN entries get the chosen base
@@ -435,59 +440,80 @@ def buildLoadElves (bp : BasedPlan) :
     (by intro k h_k; exact absurd h_k (by simp))
     (by intro k h_k _; exact absurd h_k (by simp))
 
-private def buildCore (bp : BasedPlan) :
-    Except String (LoadOps bp.n) := do
-  let plan := bp.plan
-  let lp := plan.load
-  let elfs := plan.objectElfs
-  let formula := plan.formula
-  let n := bp.n
-  have h_elfs    : elfs.size    = n := plan.objectElfs_size
-  have h_lp_elfs : lp.elfs.size = n := lp.elfs_size
-  let bases := bp.bases
-  have h_bases_n : bases.size = n := bp.bases_size
-  have h_bases : bases.size = elfs.size := h_bases_n.trans h_elfs.symm
-  have h_n_eq : n = elfs.size := h_elfs.symm
-  let mut lo : Array (ElfOps n) := #[]
-  for h : i in [:lp.elfs.size] do
-    let ep := lp.elfs[i]
-    have hi_n : i < n := by rw [← h_lp_elfs]; exact h.upper
-    let handle := (plan.objects.val[i]'hi_n).handle
-    let base := bases[i]'(by rw [h_bases_n]; exact hi_n)
-    let mut segments : Array (SegmentOps n) := #[]
-    for h2 : segI in [:ep.segments.size] do
-      let sp := ep.segments[segI]
-      let (mmap, zero, mprotect) := setupSlots sp handle base
-      -- `sp.relocs : Array (RelocEntry n sp.segment)`; bakeSegmentRelocs
-      -- wants `Array (RelocEntry elfs.size sp.segment)`. Rewriting
-      -- along `n = elfs.size` preserves the segment parameter.
-      let relocs : Array (Reloc.RelocEntry elfs.size sp.segment) :=
-        h_n_eq ▸ sp.relocs
-      let stores ←
-        bakeSegmentRelocs formula elfs bases h_bases base sp.segment relocs
-      segments := segments.push
-        { plan := sp, mmap, zero, stores, mprotect }
-    lo := lo.push { base, segments }
-  return lo
+-- ============================================================================
+-- buildSafe — the final constructive build. Assembles the full
+-- safety-witnessed `LoadOps` via `buildLoadElves` + `LoadSafe` proof.
+-- Cross-elf disjointness chains:
+--   ElfBuildInvariant.mmap (each elf's segments[k].mmap = setupSlots …)
+--   → setupSlots_mmap_eq (closed-form addr/len)
+--   → BasedPlan.cross_elf_mmapRange_disjoint
+-- The only `Except` failure path is `bakeReloc`'s 32-bit overflow.
+-- ============================================================================
 
-/-- Witnessed build: assemble the `LoadOps` tree and gate it through
-    the five decidable safety predicates
-    (`MmapsDisjoint` / `*Contained`) parameterised on the reservation
-    `[bp.rsv.addr, +bp.rsv.len)`.
+/-- Build the `LoadOps` tree + `Safe` witness directly. The runtime
+    decidable check in `build` (below) is unreachable on the `.ok`
+    path. -/
+def buildSafe (bp : BasedPlan) :
+    Except String { lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo } := do
+  let ⟨elves, h_size, h_safe, h_inv⟩ ← buildLoadElves bp
+  let lo : LoadOps bp.n := elves
+  -- Assemble LoadSafe witness.
+  let h_loadSafe : LoadSafe bp.rsv.addr bp.rsv.len lo := by
+    refine ⟨?_, ?_⟩
+    · -- Each elf is ElfSafe.
+      intro k h_k; exact h_safe k h_k
+    · -- Cross-elf mmap disjointness.
+      intro i₁ i₂ h_i₁ h_i₂ h_lt k_i₁ k_i₂ h_k_i₁ h_k_i₂ m₁ m₂ h_m₁ h_m₂
+      have h_i₁_n : i₁ < bp.n := by rw [h_size] at h_i₁; exact h_i₁
+      have h_i₂_n : i₂ < bp.n := by rw [h_size] at h_i₂; exact h_i₂
+      have h_lp_i₁ : i₁ < bp.plan.load.elfs.size := by
+        rw [bp.plan.load.elfs_size]; exact h_i₁_n
+      have h_lp_i₂ : i₂ < bp.plan.load.elfs.size := by
+        rw [bp.plan.load.elfs_size]; exact h_i₂_n
+      let ep₁ := bp.plan.load.elfs[i₁]'h_lp_i₁
+      let ep₂ := bp.plan.load.elfs[i₂]'h_lp_i₂
+      have h_inv₁ := h_inv i₁ h_i₁ h_i₁_n
+      have h_inv₂ := h_inv i₂ h_i₂ h_i₂_n
+      -- ElfBuildInvariant unfolds to (base eq, size eq, mmap eq).
+      obtain ⟨h_base_eq₁, h_size_eq₁, h_mmap_eq₁⟩ := h_inv₁
+      obtain ⟨h_base_eq₂, h_size_eq₂, h_mmap_eq₂⟩ := h_inv₂
+      -- Translate k_i₁ into ep₁'s segments range.
+      have h_k_src₁ : k_i₁ < ep₁.segments.size := by
+        rw [h_size_eq₁] at h_k_i₁; exact h_k_i₁
+      have h_k_src₂ : k_i₂ < ep₂.segments.size := by
+        rw [h_size_eq₂] at h_k_i₂; exact h_k_i₂
+      -- elves[i₁].segments[k_i₁].mmap = (setupSlots ep₁.segments[k_i₁] _ _).1
+      have h_mmap_su₁ : (setupSlots (ep₁.segments[k_i₁]'h_k_src₁)
+            (bp.plan.objects.val[i₁]'h_i₁_n).handle
+            (bp.bases[i₁]'(by rw [bp.bases_size]; exact h_i₁_n))).1 = some m₁ := by
+        rw [← h_mmap_eq₁ k_i₁ h_k_i₁ h_k_src₁]; exact h_m₁
+      have h_mmap_su₂ : (setupSlots (ep₂.segments[k_i₂]'h_k_src₂)
+            (bp.plan.objects.val[i₂]'h_i₂_n).handle
+            (bp.bases[i₂]'(by rw [bp.bases_size]; exact h_i₂_n))).1 = some m₂ := by
+        rw [← h_mmap_eq₂ k_i₂ h_k_i₂ h_k_src₂]; exact h_m₂
+      -- Extract addr/len via setupSlots_mmap_eq.
+      have ⟨h_a₁, h_l₁⟩ := setupSlots_mmap_eq (ep₁.segments[k_i₁]'h_k_src₁)
+        (bp.plan.objects.val[i₁]'h_i₁_n).handle
+        (bp.bases[i₁]'(by rw [bp.bases_size]; exact h_i₁_n)) m₁ h_mmap_su₁
+      have ⟨h_a₂, h_l₂⟩ := setupSlots_mmap_eq (ep₂.segments[k_i₂]'h_k_src₂)
+        (bp.plan.objects.val[i₂]'h_i₂_n).handle
+        (bp.bases[i₂]'(by rw [bp.bases_size]; exact h_i₂_n)) m₂ h_mmap_su₂
+      -- Apply cross-elf disjointness.
+      have h_disj := bp.cross_elf_mmapRange_disjoint i₁ i₂ h_i₁_n h_i₂_n
+        k_i₁ h_k_src₁ k_i₂ h_k_src₂ h_lt
+      rw [h_a₁, h_l₁, h_a₂, h_l₂]; exact h_disj
+  return ⟨lo, safe_of_LoadSafe _ _ lo h_loadSafe⟩
 
-    Returns the witnessed tree on success. Failure means a planner
-    bug (the OS would otherwise raise SIGSEGV / mmap failure); the
-    body of the proof discharge is residual — see file docstring.
+/-- Witnessed build — fully constructive. Assembles the `LoadOps`
+    tree alongside its `Safe` witness via `buildSafe`. The only
+    `Except` failure path is `bakeReloc`'s 32-bit overflow check
+    (psABI per-relocation `OVERFLOW_CHECK`); safety itself is
+    established structurally, no decidable fallback.
 
     Callers consume the result via `LoadOps.runSafe`. -/
 def build (bp : BasedPlan) :
-    Except String { lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo } := do
-  let lo ← buildCore bp
-  if h : Safe bp.rsv.addr bp.rsv.len lo then
-    .ok ⟨lo, h⟩
-  else
-    .error "Materialize.build: planned ops violate safety invariants \
-      (loader bug — mmaps collide or extend outside the reservation)"
+    Except String { lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo } :=
+  buildSafe bp
 
 -- ============================================================================
 -- Ctor / dtor address resolution: init-array / fini-array entries →
