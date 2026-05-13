@@ -167,4 +167,108 @@ theorem bakeReloc_byteLen_le_8 (formula : Formula) (elfs : Array Elf)
   · rw [h4]; decide
   · rw [h8]; decide
 
+-- ============================================================================
+-- Origin lemma for bakeSegmentRelocs. Every Store in the output came
+-- from some RelocEntry in the input via a successful `bakeReloc`.
+-- Proved by `List.foldlM` induction on `relocs.toList`.
+-- ============================================================================
+
+/-- Helper: if a step function preserves predicate `P` over the
+    accumulator, then `List.foldlM` over an `Except` monad preserves
+    `P` on success. The step is given as
+    `f acc entry = .ok newAcc → (∀ s ∈ acc, P s) → ∀ s ∈ newAcc, P s`. -/
+private theorem listFoldlM_except_preserves {α : Type} {β : Type}
+    {P : β → Prop} (f : Array β → α → Except String (Array β))
+    (h_step : ∀ acc entry newAcc, f acc entry = .ok newAcc →
+      (∀ s ∈ acc, P s) → ∀ s ∈ newAcc, P s)
+    (init : Array β) (h_init : ∀ s ∈ init, P s)
+    (xs : List α) (out : Array β)
+    (h_out : xs.foldlM (m := Except String) f init = .ok out) :
+    ∀ s ∈ out, P s := by
+  induction xs generalizing init with
+  | nil =>
+    -- `List.foldlM f init [] = pure init`. For Except, `pure init = .ok init`.
+    rw [show (List.foldlM (m := Except String) f init [] : Except String (Array β)) =
+        Except.ok init from rfl] at h_out
+    injection h_out with h_eq
+    rw [← h_eq]; exact h_init
+  | cons x xs ih =>
+    -- `foldlM f init (x :: xs) = f init x >>= fun acc' => foldlM f acc' xs`.
+    cases h_first : f init x with
+    | error e =>
+      rw [show (List.foldlM (m := Except String) f init (x :: xs)
+                : Except String (Array β)) =
+              (f init x).bind (fun acc' => List.foldlM f acc' xs) from rfl,
+          h_first] at h_out
+      cases h_out
+    | ok acc' =>
+      have h_acc'_P : ∀ s ∈ acc', P s := h_step init x acc' h_first h_init
+      have h_rest : List.foldlM (m := Except String) f acc' xs = .ok out := by
+        rw [show (List.foldlM (m := Except String) f init (x :: xs)
+                  : Except String (Array β)) =
+                (f init x).bind (fun acc'' => List.foldlM f acc'' xs) from rfl,
+            h_first] at h_out
+        exact h_out
+      exact ih acc' h_acc'_P h_rest
+
+/-- Every store in `bakeSegmentRelocs`'s `.ok` output was produced by
+    `bakeReloc` on some entry of the input array, so it satisfies any
+    predicate that `bakeReloc`'s `.ok (some _)` results satisfy
+    universally (in particular: `byteLen ≤ 8` + `addr = base +
+    entry.r_offset` for some `entry`). -/
+theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
+    (bases : Array UInt64) (h_bases : bases.size = elfs.size)
+    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry elfs.size seg))
+    (P : Store → Prop)
+    (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs bases h_bases base seg entry =
+                              .ok (some s) → P s)
+    (out : Array Store)
+    (h_out : bakeSegmentRelocs formula elfs bases h_bases base seg relocs = .ok out) :
+    ∀ s ∈ out, P s := by
+  -- Convert the Array.foldlM to List.foldlM via `Array.foldlM_toList`.
+  unfold bakeSegmentRelocs at h_out
+  rw [← Array.foldlM_toList] at h_out
+  refine listFoldlM_except_preserves _ ?_ #[]
+    (by intros _ h_mem; exact absurd h_mem (by simp)) relocs.toList out h_out
+  -- Step preserves: case-split on `bakeReloc entry`. The step function
+  -- in `bakeSegmentRelocs` does `match ← bakeReloc … with | none =>
+  -- pure acc | some w => pure (acc.push w)`. The outer `do` desugars to
+  -- a `bind`, so `f acc entry = bakeReloc entry >>= …`.
+  intro acc entry newAcc h_step h_acc
+  cases h_br : bakeReloc formula elfs bases h_bases base seg entry with
+  | error e =>
+    -- `bakeReloc = .error e` propagates as `.error e`, contradicts `.ok`.
+    rw [show ((do
+        match ← bakeReloc formula elfs bases h_bases base seg entry with
+        | none => pure acc
+        | some w => pure (acc.push w))
+        : Except String (Array Store)) =
+        (bakeReloc formula elfs bases h_bases base seg entry).bind
+          (fun r => match r with | none => pure acc | some w => pure (acc.push w))
+        from rfl, h_br] at h_step
+    simp [Except.bind] at h_step
+  | ok r =>
+    rw [show ((do
+        match ← bakeReloc formula elfs bases h_bases base seg entry with
+        | none => pure acc
+        | some w => pure (acc.push w))
+        : Except String (Array Store)) =
+        (bakeReloc formula elfs bases h_bases base seg entry).bind
+          (fun r => match r with | none => pure acc | some w => pure (acc.push w))
+        from rfl, h_br] at h_step
+    simp [Except.bind, pure, Except.pure] at h_step
+    cases r with
+    | none =>
+      simp at h_step
+      intro s h_mem_s
+      rw [← h_step] at h_mem_s
+      exact h_acc s h_mem_s
+    | some w =>
+      simp at h_step
+      intro s h_mem_s
+      rw [← h_step] at h_mem_s
+      rcases Array.mem_push.mp h_mem_s with h_in_acc | h_eq
+      · exact h_acc s h_in_acc
+      · rw [h_eq]; exact h_baked entry w h_br
+
 end LeanLoad.Materialize
