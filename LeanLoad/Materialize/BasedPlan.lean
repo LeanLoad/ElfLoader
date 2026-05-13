@@ -8,13 +8,13 @@ triple threaded through `Main.load` / `Main.debug` and centralises
 the three separate `assignBases` invocations into one projection
 (`bp.bases`) with closed-form lemmas.
 
-Once `BasedPlan` exists, the materialize-stage safety witnesses
-(`MmapsDisjoint`, `*Contained`) become provable structurally from
-plan invariants. The bounds chain — `pageVaddr + fileOverlayLen ≤
-pageEndAddr ≤ advance` (existing lemmas in `Plan/Layout.lean`) plus
-`base + advance ≤ rsv.addr + rsv.len` (the workhorse
-`base_plus_advance_le_rsv_end` below) — has every link as a named
-lemma.
+Once `BasedPlan` exists, the materialize-stage safety witness
+`LoadSafe` (and its `ElfSafe` / `SegmentSafe` constituents) becomes
+provable structurally from plan invariants. The bounds chain —
+`pageVaddr + fileOverlayLen ≤ pageEndAddr ≤ advance` (existing
+lemmas in `Plan/Layout.lean`) plus `base + advance ≤ rsv.addr +
+rsv.len` (the workhorse `base_plus_advance_le_rsv_end` below) —
+has every link as a named lemma.
 -/
 
 import LeanLoad.Plan.Aggregate
@@ -165,8 +165,8 @@ def mainBase (bp : BasedPlan) : UInt64 :=
 -- ============================================================================
 -- Per-segment slot bounds. Each of these turns a `(bp, i, j)` index
 -- into an `InRange` fact about the slot `setupSlots` or `bakeReloc`
--- emits at that position. Used by the upcoming structural proof of
--- `Materialize.Safe`.
+-- emits at that position. Consumed by `Materialize.Build` to assemble
+-- `SegmentSafe` witnesses in lock-step with `SegmentOps`.
 -- ============================================================================
 
 /-- The `[base + sp.pageVaddr, base + sp.pageEndAddr)` page-aligned

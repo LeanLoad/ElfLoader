@@ -17,7 +17,7 @@ Key types:
   • `RelocEntry n seg` — parameterised by the owning `Segment` so
     the `coversRela seg.vaddr seg.memsz r_offset` witness from
     `Segment.rela` / `Segment.jmprel` propagates forward into the
-    planned tree. `Materialize.StoresContained` reads this witness
+    planned tree. `SegmentSafe.storesInRange` reads this witness
     structurally (via `BasedPlan.segment_storeRange_in_rsv`).
 
 This file owns `RelocEntry` and the per-rela planner (`planOne`).
@@ -41,7 +41,7 @@ open LeanLoad.Elaborate (Elf Segment coversRela)
 -- RelocEntry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `coversRela` witness
 -- (inherited from `Segment.rela` / `Segment.jmprel`'s subtype) can be
--- preserved through planning. `Materialize.StoresContained` needs
+-- preserved through planning. `SegmentSafe.storesInRange` needs
 -- `r_offset + 8 ≤ seg.vaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
 

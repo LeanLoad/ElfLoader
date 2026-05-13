@@ -40,12 +40,6 @@ open LeanLoad.Parse
 open LeanLoad.Elaborate (Elf Segment)
 open LeanLoad.Plan.Reloc (RelocEntry)
 
-
-open LeanLoad
-open LeanLoad.Parse
-open LeanLoad.Elaborate (Elf Segment)
-open LeanLoad.Plan.Reloc (RelocEntry)
-
 -- ============================================================================
 -- Raw page-arithmetic helpers — about `Segment` + alignDown/alignUp
 -- expressions, no `SegmentPlan` reference. Used by `SegmentPlan.ofSegmentCore`
@@ -339,15 +333,15 @@ structure SegmentPlan (n : Nat) where
       addition lifts to `Nat` without wrap. -/
   pageEnd_lt : pageVaddr.toNat + pageLength.toNat < 2 ^ 64
   /-- The file overlay sits inside the page-aligned segment range —
-      the `Materialize.MmapsContained` bound. -/
+      the `SegmentSafe.mmapInRange` bound. -/
   fileOverlay_le_pageLength : fileOverlayLen.toNat ≤ pageLength.toNat
   /-- The 4/8-byte write window of any rela sits inside the
       page-aligned segment range — combines with `coversRela` to
-      discharge `Materialize.StoresContained`. -/
+      discharge `SegmentSafe.storesInRange`. -/
   vaddr_memsz_le_pageEnd : segment.vaddr.toNat + segment.memsz.toNat ≤
     pageVaddr.toNat + pageLength.toNat
   /-- The partial-page BSS zero slot's end sits inside the
-      page-aligned segment range — the `Materialize.ZerosContained`
+      page-aligned segment range — the `SegmentSafe.zeroInRange`
       bound. -/
   zero_end_le_pageLength : pageInset.toNat + segment.filesz.toNat +
     partialBssLen.toNat ≤ pageLength.toNat
@@ -357,7 +351,7 @@ structure SegmentPlan (n : Nat) where
   pageInset_eq_vaddr : pageVaddr.toNat + pageInset.toNat = segment.vaddr.toNat
   /-- Planned relocations targeting this segment, in `seg.rela ++
       seg.jmprel` order. Each entry carries its `coversRela` witness
-      keyed to `segment` so `Materialize.StoresContained` is
+      keyed to `segment` so `SegmentSafe.storesInRange` is
       structurally provable. `Materialize.bakeSegmentRelocs` reads
       this directly. -/
   relocs         : Array (RelocEntry n segment)

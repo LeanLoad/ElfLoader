@@ -5,8 +5,8 @@ fallback, no `.error` branch for safety.
 
 Two top-level entry points:
   • `build`     — pure: `BasedPlan → safety-witnessed LoadOps`.
-                  Returns `{ lo : LoadOps bp.n // Safe … lo }`. The
-                  `Safe` witness is built structurally:
+                  Returns `{ lo : LoadOps bp.n // LoadSafe … lo }`.
+                  The `LoadSafe` witness is built structurally:
                     1. `buildSegmentSafe` per segment — combines
                        `setupSlots_*_eq` (closed form of (addr, len))
                        with `BasedPlan.segment_*_in_rsv` (per-slot
@@ -20,9 +20,6 @@ Two top-level entry points:
                        `ElfBuildInvariant` so the cross-elf
                        disjointness in `buildSafe` can chain to
                        `BasedPlan.cross_elf_mmapRange_disjoint`.
-                    4. `safe_of_LoadSafe` bridges `LoadSafe → Safe`
-                       (4 contained bridges + 1 disjoint bridge via
-                       `List.pairwise_flatMap` + `pairwise_filterMap`).
                   The only `Except` failure path is `bakeReloc`'s
                   32-bit overflow check (psABI per-relocation
                   `OVERFLOW_CHECK`).
@@ -328,9 +325,9 @@ def buildLoadElves (bp : BasedPlan) :
 -- The only `Except` failure path is `bakeReloc`'s 32-bit overflow.
 -- ============================================================================
 
-/-- Build the `LoadOps` tree + `Safe` witness directly. -/
+/-- Build the `LoadOps` tree + `LoadSafe` witness directly. -/
 def buildSafe (bp : BasedPlan) :
-    Except String { lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo } := do
+    Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } := do
   let ⟨elves, h_size, h_safe, h_inv⟩ ← buildLoadElves bp
   let lo : LoadOps bp.n := elves
   let h_loadSafe : LoadSafe bp.rsv.addr bp.rsv.len lo := by
@@ -363,17 +360,17 @@ def buildSafe (bp : BasedPlan) :
       have h_disj := bp.cross_elf_mmapRange_disjoint fi₁ fi₂
         ⟨k_i₁, h_k_src₁⟩ ⟨k_i₂, h_k_src₂⟩ h_lt
       rw [h_a₁, h_l₁, h_a₂, h_l₂]; exact h_disj
-  return ⟨lo, safe_of_LoadSafe _ _ lo h_loadSafe⟩
+  return ⟨lo, h_loadSafe⟩
 
 /-- Witnessed build — fully constructive. Assembles the `LoadOps`
-    tree alongside its `Safe` witness via `buildSafe`. The only
+    tree alongside its `LoadSafe` witness via `buildSafe`. The only
     `Except` failure path is `bakeReloc`'s 32-bit overflow check
     (psABI per-relocation `OVERFLOW_CHECK`); safety itself is
     established structurally, no decidable fallback.
 
     Callers consume the result via `LoadOps.runSafe`. -/
 def build (bp : BasedPlan) :
-    Except String { lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo } :=
+    Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } :=
   buildSafe bp
 
 -- ============================================================================

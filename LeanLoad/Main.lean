@@ -28,7 +28,7 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
     **Does not return.** -/
 private def realize (bp : Materialize.BasedPlan)
     (witnessed : { lo : Materialize.LoadOps bp.n //
-      Materialize.Safe bp.rsv.addr bp.rsv.len lo })
+      Materialize.LoadSafe bp.rsv.addr bp.rsv.len lo })
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   Materialize.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
   -- Ctors run after the address space is fully realized — they're

@@ -372,27 +372,18 @@ private def slotCount (seg : Option Segment) : Option Nat :=
 #guard slotCount fileAnonBss    = some 2  -- mmap + mprotect
 #guard slotCount fileBothBss    = some 3  -- mmap + zero + mprotect
 
--- ---- 4c. Safety predicates: vacuously hold for an empty LoadOps. ----------
+-- ---- 4c. Safety witness: vacuously holds for an empty LoadOps. -----------
 --
--- The five `MmapsDisjoint` / `*Contained` predicates that
--- `Materialize.build` discharges are decidable, so we can probe them
--- directly on a synthetic empty load tree. With no slots, all five
--- predicates hold for any reservation by vacuous quantification.
+-- `Materialize.LoadSafe` mirrors the LoadOps tree (per-elf, per-
+-- segment) and is what `runSafe` consumes. With no elves, both its
+-- fields (per-elf `ElfSafe`, cross-elf disjointness) hold vacuously.
 
 private def exampleReserve : Reserve :=
   { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
 
-#guard decide (Materialize.MmapsDisjoint (n := 0) #[]) = true
-#guard decide
-    (Materialize.MmapsContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
-#guard decide
-    (Materialize.ZerosContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
-#guard decide
-    (Materialize.StoresContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
-#guard decide
-    (Materialize.MprotectsContained exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
--- The five predicates bundled into one Prop; same vacuous truth.
-#guard decide
-    (Materialize.Safe exampleReserve.addr exampleReserve.len (n := 0) #[]) = true
+example : Materialize.LoadSafe exampleReserve.addr exampleReserve.len
+    (n := 0) #[] :=
+  ⟨fun _ h => absurd h (by simp),
+   fun _ _ hi _ _ _ _ _ _ _ _ _ _ _ => absurd hi (by simp)⟩
 
 end LeanLoad.Example
