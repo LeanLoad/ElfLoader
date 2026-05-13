@@ -56,14 +56,22 @@ open LeanLoad.Elaborate (Elf Formula)
 -- `segment_storeRange_in_rsv`".
 -- ============================================================================
 
-/-- Build one `SegmentOps` + its `SegmentSafe` witness. The only
-    `Except` failure source is `bakeSegmentRelocs`'s 32-bit overflow
-    check — safety itself is established structurally. -/
+/-- Build one `SegmentOps` + its `SegmentSafe` witness + the
+    `mmap_eq` equality that ties the built mmap back to its
+    `setupSlots` source (needed by the enclosing `buildElfSegments`
+    to chain to `within_elf_mmapRange_disjoint`). The only `Except`
+    failure source is `bakeSegmentRelocs`'s 32-bit overflow check —
+    safety itself is established structurally. -/
 def buildSegmentSafe (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
     (j : Nat) (h_j : j < (bp.plan.load.elfs[i]'(by
       rw [bp.plan.load.elfs_size]; exact h_i)).segments.size) :
     Except String { so : SegmentOps bp.n //
-      SegmentSafe bp.rsv.addr bp.rsv.len so } := do
+      SegmentSafe bp.rsv.addr bp.rsv.len so ∧
+      so.mmap =
+        (setupSlots ((bp.plan.load.elfs[i]'(by
+          rw [bp.plan.load.elfs_size]; exact h_i)).segments[j]'h_j)
+          (bp.plan.objects.val[i]'h_i).handle
+          (bp.bases[i]'(by rw [bp.bases_size]; exact h_i))).1 } := do
   have h_lp_i : i < bp.plan.load.elfs.size := by
     rw [bp.plan.load.elfs_size]; exact h_i
   let plan := bp.plan
@@ -122,21 +130,124 @@ def buildSegmentSafe (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
         have ⟨h_addr, h_len⟩ := setupSlots_mprotect_eq sp handle base
         rw [show so.mprotect = slots.2.2 from rfl, h_addr, h_len]
         exact bp.segment_mprotectRange_in_rsv i h_i j h_j
-    .ok ⟨so, h_safe⟩
+    -- The `mmap_eq` field — `so.mmap = slots.1` by construction (rfl).
+    .ok ⟨so, h_safe, rfl⟩
 
 -- ============================================================================
--- `buildElfSafe` / `buildLoadSafe` — assemble multi-segment / multi-elf
--- views with disjointness witnesses. Residual: needs a characterisation
--- of `Array.mapFinIdxM`'s `getElem` (i.e., the (j, h_j)-th element of
--- the output is the result of calling the supplied function at index
--- j) to connect `segsW[j].val.mmap` back to `(setupSlots sp_j _ _).1`
--- so `within_elf_mmapRange_disjoint` applies. Lean core has
--- `Array.getElem_mapFinIdxM` only when the monad is Id; under Except
--- the same shape exists in principle but needs an explicit lemma.
--- The mechanical chain through `setupSlots_mmap_eq` +
--- `within_elf_mmapRange_disjoint` is already proven — the remaining
--- piece is the index-to-source link.
+-- buildElfSegments — recursive helper that builds an elf's segment
+-- array, threading through the per-index `mmap_eq` invariant so the
+-- within-elf disjointness proof can chain to
+-- `within_elf_mmapRange_disjoint`. The recursion is on `segIdx`,
+-- counting down from `ep.segments.size`.
+--
+-- The invariants carried by the accumulator:
+--   • `acc.size = segIdx`
+--   • every previously-built segment is `SegmentSafe`.
+--   • every previously-built segment's mmap matches the corresponding
+--     `setupSlots` output.
 -- ============================================================================
+
+private def buildElfSegmentsAux (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
+    (h_lp_i : i < bp.plan.load.elfs.size)
+    (segIdx : Nat)
+    (h_segIdx : segIdx ≤ (bp.plan.load.elfs[i]'h_lp_i).segments.size)
+    (acc : Array (SegmentOps bp.n))
+    (h_size : acc.size = segIdx)
+    (h_safe : ∀ k (h_k : k < acc.size),
+      SegmentSafe bp.rsv.addr bp.rsv.len (acc[k]'h_k))
+    (h_mmap : ∀ k (h_k : k < acc.size)
+      (h_src : k < (bp.plan.load.elfs[i]'h_lp_i).segments.size),
+      (acc[k]'h_k).mmap =
+        (setupSlots ((bp.plan.load.elfs[i]'h_lp_i).segments[k]'h_src)
+          (bp.plan.objects.val[i]'h_i).handle
+          (bp.bases[i]'(by rw [bp.bases_size]; exact h_i))).1) :
+    Except String { result : Array (SegmentOps bp.n) //
+      result.size = (bp.plan.load.elfs[i]'h_lp_i).segments.size ∧
+      (∀ k (h_k : k < result.size),
+        SegmentSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
+      (∀ k (h_k : k < result.size)
+        (h_src : k < (bp.plan.load.elfs[i]'h_lp_i).segments.size),
+        (result[k]'h_k).mmap =
+          (setupSlots ((bp.plan.load.elfs[i]'h_lp_i).segments[k]'h_src)
+            (bp.plan.objects.val[i]'h_i).handle
+            (bp.bases[i]'(by rw [bp.bases_size]; exact h_i))).1) } := by
+  exact
+    if h_done : segIdx = (bp.plan.load.elfs[i]'h_lp_i).segments.size then
+      .ok ⟨acc, h_done ▸ h_size, h_safe, h_mmap⟩
+    else by
+      have h_lt : segIdx < (bp.plan.load.elfs[i]'h_lp_i).segments.size :=
+        Nat.lt_of_le_of_ne h_segIdx h_done
+      exact do
+        let ⟨so, h_so_safe, h_so_mmap⟩ ← buildSegmentSafe bp i h_i segIdx h_lt
+        let acc' := acc.push so
+        have h_size' : acc'.size = segIdx + 1 := by
+          show (acc.push so).size = segIdx + 1
+          rw [Array.size_push, h_size]
+        have h_safe' : ∀ k (h_k : k < acc'.size),
+            SegmentSafe bp.rsv.addr bp.rsv.len (acc'[k]'h_k) := by
+          intro k h_k
+          have h_k_split : k < acc.size ∨ k = acc.size := by
+            rw [Array.size_push] at h_k; omega
+          rcases h_k_split with h_k_lt | h_k_eq
+          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
+              show (acc.push so)[k]'h_k = _
+              rw [Array.getElem_push, dif_pos h_k_lt]
+            rw [this]; exact h_safe k h_k_lt
+          · subst h_k_eq
+            have : acc'[acc.size]'h_k = so := by
+              show (acc.push so)[acc.size]'h_k = so
+              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
+            rw [this]; exact h_so_safe
+        have h_mmap' : ∀ k (h_k : k < acc'.size)
+            (h_src : k < (bp.plan.load.elfs[i]'h_lp_i).segments.size),
+            (acc'[k]'h_k).mmap =
+              (setupSlots ((bp.plan.load.elfs[i]'h_lp_i).segments[k]'h_src)
+                (bp.plan.objects.val[i]'h_i).handle
+                (bp.bases[i]'(by rw [bp.bases_size]; exact h_i))).1 := by
+          intro k h_k h_src
+          have h_k_split : k < acc.size ∨ k = acc.size := by
+            rw [Array.size_push] at h_k; omega
+          rcases h_k_split with h_k_lt | h_k_eq
+          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
+              show (acc.push so)[k]'h_k = _
+              rw [Array.getElem_push, dif_pos h_k_lt]
+            rw [this]; exact h_mmap k h_k_lt h_src
+          · subst h_k_eq
+            have h_seg_eq : acc.size = segIdx := h_size
+            have : acc'[acc.size]'h_k = so := by
+              show (acc.push so)[acc.size]'h_k = so
+              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
+            rw [this]
+            -- The source segment is at index acc.size = segIdx.
+            -- We have h_so_mmap with index segIdx.
+            have h_seg_index :
+                (bp.plan.load.elfs[i]'h_lp_i).segments[acc.size]'h_src =
+                (bp.plan.load.elfs[i]'h_lp_i).segments[segIdx]'h_lt := by
+              congr 1
+            rw [h_seg_index]; exact h_so_mmap
+        buildElfSegmentsAux bp i h_i h_lp_i (segIdx + 1) h_lt acc' h_size'
+          h_safe' h_mmap'
+termination_by (bp.plan.load.elfs[i]'h_lp_i).segments.size - segIdx
+decreasing_by omega
+
+/-- Build an elf's segments array with per-index `SegmentSafe` and
+    `mmap_eq` invariants. The wrapper for `buildElfSegmentsAux`. -/
+def buildElfSegments (bp : BasedPlan) (i : Nat) (h_i : i < bp.n)
+    (h_lp_i : i < bp.plan.load.elfs.size) :
+    Except String { result : Array (SegmentOps bp.n) //
+      result.size = (bp.plan.load.elfs[i]'h_lp_i).segments.size ∧
+      (∀ k (h_k : k < result.size),
+        SegmentSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
+      (∀ k (h_k : k < result.size)
+        (h_src : k < (bp.plan.load.elfs[i]'h_lp_i).segments.size),
+        (result[k]'h_k).mmap =
+          (setupSlots ((bp.plan.load.elfs[i]'h_lp_i).segments[k]'h_src)
+            (bp.plan.objects.val[i]'h_i).handle
+            (bp.bases[i]'(by rw [bp.bases_size]; exact h_i))).1) } :=
+  buildElfSegmentsAux bp i h_i h_lp_i 0 (Nat.zero_le _) #[]
+    rfl
+    (by intro k h_k; exact absurd h_k (by simp))
+    (by intro k h_k _; exact absurd h_k (by simp))
 private def buildCore (bp : BasedPlan) :
     Except String (LoadOps bp.n) := do
   let plan := bp.plan
