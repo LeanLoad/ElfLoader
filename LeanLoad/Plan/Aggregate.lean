@@ -32,7 +32,7 @@ once, wraps the result in a `Materialize.BasedPlan` together with
 the IO-supplied `Reserve`, and passes that down to materialize.
 -/
 
-import LeanLoad.Discover.Plan
+import LeanLoad.Discover.Step
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Init

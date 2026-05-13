@@ -3,7 +3,7 @@ Discover executor — trusted IO.
 
 The BFS file-walking loop, plus the IO leaves it calls
 (`resolveSoname`, `readAndParse`). Decision-making and state
-integration live in `Discover.Plan`; this file just orchestrates IO
+integration live in `Discover.Step`; this file just orchestrates IO
 calls in the order the planner says.
 
 Search-path rules per gabi 08 § Shared Object Dependencies:
@@ -13,7 +13,7 @@ Search-path rules per gabi 08 § Shared Object Dependencies:
   `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.Discover.Plan
+import LeanLoad.Discover.Step
 import LeanLoad.Parse.RawElf
 import LeanLoad.Elaborate.Elf
 import LeanLoad.Runtime
@@ -122,7 +122,7 @@ private theorem step_skip_tgt_lt {objs : Array LoadedObject}
 -- BFS executor
 -- ============================================================================
 
-/-- BFS loop: dispatches each `step` decision from `Discover.Plan` to
+/-- BFS loop: dispatches each `step` decision from `Discover.Step` to
     the right IO action, then integrates the result inline so all four
     invariants (non-emptiness, name-`Nodup`, `deps.size = objs.size`,
     bounded edge targets) are derived at the push site. Recurses on

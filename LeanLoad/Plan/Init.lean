@@ -24,7 +24,7 @@ Address resolution (turn the order + bases + initArr into the flat
 `Materialize.initAddrs`.
 -/
 
-import LeanLoad.Discover.Plan
+import LeanLoad.Discover.Step
 import LeanLoad.Elaborate.Elf
 
 namespace LeanLoad.Plan.Init

@@ -58,7 +58,7 @@ import LeanLoad.Elaborate.Elf
 
 import LeanLoad.Runtime
 
-import LeanLoad.Discover.Plan
+import LeanLoad.Discover.Step
 import LeanLoad.Discover.IO
 
 import LeanLoad.Plan.Align
