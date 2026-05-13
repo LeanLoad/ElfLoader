@@ -155,7 +155,7 @@ private def bakeRelocSized (formula : Formula) {n : Nat}
 -- When `bakeReloc` returns `.ok (some s)`, the store's address and
 -- size are closed forms of `(base, entry)`. Every store has
 -- `size ∈ {4, 8}`, so `s.byteLen.toNat ≤ 8` — exactly the bound
--- `BasedPlan.segment_storeRange_in_rsv` consumes. The
+-- `BoundPlan.segment_storeRange_in_rsv` consumes. The
 -- `coversRela` witness on the entry comes via `entry.covered`.
 -- ============================================================================
 

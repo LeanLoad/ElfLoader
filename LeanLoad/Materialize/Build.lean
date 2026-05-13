@@ -1,29 +1,29 @@
 /-
-Builder: turn a `BasedPlan` into a safety-witnessed `LoadOps` tree
+Builder: turn a `BoundPlan` into a safety-witnessed `LoadOps` tree
 ready for `runSafe`. Fully constructive — no decidable safety
 fallback, no `.error` branch for safety.
 
 Two top-level entry points:
-  • `build`     — pure: `BasedPlan → safety-witnessed LoadOps`.
+  • `build`     — pure: `BoundPlan → safety-witnessed LoadOps`.
                   Returns `{ lo : LoadOps bp.n // LoadSafe … lo }`.
                   The `LoadSafe` witness is built structurally:
                     1. `buildSegmentSafe` per segment — combines
                        `setupSlots_*_eq` (closed form of (addr, len))
-                       with `BasedPlan.segment_*_in_rsv` (per-slot
+                       with `BoundPlan.segment_*_in_rsv` (per-slot
                        InRange) and `bakeReloc` characterisation +
                        `bakeSegmentRelocs_storesInvariant`.
                     2. `buildElfSafe` per elf — assembles
                        `buildElfSegments`'s output + within-elf
                        disjointness from
-                       `BasedPlan.within_elf_mmapRange_disjoint`.
+                       `BoundPlan.within_elf_mmapRange_disjoint`.
                     3. `buildLoadElves` across elves — threads
                        `ElfBuildInvariant` so the cross-elf
                        disjointness in `buildSafe` can chain to
-                       `BasedPlan.cross_elf_mmapRange_disjoint`.
+                       `BoundPlan.cross_elf_mmapRange_disjoint`.
                   The only `Except` failure path is `bakeReloc`'s
                   32-bit overflow check (psABI per-relocation
                   `OVERFLOW_CHECK`).
-  • `ctorAddrs` — pure: `BasedPlan → Array UInt64`. Resolves each
+  • `ctorAddrs` — pure: `BoundPlan → Array UInt64`. Resolves each
                   init-array entry through the per-elf base, in DFS
                   post-order; ET_DYN entries get the chosen base
                   added, ET_EXEC entries are absolute, zero entries
@@ -42,7 +42,7 @@ push-extension proof obligations live in `buildSafeArrayAux` only.
 
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Reloc
-import LeanLoad.Materialize.BasedPlan
+import LeanLoad.Materialize.BoundPlan
 
 namespace LeanLoad.Materialize
 
@@ -119,7 +119,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
 -- buildSegmentSafe — assemble one segment's `SegmentOps` together
 -- with its `SegmentSafe` witness, in one shot. The witness is built
 -- by chaining `setupSlots_*_eq` (closed forms of the slots) with the
--- matching `BasedPlan.segment_*_in_rsv` theorems. Stores come from
+-- matching `BoundPlan.segment_*_in_rsv` theorems. Stores come from
 -- `bakeSegmentRelocs`; their bound is `bakeSegmentRelocs_storesInvariant`
 -- with the universal predicate "byteLen ≤ 8 ∧ addr = base +
 -- entry.r_offset for some entry whose `covered` witness gives
@@ -132,7 +132,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
     to chain to `within_elf_mmapRange_disjoint`). The only `Except`
     failure source is `bakeSegmentRelocs`'s 32-bit overflow check —
     safety itself is established structurally. -/
-def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
+def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
     (j : Fin (bp.elfAt i).segments.size) :
     Except String { so : SegmentOps bp.n //
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
@@ -203,7 +203,7 @@ def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
 /-- Build an elf's segments array with per-index `SegmentSafe` and
     `mmap_eq` invariants. The `mmap_eq` invariant lets
     `buildElfSafe` chain to `within_elf_mmapRange_disjoint`. -/
-def buildElfSegments (bp : BasedPlan) (i : Fin bp.n) :
+def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
     Except String { result : Array (SegmentOps bp.n) //
       result.size = (bp.elfAt i).segments.size ∧
       (∀ k (h_k : k < result.size),
@@ -242,7 +242,7 @@ def buildElfSegments (bp : BasedPlan) (i : Fin bp.n) :
     `mmap` matches what `setupSlots` produced on the source segment.
     The cross-elf disjointness proof in `buildSafe` rewrites along
     these to land in `cross_elf_mmapRange_disjoint`. -/
-private def ElfBuildInvariant (bp : BasedPlan) (i : Fin bp.n)
+private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
     (eo : ElfOps bp.n) : Prop :=
   eo.segments.size = (bp.elfAt i).segments.size ∧
   (∀ k (h_k : k < eo.segments.size)
@@ -251,7 +251,7 @@ private def ElfBuildInvariant (bp : BasedPlan) (i : Fin bp.n)
       (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1)
 
 /-- Build one `ElfOps` + its `ElfSafe` witness + `ElfBuildInvariant`. -/
-def buildElfSafe (bp : BasedPlan) (i : Fin bp.n) :
+def buildElfSafe (bp : BoundPlan) (i : Fin bp.n) :
     Except String { eo : ElfOps bp.n //
       ElfSafe bp.rsv.addr bp.rsv.len eo ∧
       ElfBuildInvariant bp i eo } := do
@@ -292,7 +292,7 @@ def buildElfSafe (bp : BasedPlan) (i : Fin bp.n) :
 -- ============================================================================
 
 /-- Build all elves with `ElfSafe` + `ElfBuildInvariant` witnesses. -/
-def buildLoadElves (bp : BasedPlan) :
+def buildLoadElves (bp : BoundPlan) :
     Except String { result : Array (ElfOps bp.n) //
       result.size = bp.n ∧
       (∀ k (h_k : k < result.size),
@@ -317,12 +317,12 @@ def buildLoadElves (bp : BasedPlan) :
 -- Cross-elf disjointness chains:
 --   ElfBuildInvariant.mmap (each elf's segments[k].mmap = setupSlots …)
 --   → setupSlots_mmap_eq (closed-form addr/len)
---   → BasedPlan.cross_elf_mmapRange_disjoint
+--   → BoundPlan.cross_elf_mmapRange_disjoint
 -- The only `Except` failure path is `bakeReloc`'s 32-bit overflow.
 -- ============================================================================
 
 /-- Build the `LoadOps` tree + `LoadSafe` witness directly. -/
-def buildSafe (bp : BasedPlan) :
+def buildSafe (bp : BoundPlan) :
     Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } := do
   let ⟨elves, h_size, h_safe, h_inv⟩ ← buildLoadElves bp
   let lo : LoadOps bp.n := elves
@@ -365,7 +365,7 @@ def buildSafe (bp : BasedPlan) :
     established structurally, no decidable fallback.
 
     Callers consume the result via `LoadOps.runSafe`. -/
-def build (bp : BasedPlan) :
+def build (bp : BoundPlan) :
     Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } :=
   buildSafe bp
 
@@ -401,14 +401,14 @@ def collectAddrs (lp : Layout n) (bases : Array UInt64)
     return addrs
 
 /-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
-def ctorAddrs (bp : BasedPlan) : Array UInt64 :=
+def ctorAddrs (bp : BoundPlan) : Array UInt64 :=
   collectAddrs bp.plan.layout bp.bases bp.bases_size bp.plan.initOrder (·.initArr)
 
 /-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
     so deepest-dep fini runs after shallower fini, mirroring init's
     "deps first" order. gabi 08 mandates a partial order; reverse-init
     is glibc / musl's conventional choice. -/
-def dtorAddrs (bp : BasedPlan) : Array UInt64 :=
+def dtorAddrs (bp : BoundPlan) : Array UInt64 :=
   collectAddrs bp.plan.layout bp.bases bp.bases_size
     bp.plan.initOrder.reverse (·.finiArr)
 

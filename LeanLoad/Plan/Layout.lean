@@ -24,7 +24,7 @@ emit overlapping page ranges) but possible in principle.
 Once a `Layout` exists, `assignBases base lp` is total: it stacks
 each elf by `alignUp objectSpan 0x1000` from the IO-supplied base.
 The closed-form bound `assignBases_at_toNat` feeds
-`Materialize.BasedPlan.bases_at_toNat`.
+`Materialize.BoundPlan.bases_at_toNat`.
 
 Spec: gabi 07 § Program Header (page-aligned mmap views, base
 assignment, span over loadable segments).

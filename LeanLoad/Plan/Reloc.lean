@@ -26,7 +26,7 @@ Key types:
     the `coversRela seg.vaddr seg.memsz r_offset` witness from
     `Segment.rela` / `Segment.jmprel` propagates forward into the
     planned tree. `SegmentSafe.storesInRange` reads this witness
-    structurally (via `BasedPlan.segment_storeRange_in_rsv`).
+    structurally (via `BoundPlan.segment_storeRange_in_rsv`).
 
 This file owns `Entry` and the per-rela planner (`planOne`).
 The per-segment planner is called from `Plan/SegmentLayout.lean`'s

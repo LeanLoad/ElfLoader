@@ -28,7 +28,7 @@ object instead of parallel arrays + coherence proofs.
   3. Compute the DFS post-order init sequence.
 
 The IO bookend (`Main.load` / `Main.debug`) calls `Plan.ofObjects`
-once, wraps the result in a `Materialize.BasedPlan` together with
+once, wraps the result in a `Materialize.BoundPlan` together with
 the IO-supplied `Reserve`, and passes that down to materialize.
 -/
 

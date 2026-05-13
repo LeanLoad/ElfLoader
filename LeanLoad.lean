@@ -35,7 +35,7 @@ stage re-checks it — the witness travels in the type.
       · `Init.order` — DFS post-order init sequence (`Fin n` typed).
       All four bundled in `Plan.Plan`.
 
-  • Materialize — base-aware. Takes a `BasedPlan` (= `Plan` + IO
+  • Materialize — base-aware. Takes a `BoundPlan` (= `Plan` + IO
     `Reserve` + coherence proof) and emits a `LoadOps` tree of
     typed slots (`Mmap` / `Zero` / `Store` / `Mprotect`). Gated by
     `Safe rsv.addr rsv.len lo` — the bundle of `MmapsDisjoint` +
@@ -71,5 +71,5 @@ import LeanLoad.Plan.Aggregate
 
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Reloc
-import LeanLoad.Materialize.BasedPlan
+import LeanLoad.Materialize.BoundPlan
 import LeanLoad.Materialize.Build

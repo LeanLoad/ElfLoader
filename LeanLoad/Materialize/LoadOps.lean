@@ -33,7 +33,7 @@ Hierarchy:
 Safety witness: `LoadSafe` mirrors the tree structure
 (`SegmentSafe` per slot, `ElfSafe` per elf, `LoadSafe` across the
 layout) and is built constructively by `Materialize.build` from
-`BasedPlan`'s per-(i, j) `InRange` / `Disjoint` theorems. There is
+`BoundPlan`'s per-(i, j) `InRange` / `Disjoint` theorems. There is
 no separate flat predicate — `runSafe` consumes a `LoadSafe`
 witness directly.
 -/
@@ -98,7 +98,7 @@ def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 -- `setupSlots` characterisation. The four slot positions are simple
 -- closed forms of `(base, sp)`; these lemmas extract them so the
 -- `SegmentSafe` construction below can invoke the matching
--- `BasedPlan.segment_*_in_rsv` theorem directly.
+-- `BoundPlan.segment_*_in_rsv` theorem directly.
 -- ============================================================================
 
 /-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
@@ -165,7 +165,7 @@ end LoadOps
 
 -- ============================================================================
 -- Structural safety witness: `SegmentSafe` / `ElfSafe` / `LoadSafe`
--- mirror the LoadOps tree. `BasedPlan`'s per-(i, j) bound theorems
+-- mirror the LoadOps tree. `BoundPlan`'s per-(i, j) bound theorems
 -- map directly onto their fields, so `Materialize.build` constructs
 -- a witness inline with the tree without ever materialising a flat
 -- predicate. `runSafe` consumes a `LoadSafe`-witnessed value.
@@ -191,7 +191,7 @@ structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps n) : Prop where
 
 /-- Top-level structural safety: every elf is ElfSafe, plus cross-elf
     mmap disjointness. The natural target of the build's safety
-    proof: `BasedPlan`'s per-slot and disjointness theorems map
+    proof: `BoundPlan`'s per-slot and disjointness theorems map
     directly onto its fields. -/
 structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps n) : Prop where
   elfs : ∀ k, ∀ h : k < lo.size, ElfSafe rsvAddr rsvLen (lo[k]'h)

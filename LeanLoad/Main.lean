@@ -26,7 +26,7 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
 /-- Run all planned slots inside the kernel-picked reservation,
     allocate the kernel-style stack, and `execAndJump` to entry.
     **Does not return.** -/
-private def realize (bp : Materialize.BasedPlan)
+private def realize (bp : Materialize.BoundPlan)
     (witnessed : { lo : Materialize.LoadOps bp.n //
       Materialize.LoadSafe bp.rsv.addr bp.rsv.len lo })
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
@@ -75,7 +75,7 @@ def load (path : String) : IO Unit := do
   let g ← Discover.discover path
   let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
   let rsvW ← Reserve.run plan.layout.totalSpan
-  let bp : Materialize.BasedPlan :=
+  let bp : Materialize.BoundPlan :=
     { plan, rsv := rsvW.val, h_total := rsvW.property }
   let witnessed ← IO.ofExcept (Materialize.build bp)
   let ctorAddrs := Materialize.ctorAddrs bp
@@ -148,7 +148,7 @@ def debug (path : String) : IO Unit := do
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
   let lp := plan.layout
   let rsvW ← Reserve.run lp.totalSpan
-  let bp : Materialize.BasedPlan :=
+  let bp : Materialize.BoundPlan :=
     { plan, rsv := rsvW.val, h_total := rsvW.property }
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := bp.bases
