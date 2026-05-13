@@ -94,18 +94,36 @@ end Resolution
 
 /-- Result of building the resolution table for the elf array.
     Parameterised by the elf count so every contained `Unresolved` /
-    `SymRef` carries its bounds proof. -/
+    `SymRef` carries its bounds proof.
+
+    `index` is *total over all undefined symbols* (not just those with
+    a name): `buildTable` inserts `weakUndef` for noName / empty-name
+    undefs, so any per-rela lookup `lookup objectIdx symIdx` always
+    returns a defined `Resolution`. `entries` is the diagnostic /
+    iteration array and skips noName entries (they have no useful
+    diagnostic name to surface). -/
 structure Table (n : Nat) where
-  /-- One entry per undefined reference in any elf, in iteration
-      order. Each carries an explicit `Resolution` — there's no
-      `Option` to distinguish "weak undef" from "strong undef". -/
+  /-- One entry per *named* undefined reference, in iteration order.
+      Used for diagnostics (`missing` / `weakMissing` projections);
+      noName / empty-name undefs are not included. -/
   entries : Array (Unresolved n × Resolution n)
-  /-- O(1) `(objectIdx, symIdx) → Resolution n` lookup, in lock-step
-      with `entries`. `Plan.Reloc.planOne` reads this so per-rela
-      symbol resolution is O(1). -/
+  /-- O(1) `(objectIdx, symIdx) → Resolution n` lookup, total over all
+      undefined symbols (named or not). Consumers go through
+      `Table.lookup` so the type's totality guarantee shows up at the
+      call site. -/
   index : Std.HashMap (Nat × Nat) (Resolution n)
 
 namespace Table
+
+/-- Total `(objectIdx, symIdx) → Resolution` lookup. Falls back to
+    `weakUndef` when the key is missing — but for tables built by
+    `buildTable` over an elf's `isUndef` symbols, the key is always
+    present, so the fallback never fires. The `getD` form lets
+    `Plan.Reloc.resolveTarget` pattern-match three constructors
+    (`.found` / `.weakUndef` / `.strongUndef`) instead of four (those
+    + `none`). -/
+def lookup (t : Table n) (objectIdx symIdx : Nat) : Resolution n :=
+  t.index.getD (objectIdx, symIdx) .weakUndef
 
 /-- Strong (non-weak) undef references that did not resolve. A
     non-empty `missing` means the program would fail at load. -/
@@ -124,8 +142,15 @@ def weakMissing (t : Table n) : Array (Unresolved n) :=
 end Table
 
 /-- Walk every elf's symbol table, look up each undefined
-    reference's definition. Builds both the iteration array
-    (`entries`) and the O(1) lookup `index` in lock-step. -/
+    reference's definition. Builds both the diagnostic iteration
+    array (`entries`) and the O(1) total lookup `index`.
+
+    `index` covers *every* undefined symbol — named or not — so
+    `Table.lookup` is total. NoName / empty-name undefs map to
+    `weakUndef` (gabi 05's safe fallback for an unresolvable weak
+    reference; a strong-undef without a name is a malformed ELF that
+    the linker shouldn't have produced). `entries` skips them since
+    they have no useful diagnostic string. -/
 def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
   let mut entries : Array (Unresolved elfs.size × Resolution elfs.size) := #[]
   let mut index : Std.HashMap (Nat × Nat) (Resolution elfs.size) := ∅
@@ -135,8 +160,10 @@ def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
     for symEntry in elf.symtab do
       if symEntry.isUndef then
         match symEntry.name with
-        | none    => pure ()
-        | some "" => pure ()
+        | none =>
+          index := index.insert (objectIdx, symIdx) .weakUndef
+        | some "" =>
+          index := index.insert (objectIdx, symIdx) .weakUndef
         | some n =>
           let entry : Unresolved elfs.size :=
             { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := n }
