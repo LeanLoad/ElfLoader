@@ -7,22 +7,20 @@ Two top-level entry points:
                   Returns a witnessed
                   `{ lo : LoadOps bp.n // Safe bp.rsv.addr bp.rsv.len lo }`.
                   `Safe` bundles the five flat safety predicates
-                  (`MmapsDisjoint` + four `*Contained`). The witness
-                  is currently established via the decidable instance
-                  on `Safe`; the structural alternative is in
-                  `LoadOps.lean`:
-                    · `LoadSafe` — tree-form analogue, target of the
-                      `BasedPlan` per-(i, j) theorems
+                  (`MmapsDisjoint` + four `*Contained`). Construction
+                  routes:
+                    · Decidable instance on `Safe` — the runtime
+                      check used today. Generic; works on any
+                      `LoadOps`.
+                    · Structural via `LoadOps.safe_of_LoadSafe`
+                      (proven) — given a `LoadSafe` witness, derive
+                      `Safe`. `LoadSafe` itself follows from
+                      `BasedPlan`'s per-(i, j) theorems
                       (`segment_*_in_rsv`, `within_elf_*_disjoint`,
-                      `cross_elf_*_disjoint`).
-                    · `*_of_LoadSafe` — bridges `LoadSafe` to four of
-                      `Safe`'s five fields. The fifth
-                      (`mmapsDisjoint`) needs a flatMap-ordering
-                      lemma; for now the decidable instance on `Safe`
-                      handles it. The runtime witness is sufficient
-                      for `runSafe`; the structural route exists for
-                      consumers that want a proof rather than a
-                      check.
+                      `cross_elf_*_disjoint`) once the buildCore-shape
+                      lemma is in place. The flat→tree bridge for
+                      `MmapsDisjoint` goes through
+                      `List.pairwise_flatMap` + `pairwise_filterMap`.
   • `ctorAddrs` — pure: `BasedPlan → Array UInt64`. Resolves each
                   init-array entry through the per-elf base, in DFS
                   post-order; ET_DYN entries get the chosen base
