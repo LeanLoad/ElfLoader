@@ -124,6 +124,31 @@ def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     | none    => pure acc
     | some w  => pure (acc.push w)
 
+/-- Sized variant of `bakeSegmentRelocs` — accepts `relocs : Array
+    (RelocEntry n seg)` for any `n` equal to `elfs.size`. The
+    `subst h_elfs; exact bakeSegmentRelocs …` body absorbs the `▸`
+    cast at the wrapper, so `Materialize.buildSegmentSafe` can pass
+    `sp.relocs : Array (RelocEntry bp.n seg)` directly without an
+    outer rewrite. -/
+def bakeSegmentRelocsSized (formula : Formula) {n : Nat}
+    (elfs : Array Elf) (h_elfs : elfs.size = n)
+    (bases : Array UInt64) (h_bases : bases.size = n)
+    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry n seg)) :
+    Except String (Array Store) := by
+  subst h_elfs
+  exact bakeSegmentRelocs formula elfs bases h_bases base seg relocs
+
+/-- Sized variant of `bakeReloc`, exposed via `bakeRelocSized` for
+    the characterisation lemmas below to refer to. Identical to
+    `bakeReloc` modulo `subst h_elfs`. -/
+private def bakeRelocSized (formula : Formula) {n : Nat}
+    (elfs : Array Elf) (h_elfs : elfs.size = n)
+    (bases : Array UInt64) (h_bases : bases.size = n)
+    (base : UInt64) (seg : Segment) (entry : RelocEntry n seg) :
+    Except String (Option Store) := by
+  subst h_elfs
+  exact bakeReloc formula elfs bases h_bases base seg entry
+
 -- ============================================================================
 -- bakeReloc characterisation.
 --
@@ -279,5 +304,49 @@ theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
       rcases Array.mem_push.mp h_mem_s with h_in_acc | h_eq
       · exact h_acc s h_in_acc
       · rw [h_eq]; exact h_baked entry w h_br
+
+-- ============================================================================
+-- Sized variants of the characterisation lemmas. Each is one
+-- `subst h_elfs; exact unsizedVersion` line — after substituting
+-- `n := elfs.size`, the Sized variants reduce to the unsized ones.
+-- Kept as named lemmas so callers (`Materialize.buildSegmentSafe`) can
+-- chain via `bakeSegmentRelocsSized` without an outer `▸` cast on
+-- the relocs array.
+-- ============================================================================
+
+theorem bakeReloc_ok_someSized (formula : Formula) {n : Nat} (elfs : Array Elf)
+    (h_elfs : elfs.size = n)
+    (bases : Array UInt64) (h_bases : bases.size = n)
+    (base : UInt64) (seg : Segment) (entry : RelocEntry n seg) (s : Store)
+    (h : bakeRelocSized formula elfs h_elfs bases h_bases base seg entry =
+         .ok (some s)) :
+    s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
+  subst h_elfs
+  exact bakeReloc_ok_some formula elfs bases h_bases base seg entry s h
+
+theorem bakeReloc_byteLen_le_8Sized (formula : Formula) {n : Nat} (elfs : Array Elf)
+    (h_elfs : elfs.size = n)
+    (bases : Array UInt64) (h_bases : bases.size = n)
+    (base : UInt64) (seg : Segment) (entry : RelocEntry n seg) (s : Store)
+    (h : bakeRelocSized formula elfs h_elfs bases h_bases base seg entry =
+         .ok (some s)) :
+    s.byteLen.toNat ≤ 8 := by
+  subst h_elfs
+  exact bakeReloc_byteLen_le_8 formula elfs bases h_bases base seg entry s h
+
+theorem bakeSegmentRelocs_storesInvariantSized (formula : Formula) {n : Nat}
+    (elfs : Array Elf) (h_elfs : elfs.size = n)
+    (bases : Array UInt64) (h_bases : bases.size = n)
+    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry n seg))
+    (P : Store → Prop)
+    (h_baked : ∀ entry, ∀ s, bakeRelocSized formula elfs h_elfs bases h_bases base
+                                seg entry = .ok (some s) → P s)
+    (out : Array Store)
+    (h_out : bakeSegmentRelocsSized formula elfs h_elfs bases h_bases base
+              seg relocs = .ok out) :
+    ∀ s ∈ out, P s := by
+  subst h_elfs
+  exact bakeSegmentRelocs_storesInvariant formula elfs bases h_bases base seg
+    relocs P h_baked out h_out
 
 end LeanLoad.Materialize

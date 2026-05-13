@@ -176,4 +176,13 @@ def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
       symIdx := symIdx + 1
   return { entries, index }
 
+/-- Sized variant of `buildTable` — returns a `Table n` for any `n`
+    equal to `elfs.size`. The `subst h_size; exact buildTable elfs`
+    body absorbs the `▸` cast at the wrapper, so `Plan.ofObjects` can
+    write `Resolve.buildTableSized elfs h_size : Table objs.val.size`
+    without an outer rewrite. -/
+def buildTableSized {n : Nat} (elfs : Array Elf) (h_size : elfs.size = n) :
+    Table n := by
+  subst h_size; exact buildTable elfs
+
 end LeanLoad.Plan.Resolve

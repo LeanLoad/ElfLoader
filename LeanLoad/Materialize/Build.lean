@@ -142,21 +142,17 @@ def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
   let elfs := plan.objectElfs
   let n := bp.n
   have h_elfs : elfs.size = n := plan.objectElfs_size
-  have h_bases : bp.bases.size = elfs.size := bp.bases_size.trans h_elfs.symm
-  have h_n_eq : n = elfs.size := h_elfs.symm
+  have h_bases : bp.bases.size = n := bp.bases_size
   let sp := bp.segAt i j
   let handle := bp.handleAt i
   let base := bp.baseAt i
   -- Don't destructure `setupSlots` — keep the projection form so the
   -- characterisation lemmas (`setupSlots_*_eq`) align on the goal.
   let slots := setupSlots sp handle base
-  let relocs : Array (Plan.Reloc.RelocEntry elfs.size sp.segment) :=
-    h_n_eq ▸ sp.relocs
-  -- Use `match h_bake : ... with` to bind the bakeReloc equation so the
-  -- storesInRange proof can invoke `bakeSegmentRelocs_storesInvariant`
-  -- with the literal equation as `h_out`.
-  match h_bake : bakeSegmentRelocs plan.formula elfs bp.bases h_bases base
-                   sp.segment relocs with
+  -- Use the sized variant so `sp.relocs : Array (RelocEntry n sp.segment)`
+  -- is accepted directly — no `▸` cast on the relocs array.
+  match h_bake : bakeSegmentRelocsSized plan.formula elfs h_elfs bp.bases
+                   h_bases base sp.segment sp.relocs with
   | .error e => .error e
   | .ok stores =>
     let so : SegmentOps n :=
@@ -178,15 +174,15 @@ def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
         -- so `addr = base + entry.r_offset` and `byteLen ≤ 8`; combine
         -- with `entry.covered` and `segment_storeRange_in_rsv`.
         intro s h_s
-        refine bakeSegmentRelocs_storesInvariant plan.formula elfs bp.bases
-          h_bases base sp.segment relocs
+        refine bakeSegmentRelocs_storesInvariantSized plan.formula elfs h_elfs
+          bp.bases h_bases base sp.segment sp.relocs
           (fun s' => Runtime.InRange s'.addr s'.byteLen bp.rsv.addr bp.rsv.len)
           ?_ stores h_bake s h_s
         intro e s' h_br
-        obtain ⟨h_addr, _h_size⟩ := bakeReloc_ok_some plan.formula elfs bp.bases
-          h_bases base sp.segment e s' h_br
-        have h_byteLen := bakeReloc_byteLen_le_8 plan.formula elfs bp.bases
-          h_bases base sp.segment e s' h_br
+        obtain ⟨h_addr, _h_size⟩ := bakeReloc_ok_someSized plan.formula elfs
+          h_elfs bp.bases h_bases base sp.segment e s' h_br
+        have h_byteLen := bakeReloc_byteLen_le_8Sized plan.formula elfs
+          h_elfs bp.bases h_bases base sp.segment e s' h_br
         rw [h_addr]
         exact bp.segment_storeRange_in_rsv i j e.r_offset e.covered
           s'.byteLen h_byteLen

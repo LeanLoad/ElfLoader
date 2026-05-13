@@ -346,6 +346,15 @@ def ofElfs (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
   else
     .error s!"LoadPlan.ofElfs: cumulative span {totalNat} exceeds UInt64"
 
+/-- Sized variant of `ofElfs` — returns `LoadPlan n` for any `n` equal
+    to `elfs.size`. The `subst h_size; exact ofElfs elfs rt` body
+    absorbs the `▸` cast at the wrapper, so `Plan.ofObjects` can write
+    `LoadPlan.ofElfsSized elfs h_size rt : LoadPlan objs.val.size`
+    without an outer rewrite. -/
+def ofElfsSized {n : Nat} (elfs : Array Elf) (h_size : elfs.size = n)
+    (rt : Resolve.Table n) : Except String (LoadPlan n) := by
+  subst h_size; exact ofElfs elfs rt
+
 end LoadPlan
 
 -- ============================================================================

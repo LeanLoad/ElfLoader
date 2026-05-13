@@ -86,20 +86,17 @@ def formula (p : Plan) : Elaborate.Formula :=
         UInt64 cumulative-span overflow). -/
 def ofObjects (objs : ObjectList) : Except String Plan := do
   let elfs := objs.val.map (·.elf)
-  have h_eq : elfs.size = objs.val.size := by simp [elfs]
-  let resolveRaw : Resolve.Table elfs.size := Resolve.buildTable elfs
+  have h_size : elfs.size = objs.val.size := by simp [elfs]
+  -- Sized variants thread `h_size` through their construction so the
+  -- result types are already at `objs.val.size` — no outer `▸` cast.
+  let resolve := Resolve.buildTableSized elfs h_size
   -- Reject loads with strong-undef references — production loaders
   -- would surface this as an early `ld.so` failure.
-  if let some u := resolveRaw.missing[0]? then
-    .error s!"Plan.ofObjects: {resolveRaw.missing.size} unresolved strong symbol(s); \
+  if let some u := resolve.missing[0]? then
+    .error s!"Plan.ofObjects: {resolve.missing.size} unresolved strong symbol(s); \
       first: {u.name}"
-  let loadRaw ← LoadPlan.ofElfs elfs resolveRaw
-  -- Cast everything from `elfs.size` to `objs.val.size` (provably
-  -- equal). The cast is `Eq.symm`-direction since we want the
-  -- type-parameter to read `objs.val.size`, the canonical anchor.
-  let resolve : Resolve.Table objs.val.size := h_eq ▸ resolveRaw
-  let load    : LoadPlan objs.val.size       := h_eq ▸ loadRaw
-  let initOrder : Array (Fin objs.val.size)  := Init.order objs
+  let load ← LoadPlan.ofElfsSized elfs h_size resolve
+  let initOrder := Init.order objs
   return { objects := objs, resolve, load, initOrder }
 
 end Plan
