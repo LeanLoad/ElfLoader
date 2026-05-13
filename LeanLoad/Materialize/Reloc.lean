@@ -102,17 +102,18 @@ private def bakeReloc (formula : Formula) (elfs : Array Elf)
           place=0x{(base + entry.r_offset).toNat} \
           (value=0x{res.value.toNat} doesn't fit signed-32 or unsigned-32)"
 
-/-- Bake every entry in one segment into a flat `Array Store`. -/
+/-- Bake every entry in one segment into a flat `Array Store`.
+    Implemented as `Array.foldlM` so the origin lemma
+    `bakeSegmentRelocs_mem_origin` can chain through
+    `Array.foldlM`'s induction principle. -/
 def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry elfs.size seg)) :
-    Except String (Array Store) := do
-  let mut acc : Array Store := #[]
-  for entry in relocs do
+    Except String (Array Store) :=
+  relocs.foldlM (init := (#[] : Array Store)) fun acc entry => do
     match ← bakeReloc formula elfs bases h_bases base seg entry with
-    | none    => pure ()
-    | some w  => acc := acc.push w
-  return acc
+    | none    => pure acc
+    | some w  => pure (acc.push w)
 
 -- ============================================================================
 -- bakeReloc characterisation.
