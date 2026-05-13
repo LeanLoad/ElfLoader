@@ -169,7 +169,7 @@ theorem segment_pageRange_in_rsv (bp : BasedPlan)
     show _ = (sp.pageVaddr + sp.pageLength).toNat
     rw [UInt64.toNat_add]
     have h_no_wrap : sp.pageVaddr.toNat + sp.pageLength.toNat < 2 ^ 64 :=
-      ep.pageEnd_lt j h_j
+      sp.pageEnd_lt
     exact (Nat.mod_eq_of_lt h_no_wrap).symm
   have h_pe_le_adv : sp.pageEndAddr.toNat ≤
       (bp.plan.load.elfs[i]'h_lp_i).advance.toNat :=
@@ -177,6 +177,7 @@ theorem segment_pageRange_in_rsv (bp : BasedPlan)
   have h_base_advance := bp.base_plus_advance_le_rsv_end i h_i
   show (bp.bases[i]'(by rw [bp.bases_size]; exact h_i)).toNat +
        sp.pageVaddr.toNat + sp.pageLength.toNat ≤ _
+  -- pageVaddr + pageLength = pageEndAddr; lift via SegmentPlan.pageEnd_lt.
   omega
 
 /-- No-wrap of `base + pageVaddr + pageLength` — falls out of
@@ -234,8 +235,8 @@ theorem segment_mmapRange_in_rsv (bp : BasedPlan)
       bp.rsv.addr bp.rsv.len := by
   have h_pageEnd := bp.segment_pageRange_in_rsv i h_i j h_j
   have h_base_pv := bp.segment_base_add_pageVaddr_toNat i h_i j h_j
-  have h_fo_le_pl := (bp.plan.load.elfs[i]'(by
-    rw [bp.plan.load.elfs_size]; exact h_i)).fileOverlay_le_pageLength j h_j
+  have h_fo_le_pl := ((bp.plan.load.elfs[i]'(by
+    rw [bp.plan.load.elfs_size]; exact h_i)).segments[j]'h_j).fileOverlay_le_pageLength
   have h_lower := bp.rsv_addr_le_base i h_i
   refine ⟨?_, ?_⟩
   · rw [h_base_pv]; omega
@@ -287,8 +288,8 @@ theorem segment_zeroRange_in_rsv (bp : BasedPlan)
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).segment.filesz.toNat +
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).partialBssLen.toNat ≤
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).pageLength.toNat :=
-    (bp.plan.load.elfs[i]'h_lp_i).zero_end_le_pageLength j h_j
-  have h_vm_le := (bp.plan.load.elfs[i]'h_lp_i).vaddr_memsz_le_pageEnd j h_j
+    ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).zero_end_le_pageLength
+  have h_vm_le := ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).vaddr_memsz_le_pageEnd
   have h_filesz_le_memsz := UInt64.le_iff_toNat_le.mp
     ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).segment.fileszLeMemsz
   -- Step the address out: (base + pageVaddr + pageInset).toNat.
@@ -378,7 +379,7 @@ theorem within_elf_pageRange_disjoint (bp : BasedPlan)
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageVaddr.toNat +
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageLength.toNat <
       2 ^ 64 :=
-    (bp.plan.load.elfs[i]'h_lp_i).pageEnd_lt j₁ h_j₁
+    ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageEnd_lt
   have h_pe_eq :
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageEndAddr.toNat =
       ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).pageVaddr.toNat +
@@ -426,9 +427,9 @@ theorem within_elf_mmapRange_disjoint (bp : BasedPlan)
   have h_lp_i : i < bp.plan.load.elfs.size := by
     rw [bp.plan.load.elfs_size]; exact h_i
   have h_fo_le_pl₁ :=
-    (bp.plan.load.elfs[i]'h_lp_i).fileOverlay_le_pageLength j₁ h_j₁
+    ((bp.plan.load.elfs[i]'h_lp_i).segments[j₁]'h_j₁).fileOverlay_le_pageLength
   have h_fo_le_pl₂ :=
-    (bp.plan.load.elfs[i]'h_lp_i).fileOverlay_le_pageLength j₂ h_j₂
+    ((bp.plan.load.elfs[i]'h_lp_i).segments[j₂]'h_j₂).fileOverlay_le_pageLength
   -- `h_page : Disjoint base+pv₁ pageLength₁ base+pv₂ pageLength₂` —
   -- shrink each len from pageLength to fileOverlayLen.
   rcases h_page with h_left | h_right
@@ -476,7 +477,7 @@ theorem cross_elf_pageRange_disjoint (bp : BasedPlan)
          ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageLength).toNat
       rw [UInt64.toNat_add]
       have h_no_wrap :=
-        (bp.plan.load.elfs[i₁]'h_lp_i₁).pageEnd_lt j₁ h_j₁
+        ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).pageEnd_lt
       exact (Nat.mod_eq_of_lt h_no_wrap).symm
     rw [h_eq]
     exact (bp.plan.load.elfs[i₁]'h_lp_i₁).pageEndAddr_le_advance j₁ h_j₁
@@ -518,9 +519,9 @@ theorem cross_elf_mmapRange_disjoint (bp : BasedPlan)
   have h_lp_i₂ : i₂ < bp.plan.load.elfs.size := by
     rw [bp.plan.load.elfs_size]; exact h_i₂
   have h_fo_le_pl₁ :=
-    (bp.plan.load.elfs[i₁]'h_lp_i₁).fileOverlay_le_pageLength j₁ h_j₁
+    ((bp.plan.load.elfs[i₁]'h_lp_i₁).segments[j₁]'h_j₁).fileOverlay_le_pageLength
   have h_fo_le_pl₂ :=
-    (bp.plan.load.elfs[i₂]'h_lp_i₂).fileOverlay_le_pageLength j₂ h_j₂
+    ((bp.plan.load.elfs[i₂]'h_lp_i₂).segments[j₂]'h_j₂).fileOverlay_le_pageLength
   rcases h_page with h_left | h_right
   · left; omega
   · right; omega
@@ -548,7 +549,7 @@ theorem segment_storeRange_in_rsv (bp : BasedPlan)
   have h_no_wrap := bp.segment_pageRange_no_wrap i h_i j h_j
   have h_lp_i : i < bp.plan.load.elfs.size := by
     rw [bp.plan.load.elfs_size]; exact h_i
-  have h_vm_le := (bp.plan.load.elfs[i]'h_lp_i).vaddr_memsz_le_pageEnd j h_j
+  have h_vm_le := ((bp.plan.load.elfs[i]'h_lp_i).segments[j]'h_j).vaddr_memsz_le_pageEnd
   obtain ⟨h_vaddr_le, h_ro8_le_vm⟩ := h_cov
   have h_ro_no_wrap :
       (bp.bases[i]'(by rw [bp.bases_size]; exact h_i)).toNat +
