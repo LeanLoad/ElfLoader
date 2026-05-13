@@ -15,7 +15,7 @@ structure parameterised by the object count `objects.val.size`:
   · `initOrder : Array (Fin objects.val.size)` — DFS post-order
                  init sequence over the dep DAG.
 
-Every contained index (`SymRef`, `RelocEntry.target`, `initOrder`,
+Every contained index (`SymRef`, `Entry.target`, `initOrder`,
 the per-elf `bases` computed later) is typed at the same `n`, so
 consumers (`Materialize.build`, `Materialize.ctorAddrs`) thread one
 object instead of parallel arrays + coherence proofs.

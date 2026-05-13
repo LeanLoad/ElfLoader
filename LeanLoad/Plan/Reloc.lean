@@ -3,13 +3,13 @@ Relocation **planning** — base-free.
 
 Phase 1 of 2 in the relocation pipeline:
 
-  1. **Plan** (this file) — `RawRela → RelocEntry n seg`. Resolves the
-     symbol reference into a `RelocTarget` (three explicit cases:
+  1. **Plan** (this file) — `RawRela → Entry n seg`. Resolves the
+     symbol reference into a `Target` (three explicit cases:
      `noSymbol`, `weakUnresolved`, `resolved ref`) and bundles it with
      the rela's `type` / `r_offset` / `addend` and the inherited
      `coversRela` witness. *Base-free*: no field knows about an mmap
      base. Result lives on each `SegmentLayout.relocs`.
-  2. **Bake** (`Materialize/Reloc.lean`) — `RelocEntry n seg + base →
+  2. **Bake** (`Materialize/Reloc.lean`) — `Entry n seg + base →
      Option StoreSlot`. Computes the absolute place and symbol value once
      a reservation base is chosen, then turns each entry into a
      4-or-8-byte `StoreSlot` slot. Used by `Materialize.buildSegmentSafe`.
@@ -18,17 +18,17 @@ The split exists because the kernel picks the per-elf base (`Reserve.run`)
 between phases 1 and 2; phase 1 is pure and runs ahead of any IO.
 
 Key types:
-  • `RelocTarget n` — 3-case inductive replacing the old
+  • `Target n` — 3-case inductive replacing the old
     `Option (SymRef n)`. Lets `Main.debug` distinguish "no symbol"
     from "weak-unresolved" diagnostically; `Materialize.bakeReloc`
-    collapses both unresolved cases via `RelocTarget.symRef?`.
-  • `RelocEntry n seg` — parameterised by the owning `Segment` so
+    collapses both unresolved cases via `Target.symRef?`.
+  • `Entry n seg` — parameterised by the owning `Segment` so
     the `coversRela seg.vaddr seg.memsz r_offset` witness from
     `Segment.rela` / `Segment.jmprel` propagates forward into the
     planned tree. `SegmentSafe.storesInRange` reads this witness
     structurally (via `BasedPlan.segment_storeRange_in_rsv`).
 
-This file owns `RelocEntry` and the per-rela planner (`planOne`).
+This file owns `Entry` and the per-rela planner (`planOne`).
 The per-segment planner is called from `Plan/SegmentLayout.lean`'s
 `ofSegment` — each `SegmentLayout` carries its own `relocs` array,
 so there's no parallel relocation tree to construct or zip later.
@@ -45,7 +45,7 @@ open LeanLoad.Parse (RawRela)
 open LeanLoad.Elaborate (Elf Segment coversRela)
 
 -- ============================================================================
--- RelocEntry — one rela's planning result. Base-free.
+-- Entry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `coversRela` witness
 -- (inherited from `Segment.rela` / `Segment.jmprel`'s subtype) can be
 -- preserved through planning. `SegmentSafe.storesInRange` needs
@@ -58,7 +58,7 @@ open LeanLoad.Elaborate (Elf Segment coversRela)
     from "weak-undefined" diagnostically, and so `Materialize.bakeReloc`
     pattern-matches without an outer `Option`. All three cases drive
     `S = 0` in the formula except `resolved`. -/
-inductive RelocTarget (n : Nat) where
+inductive Target (n : Nat) where
   /-- `r.sym = 0` (`R_*_NONE` and similar). No symbol referenced. -/
   | noSymbol
   /-- Symbol is undef-weak and BFS returned no provider. gabi 05
@@ -68,28 +68,28 @@ inductive RelocTarget (n : Nat) where
   | resolved (ref : Resolve.SymRef n)
   deriving Repr
 
-namespace RelocTarget
+namespace Target
 
 /-- Extract the resolved provider, if any. Used by the bake step
     where both `noSymbol` and `weakUnresolved` collapse to `S = 0`. -/
-def symRef? : RelocTarget n → Option (Resolve.SymRef n)
+def symRef? : Target n → Option (Resolve.SymRef n)
   | .resolved ref => some ref
   | _             => none
 
 /-- Human-readable tag for diagnostics. -/
-def tag : RelocTarget n → String
+def tag : Target n → String
   | .noSymbol       => "none"
   | .weakUnresolved => "weak"
   | .resolved _     => "ok"
 
-end RelocTarget
+end Target
 
 /-- One planned relocation, owned by `seg`. `target` discriminates the
     three resolution outcomes (no symbol / weak unresolved / resolved
     provider). `Materialize.bakeReloc` collapses the two unresolved
     cases to `S = 0`. The `covered` witness carries the 8-byte-window
     containment from the parent segment forward into the planned tree. -/
-structure RelocEntry (n : Nat) (seg : Segment) where
+structure Entry (n : Nat) (seg : Segment) where
   /-- Per-arch relocation type (`R_*`); the low 32 bits of `r_info`. -/
   type     : UInt32
   /-- Segment-relative byte offset for the patch. The absolute address
@@ -97,8 +97,8 @@ structure RelocEntry (n : Nat) (seg : Segment) where
   r_offset : UInt64
   /-- Addend `A` (gabi `r_addend`; bit pattern of a signed sxword). -/
   addend   : UInt64
-  /-- Resolution outcome — see `RelocTarget`. -/
-  target   : RelocTarget n
+  /-- Resolution outcome — see `Target`. -/
+  target   : Target n
   /-- 8-byte write window fits in `[seg.vaddr, seg.vaddr + seg.memsz)`.
       Inherited from the `coversRela` subtype on `Segment.rela` /
       `Segment.jmprel`; preserved through `planOne` so the
@@ -129,7 +129,7 @@ structure RelocEntry (n : Nat) (seg : Segment) where
     cases. -/
 private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (symIdx : Nat) :
-    RelocTarget elfs.size :=
+    Target elfs.size :=
   match elfs[objectIdx].symtab[symIdx]? with
   | none       => .noSymbol             -- malformed: symIdx ≥ symtab.size
   | some entry =>
@@ -146,8 +146,8 @@ private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
 def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (seg : Segment) (r : RawRela)
     (h_cov : coversRela seg.vaddr seg.memsz r.r_offset) :
-    RelocEntry elfs.size seg :=
-  let target : RelocTarget elfs.size :=
+    Entry elfs.size seg :=
+  let target : Target elfs.size :=
     if r.sym == 0 then .noSymbol
     else resolveTarget elfs rt objectIdx r.sym.toNat
   { type := r.type, r_offset := r.r_offset, addend := r.r_addend, target,
@@ -157,11 +157,11 @@ def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     formula at materialize time). Used by `Plan.Layout` when
     constructing each `SegmentLayout`. The `coversRela` witness on each
     `seg.rela` / `seg.jmprel` entry is threaded into the planned
-    `RelocEntry`'s `covered` field. -/
+    `Entry`'s `covered` field. -/
 def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (seg : Segment) :
-    Array (RelocEntry elfs.size seg) := Id.run do
-  let mut acc : Array (RelocEntry elfs.size seg) := #[]
+    Array (Entry elfs.size seg) := Id.run do
+  let mut acc : Array (Entry elfs.size seg) := #[]
   for entry in seg.rela do
     acc := acc.push (planOne elfs rt objectIdx seg entry.val entry.property)
   for entry in seg.jmprel do

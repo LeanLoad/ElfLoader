@@ -149,7 +149,7 @@ def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
   -- Don't destructure `setupSlots` — keep the projection form so the
   -- characterisation lemmas (`setupSlots_*_eq`) align on the goal.
   let slots := setupSlots sp handle base
-  -- Use the sized variant so `sp.relocs : Array (RelocEntry n sp.segment)`
+  -- Use the sized variant so `sp.relocs : Array (Entry n sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
   match h_bake : bakeSegmentRelocsSized plan.formula elfs h_elfs bp.bases
                    h_bases base sp.segment sp.relocs with

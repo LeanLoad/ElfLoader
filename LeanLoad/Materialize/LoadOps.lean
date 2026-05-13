@@ -13,7 +13,7 @@ Stage boundary:
     flat `Array` intermediate.
 
 The natural number parameter `n` is the elf count, threaded through
-from `SegmentLayout n` (for the per-segment `RelocEntry n`s).
+from `SegmentLayout n` (for the per-segment `Entry n`s).
 
 Per-segment shape (the "realize protocol"):
   1. *MmapSlot* — `Option MmapSlot` — `mmapFile` for the file-backed prefix,

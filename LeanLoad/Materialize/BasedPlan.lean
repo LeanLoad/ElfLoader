@@ -363,7 +363,7 @@ theorem cross_elf_mmapRange_disjoint (bp : BasedPlan)
   · right; omega
 
 /-- The store range `[base + r_offset, base + r_offset + size)` fits
-    in the reservation for any `RelocEntry` with the `coversRela`
+    in the reservation for any `Entry` with the `coversRela`
     witness on its parent segment. The 4-or-8-byte width is bounded
     by `coversRela`'s conservative 8-byte window. -/
 theorem segment_storeRange_in_rsv (bp : BasedPlan) (i : Fin bp.n)

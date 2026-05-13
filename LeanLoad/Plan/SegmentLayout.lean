@@ -15,7 +15,7 @@ direct projection (`sp.pageEnd_lt`, `sp.fileOverlay_le_pageLength`, …):
   • `pageInset_eq_vaddr` — `pageVaddr + pageInset = vaddr` (lets
                            per-slot proofs rewrite to canonical form).
 
-Also carries `relocs : Array (RelocEntry n segment)` — the per-segment
+Also carries `relocs : Array (Entry n segment)` — the per-segment
 planned relocations; every offset is base-free (relative to base = 0)
 and the materializer adds the chosen base when emitting structured slots.
 
@@ -38,7 +38,7 @@ namespace LeanLoad.Plan
 open LeanLoad
 open LeanLoad.Parse
 open LeanLoad.Elaborate (Elf Segment)
-open LeanLoad.Plan.Reloc (RelocEntry)
+open LeanLoad.Plan.Reloc (Entry)
 
 -- ============================================================================
 -- Raw page-arithmetic helpers — about `Segment` + alignDown/alignUp
@@ -354,14 +354,14 @@ structure SegmentLayout (n : Nat) where
       keyed to `segment` so `SegmentSafe.storesInRange` is
       structurally provable. `Materialize.bakeSegmentRelocs` reads
       this directly. -/
-  relocs         : Array (RelocEntry n segment)
+  relocs         : Array (Entry n segment)
 
 namespace SegmentLayout
 
 /-- Compute the page-math view of a `Segment` and discharge each
     per-segment invariant. Callers supply `relocs` separately
     (typically via `Reloc.planSegment`). -/
-def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (RelocEntry n s)) :
+def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (Entry n s)) :
     SegmentLayout n :=
   let ea             := effectiveAlign s.align
   let pageVaddr      := alignDown s.vaddr ea
@@ -415,35 +415,35 @@ def hasPartialBss (sp : SegmentLayout n) : Bool := sp.partialBssLen > 0
 -- ============================================================================
 
 @[simp] theorem ofSegmentCore_pageVaddr (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n s)) :
+    (relocs : Array (Entry n s)) :
     (ofSegmentCore n s relocs).pageVaddr =
       alignDown s.vaddr (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_pageLength (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n s)) :
+    (relocs : Array (Entry n s)) :
     (ofSegmentCore n s relocs).pageLength =
       alignUp (s.vaddr + s.memsz) (effectiveAlign s.align) -
       alignDown s.vaddr (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_pageInset (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n s)) :
+    (relocs : Array (Entry n s)) :
     (ofSegmentCore n s relocs).pageInset =
       s.vaddr - alignDown s.vaddr (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_fileOverlayLen (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n s)) :
+    (relocs : Array (Entry n s)) :
     (ofSegmentCore n s relocs).fileOverlayLen =
       alignUp ((s.vaddr - alignDown s.vaddr (effectiveAlign s.align)) +
                s.filesz) (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_partialBssLen (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n s)) :
+    (relocs : Array (Entry n s)) :
     (ofSegmentCore n s relocs).partialBssLen =
       (ofSegmentCore n s relocs).fileOverlayLen -
       ((ofSegmentCore n s relocs).pageInset + s.filesz) := rfl
 
 @[simp] theorem ofSegmentCore_segment (n : Nat) (s : Segment)
-    (relocs : Array (RelocEntry n s)) :
+    (relocs : Array (Entry n s)) :
     (ofSegmentCore n s relocs).segment = s := rfl
 
 end SegmentLayout

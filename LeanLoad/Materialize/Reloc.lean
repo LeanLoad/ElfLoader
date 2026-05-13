@@ -3,10 +3,10 @@ Relocation **baking** — base-aware.
 
 Phase 2 of 2 in the relocation pipeline:
 
-  1. **Plan** (`Plan/Reloc.lean`) — `RawRela → RelocEntry n seg`. Pure,
+  1. **Plan** (`Plan/Reloc.lean`) — `RawRela → Entry n seg`. Pure,
      base-free; resolves the symbol reference and stores the result on
      each `SegmentLayout.relocs`.
-  2. **Bake** (this file) — `RelocEntry n seg + base → Option StoreSlot`.
+  2. **Bake** (this file) — `Entry n seg + base → Option StoreSlot`.
      Looks up the symbol's absolute value `S = base[target] +
      symtab[target].value` (or 0 when `target = noSymbol`/
      `weakUnresolved`), feeds `(S, A, base, place)` into the per-arch
@@ -32,7 +32,7 @@ import LeanLoad.Elaborate.Reloc
 namespace LeanLoad.Materialize
 
 open LeanLoad
-open LeanLoad.Plan.Reloc (RelocEntry)
+open LeanLoad.Plan.Reloc (Entry)
 open LeanLoad.Elaborate (Elf Segment Formula FormulaInputs FormulaResult PatchSize)
 
 -- ============================================================================
@@ -63,13 +63,13 @@ private def fitsLow32 (v : UInt64) : Bool :=
 -- Symbol-value resolution: `S = base[target] + symtab[target].value`.
 -- ============================================================================
 
-/-- Resolve `S` for a `RelocEntry.target`. Unresolved cases
+/-- Resolve `S` for a `Entry.target`. Unresolved cases
     (`noSymbol`, `weakUnresolved`) and out-of-bounds `symIdx` (caller
     bug) yield `S = 0`; the formula then sees `S = 0`, which is a
     valid input for every reloc type. -/
 private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     (h_bases : bases.size = elfs.size)
-    (target : Plan.Reloc.RelocTarget elfs.size) : UInt64 :=
+    (target : Plan.Reloc.Target elfs.size) : UInt64 :=
   match target.symRef? with
   | none => 0
   | some ref =>
@@ -80,7 +80,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     | some sym => provBase + sym.value
 
 -- ============================================================================
--- Bake one RelocEntry into an Option StoreSlot.
+-- Bake one Entry into an Option StoreSlot.
 -- ============================================================================
 
 /-- Bake one entry. Returns `.ok none` for no-op relocations
@@ -91,7 +91,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     directly. -/
 private def bakeReloc (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (entry : RelocEntry elfs.size seg) :
+    (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg) :
     Except String (Option StoreSlot) :=
   match formula entry.type
     { symValue := symValueOf elfs bases h_bases entry.target,
@@ -117,7 +117,7 @@ private def bakeReloc (formula : Formula) (elfs : Array Elf)
     `Array.foldlM`'s induction principle. -/
 def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry elfs.size seg)) :
+    (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg)) :
     Except String (Array StoreSlot) :=
   relocs.foldlM (init := (#[] : Array StoreSlot)) fun acc entry => do
     match ← bakeReloc formula elfs bases h_bases base seg entry with
@@ -125,15 +125,15 @@ def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
     | some w  => pure (acc.push w)
 
 /-- Sized variant of `bakeSegmentRelocs` — accepts `relocs : Array
-    (RelocEntry n seg)` for any `n` equal to `elfs.size`. The
+    (Entry n seg)` for any `n` equal to `elfs.size`. The
     `subst h_elfs; exact bakeSegmentRelocs …` body absorbs the `▸`
     cast at the wrapper, so `Materialize.buildSegmentSafe` can pass
-    `sp.relocs : Array (RelocEntry bp.n seg)` directly without an
+    `sp.relocs : Array (Entry bp.n seg)` directly without an
     outer rewrite. -/
 def bakeSegmentRelocsSized (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry n seg)) :
+    (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg)) :
     Except String (Array StoreSlot) := by
   subst h_elfs
   exact bakeSegmentRelocs formula elfs bases h_bases base seg relocs
@@ -144,7 +144,7 @@ def bakeSegmentRelocsSized (formula : Formula) {n : Nat}
 private def bakeRelocSized (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : RelocEntry n seg) :
+    (base : UInt64) (seg : Segment) (entry : Entry n seg) :
     Except String (Option StoreSlot) := by
   subst h_elfs
   exact bakeReloc formula elfs bases h_bases base seg entry
@@ -164,7 +164,7 @@ private def bakeRelocSized (formula : Formula) {n : Nat}
     `s.addr = base + entry.r_offset` and `s.size ∈ {4, 8}`. -/
 theorem bakeReloc_ok_some (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (entry : RelocEntry elfs.size seg)
+    (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
     (s : StoreSlot)
     (h : bakeReloc formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
@@ -191,7 +191,7 @@ theorem bakeReloc_ok_some (formula : Formula) (elfs : Array Elf)
 /-- `StoreSlot.byteLen.toNat ≤ 8` for any store emitted by `bakeReloc`. -/
 theorem bakeReloc_byteLen_le_8 (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (entry : RelocEntry elfs.size seg)
+    (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
     (s : StoreSlot)
     (h : bakeReloc formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
@@ -203,7 +203,7 @@ theorem bakeReloc_byteLen_le_8 (formula : Formula) (elfs : Array Elf)
 
 -- ============================================================================
 -- Origin lemma for bakeSegmentRelocs. Every Store in the output came
--- from some RelocEntry in the input via a successful `bakeReloc`.
+-- from some Entry in the input via a successful `bakeReloc`.
 -- Proved by `List.foldlM` induction on `relocs.toList`.
 -- ============================================================================
 
@@ -252,7 +252,7 @@ private theorem listFoldlM_except_preserves {α : Type} {β : Type}
     entry.r_offset` for some `entry`). -/
 theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry elfs.size seg))
+    (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg))
     (P : StoreSlot → Prop)
     (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs bases h_bases base seg entry =
                               .ok (some s) → P s)
@@ -317,7 +317,7 @@ theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
 theorem bakeReloc_ok_someSized (formula : Formula) {n : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : RelocEntry n seg) (s : StoreSlot)
+    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreSlot)
     (h : bakeRelocSized formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
@@ -327,7 +327,7 @@ theorem bakeReloc_ok_someSized (formula : Formula) {n : Nat} (elfs : Array Elf)
 theorem bakeReloc_byteLen_le_8Sized (formula : Formula) {n : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : RelocEntry n seg) (s : StoreSlot)
+    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreSlot)
     (h : bakeRelocSized formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
@@ -337,7 +337,7 @@ theorem bakeReloc_byteLen_le_8Sized (formula : Formula) {n : Nat} (elfs : Array 
 theorem bakeSegmentRelocs_storesInvariantSized (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (relocs : Array (RelocEntry n seg))
+    (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg))
     (P : StoreSlot → Prop)
     (h_baked : ∀ entry, ∀ s, bakeRelocSized formula elfs h_elfs bases h_bases base
                                 seg entry = .ok (some s) → P s)

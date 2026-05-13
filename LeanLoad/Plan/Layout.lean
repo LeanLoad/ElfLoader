@@ -13,7 +13,7 @@ This file assembles those into per-elf and global structures:
     `totalSpan` and the `totalSpan_eq` Nat↔UInt64 bridge.
 
 The natural number parameter `n` is the elf count: every
-`RelocEntry` indexes the global elf array with `Fin n`.
+`Entry` indexes the global elf array with `Fin n`.
 
 `Layout.ofElfs` builds the whole tree in one pass: it consumes
 `(elfs, resolveTable)` and produces a fully-planned
@@ -37,7 +37,7 @@ namespace LeanLoad.Plan
 open LeanLoad
 open LeanLoad.Parse
 open LeanLoad.Elaborate (Elf Segment)
-open LeanLoad.Plan.Reloc (RelocEntry)
+open LeanLoad.Plan.Reloc (Entry)
 
 
 -- ============================================================================
