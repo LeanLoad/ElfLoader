@@ -34,6 +34,13 @@ Two top-level entry points:
 
 `Main.realize` consumes `build`'s witnessed result via
 `LoadOps.runSafe`. There is no separate `safe` entry point.
+
+The two recursive constructions (segments-of-an-elf, elves-of-the-
+load) share one generic helper, `buildSafeArray`: given a `count`
+and a per-index `Except`-returning step, it threads a per-index
+invariant `P k b` through `count` push extensions. Both
+`buildElfSegments` and `buildLoadElves` are thin wrappers — the
+push-extension proof obligations live in `buildSafeArrayAux` only.
 -/
 
 import LeanLoad.Materialize.LoadOps
@@ -47,8 +54,69 @@ open LeanLoad.Plan (LoadPlan ElfPlan SegmentPlan)
 open LeanLoad.Elaborate (Elf Formula)
 
 -- ============================================================================
--- Builder: BasedPlan → LoadOps tree.
+-- buildSafeArray — generic helper for "build an array of `count`
+-- elements, each satisfying a per-index invariant `P k b`". Used by
+-- `buildElfSegments` (segments-of-an-elf) and `buildLoadElves`
+-- (elves-of-the-load). Both were nearly-identical 70-line aux
+-- functions before extraction.
 -- ============================================================================
+
+/-- Recursive helper for `buildSafeArray`. The accumulator carries:
+    `acc.size = idx` and the per-index invariant for every already-
+    built element. Each iteration steps `idx → idx + 1` by pushing one
+    element built via `step idx`. -/
+private def buildSafeArrayAux {β : Type} (count : Nat) (P : Nat → β → Prop)
+    (step : (k : Nat) → k < count → Except String { b : β // P k b })
+    (idx : Nat) (h_idx : idx ≤ count)
+    (acc : Array β)
+    (h_size : acc.size = idx)
+    (h_acc : ∀ k (h_k : k < acc.size), P k (acc[k]'h_k)) :
+    Except String { arr : Array β // arr.size = count ∧
+      ∀ k (h_k : k < arr.size), P k (arr[k]'h_k) } := by
+  exact
+    if h_done : idx = count then
+      .ok ⟨acc, h_done ▸ h_size, h_acc⟩
+    else by
+      have h_lt : idx < count := Nat.lt_of_le_of_ne h_idx h_done
+      exact do
+        let ⟨b, h_pb⟩ ← step idx h_lt
+        let acc' := acc.push b
+        have h_size' : acc'.size = idx + 1 := by
+          show (acc.push b).size = idx + 1
+          rw [Array.size_push, h_size]
+        have h_acc' : ∀ k (h_k : k < acc'.size), P k (acc'[k]'h_k) := by
+          intro k h_k
+          have h_split : k < acc.size ∨ k = acc.size := by
+            rw [Array.size_push] at h_k; omega
+          rcases h_split with h_k_lt | h_k_eq
+          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
+              show (acc.push b)[k]'h_k = _
+              rw [Array.getElem_push, dif_pos h_k_lt]
+            rw [this]; exact h_acc k h_k_lt
+          · subst h_k_eq
+            have h_get : acc'[acc.size]'h_k = b := by
+              show (acc.push b)[acc.size]'h_k = b
+              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
+            rw [h_get, show acc.size = idx from h_size]; exact h_pb
+        buildSafeArrayAux count P step (idx + 1) h_lt acc' h_size' h_acc'
+termination_by count - idx
+decreasing_by omega
+
+/-- Build an array of `count` elements where each element at index
+    `k` satisfies the predicate `P k`. The caller provides a `step`
+    that — given the index `k` and its bound — produces one element
+    with its witness, or fails with a string error.
+
+    Returns the array together with `arr.size = count` and a pointwise
+    proof `∀ k h_k, P k (arr[k]'h_k)`.
+
+    Used by `buildElfSegments` and `buildLoadElves`. -/
+def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
+    (step : (k : Nat) → k < count → Except String { b : β // P k b }) :
+    Except String { arr : Array β // arr.size = count ∧
+      ∀ k (h_k : k < arr.size), P k (arr[k]'h_k) } :=
+  buildSafeArrayAux count P step 0 (Nat.zero_le _) #[] rfl
+    (by intro k h_k; exact absurd h_k (by simp))
 
 -- ============================================================================
 -- buildSegmentSafe — assemble one segment's `SegmentOps` together
@@ -133,97 +201,15 @@ def buildSegmentSafe (bp : BasedPlan) (i : Fin bp.n)
     .ok ⟨so, h_safe, rfl⟩
 
 -- ============================================================================
--- buildElfSegments — recursive helper that builds an elf's segment
--- array, threading through the per-index `mmap_eq` invariant so the
--- within-elf disjointness proof can chain to
--- `within_elf_mmapRange_disjoint`. The recursion is on `segIdx`,
--- counting down from `ep.segments.size`.
---
--- The invariants carried by the accumulator:
---   • `acc.size = segIdx`
---   • every previously-built segment is `SegmentSafe`.
---   • every previously-built segment's mmap matches the corresponding
---     `setupSlots` output.
+-- buildElfSegments — build an elf's segment array with per-index
+-- `SegmentSafe` and `mmap_eq` invariants. A thin wrapper over
+-- `buildSafeArray` — the combined predicate `(SegmentSafe ∧
+-- mmap_eq)` is unzipped on return for caller convenience.
 -- ============================================================================
 
-private def buildElfSegmentsAux (bp : BasedPlan) (i : Fin bp.n)
-    (segIdx : Nat) (h_segIdx : segIdx ≤ (bp.elfAt i).segments.size)
-    (acc : Array (SegmentOps bp.n))
-    (h_size : acc.size = segIdx)
-    (h_safe : ∀ k (h_k : k < acc.size),
-      SegmentSafe bp.rsv.addr bp.rsv.len (acc[k]'h_k))
-    (h_mmap : ∀ k (h_k : k < acc.size)
-      (h_src : k < (bp.elfAt i).segments.size),
-      (acc[k]'h_k).mmap =
-        (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1) :
-    Except String { result : Array (SegmentOps bp.n) //
-      result.size = (bp.elfAt i).segments.size ∧
-      (∀ k (h_k : k < result.size),
-        SegmentSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
-      (∀ k (h_k : k < result.size)
-        (h_src : k < (bp.elfAt i).segments.size),
-        (result[k]'h_k).mmap =
-          (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1) } := by
-  exact
-    if h_done : segIdx = (bp.elfAt i).segments.size then
-      .ok ⟨acc, h_done ▸ h_size, h_safe, h_mmap⟩
-    else by
-      have h_lt : segIdx < (bp.elfAt i).segments.size :=
-        Nat.lt_of_le_of_ne h_segIdx h_done
-      exact do
-        let ⟨so, h_so_safe, h_so_mmap⟩ ← buildSegmentSafe bp i ⟨segIdx, h_lt⟩
-        let acc' := acc.push so
-        have h_size' : acc'.size = segIdx + 1 := by
-          show (acc.push so).size = segIdx + 1
-          rw [Array.size_push, h_size]
-        have h_safe' : ∀ k (h_k : k < acc'.size),
-            SegmentSafe bp.rsv.addr bp.rsv.len (acc'[k]'h_k) := by
-          intro k h_k
-          have h_k_split : k < acc.size ∨ k = acc.size := by
-            rw [Array.size_push] at h_k; omega
-          rcases h_k_split with h_k_lt | h_k_eq
-          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
-              show (acc.push so)[k]'h_k = _
-              rw [Array.getElem_push, dif_pos h_k_lt]
-            rw [this]; exact h_safe k h_k_lt
-          · subst h_k_eq
-            have : acc'[acc.size]'h_k = so := by
-              show (acc.push so)[acc.size]'h_k = so
-              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
-            rw [this]; exact h_so_safe
-        have h_mmap' : ∀ k (h_k : k < acc'.size)
-            (h_src : k < (bp.elfAt i).segments.size),
-            (acc'[k]'h_k).mmap =
-              (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i)
-                (bp.baseAt i)).1 := by
-          intro k h_k h_src
-          have h_k_split : k < acc.size ∨ k = acc.size := by
-            rw [Array.size_push] at h_k; omega
-          rcases h_k_split with h_k_lt | h_k_eq
-          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
-              show (acc.push so)[k]'h_k = _
-              rw [Array.getElem_push, dif_pos h_k_lt]
-            rw [this]; exact h_mmap k h_k_lt h_src
-          · subst h_k_eq
-            have h_seg_eq : acc.size = segIdx := h_size
-            have : acc'[acc.size]'h_k = so := by
-              show (acc.push so)[acc.size]'h_k = so
-              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
-            rw [this]
-            -- The source segment is at index acc.size = segIdx.
-            -- We have h_so_mmap for `Fin ⟨segIdx, h_lt⟩`. The two
-            -- `Fin` values differ only in their hypothesis proof; the
-            -- underlying segment is the same.
-            have h_seg_index :
-                bp.segAt i ⟨acc.size, h_src⟩ = bp.segAt i ⟨segIdx, h_lt⟩ := by
-              congr 1; exact Fin.eq_of_val_eq h_seg_eq
-            rw [h_seg_index]; exact h_so_mmap
-        buildElfSegmentsAux bp i (segIdx + 1) h_lt acc' h_size' h_safe' h_mmap'
-termination_by (bp.elfAt i).segments.size - segIdx
-decreasing_by omega
-
 /-- Build an elf's segments array with per-index `SegmentSafe` and
-    `mmap_eq` invariants. The wrapper for `buildElfSegmentsAux`. -/
+    `mmap_eq` invariants. The `mmap_eq` invariant lets
+    `buildElfSafe` chain to `within_elf_mmapRange_disjoint`. -/
 def buildElfSegments (bp : BasedPlan) (i : Fin bp.n) :
     Except String { result : Array (SegmentOps bp.n) //
       result.size = (bp.elfAt i).segments.size ∧
@@ -232,11 +218,24 @@ def buildElfSegments (bp : BasedPlan) (i : Fin bp.n) :
       (∀ k (h_k : k < result.size)
         (h_src : k < (bp.elfAt i).segments.size),
         (result[k]'h_k).mmap =
-          (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1) } :=
-  buildElfSegmentsAux bp i 0 (Nat.zero_le _) #[]
-    rfl
-    (by intro k h_k; exact absurd h_k (by simp))
-    (by intro k h_k _; exact absurd h_k (by simp))
+          (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1) } := do
+  -- Combined predicate: SegmentSafe ∧ (bound-discharged) mmap_eq.
+  -- The mmap_eq clause is wrapped in `∀ h_src` so the step's bound
+  -- proof can produce it for any equal-by-proof-irrelevance witness.
+  let ⟨arr, h_size, h_p⟩ ← buildSafeArray (bp.elfAt i).segments.size
+    (fun k so =>
+      SegmentSafe bp.rsv.addr bp.rsv.len so ∧
+      ∀ (h_src : k < (bp.elfAt i).segments.size),
+        so.mmap = (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i)
+                    (bp.baseAt i)).1)
+    (fun k h_k => do
+      let ⟨so, h_safe, h_mmap⟩ ← buildSegmentSafe bp i ⟨k, h_k⟩
+      -- `h_mmap` is for `⟨k, h_k⟩`; `fun _ => h_mmap` reuses it for
+      -- any `⟨k, h_src⟩` by definitional proof-irrelevance of `<`.
+      return ⟨so, h_safe, fun _ => h_mmap⟩)
+  return ⟨arr, h_size,
+    fun k h_k => (h_p k h_k).1,
+    fun k h_k h_src => (h_p k h_k).2 h_src⟩
 
 -- ============================================================================
 -- buildElfSafe — assemble one elf's `ElfOps` + its `ElfSafe` witness.
@@ -245,12 +244,13 @@ def buildElfSegments (bp : BasedPlan) (i : Fin bp.n) :
 -- of (addr, len)) into `within_elf_mmapRange_disjoint`'s conclusion.
 -- ============================================================================
 
-/-- Per-elf invariant: each elf's segments match buildElfSegments's
-    output (i.e. their mmaps come from setupSlots on the source
-    segments). Used to thread cross-elf disjointness. -/
+/-- Per-elf invariant carried across `buildLoadElves`: each elf's
+    `segments` array has the matching length, and each built segment's
+    `mmap` matches what `setupSlots` produced on the source segment.
+    The cross-elf disjointness proof in `buildSafe` rewrites along
+    these to land in `cross_elf_mmapRange_disjoint`. -/
 private def ElfBuildInvariant (bp : BasedPlan) (i : Fin bp.n)
     (eo : ElfOps bp.n) : Prop :=
-  eo.base = bp.baseAt i ∧
   eo.segments.size = (bp.elfAt i).segments.size ∧
   (∀ k (h_k : k < eo.segments.size)
     (h_src : k < (bp.elfAt i).segments.size),
@@ -289,81 +289,14 @@ def buildElfSafe (bp : BasedPlan) (i : Fin bp.n) :
       have h_disj := bp.within_elf_mmapRange_disjoint i
         ⟨j₁, h_j₁_src⟩ ⟨j₂, h_j₂_src⟩ h_lt
       rw [h_a₁, h_l₁, h_a₂, h_l₂]; exact h_disj
-  let h_inv : ElfBuildInvariant bp i eo := ⟨rfl, h_size, h_mmap⟩
+  let h_inv : ElfBuildInvariant bp i eo := ⟨h_size, h_mmap⟩
   return ⟨eo, h_elfSafe, h_inv⟩
 
 -- ============================================================================
--- buildLoadElves — recursive helper that builds the array of ElfOps,
--- threading through per-elf invariants for cross-elf disjointness.
+-- buildLoadElves — build the array of ElfOps with per-elf
+-- `ElfSafe` and `ElfBuildInvariant` invariants. Thin wrapper over
+-- `buildSafeArray`.
 -- ============================================================================
-
-private def buildLoadElvesAux (bp : BasedPlan)
-    (elfIdx : Nat) (h_elfIdx : elfIdx ≤ bp.n)
-    (acc : Array (ElfOps bp.n))
-    (h_size : acc.size = elfIdx)
-    (h_safe : ∀ k (h_k : k < acc.size),
-      ElfSafe bp.rsv.addr bp.rsv.len (acc[k]'h_k))
-    (h_inv : ∀ k (h_k : k < acc.size) (h_src : k < bp.n),
-      ElfBuildInvariant bp ⟨k, h_src⟩ (acc[k]'h_k)) :
-    Except String { result : Array (ElfOps bp.n) //
-      result.size = bp.n ∧
-      (∀ k (h_k : k < result.size),
-        ElfSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
-      (∀ k (h_k : k < result.size) (h_src : k < bp.n),
-        ElfBuildInvariant bp ⟨k, h_src⟩ (result[k]'h_k)) } := by
-  exact
-    if h_done : elfIdx = bp.n then
-      .ok ⟨acc, h_done ▸ h_size, h_safe, h_inv⟩
-    else by
-      have h_lt : elfIdx < bp.n := Nat.lt_of_le_of_ne h_elfIdx h_done
-      exact do
-        let ⟨eo, h_eoSafe, h_eoInv⟩ ← buildElfSafe bp ⟨elfIdx, h_lt⟩
-        let acc' := acc.push eo
-        have h_size' : acc'.size = elfIdx + 1 := by
-          show (acc.push eo).size = elfIdx + 1
-          rw [Array.size_push, h_size]
-        have h_safe' : ∀ k (h_k : k < acc'.size),
-            ElfSafe bp.rsv.addr bp.rsv.len (acc'[k]'h_k) := by
-          intro k h_k
-          have h_k_split : k < acc.size ∨ k = acc.size := by
-            rw [Array.size_push] at h_k; omega
-          rcases h_k_split with h_k_lt | h_k_eq
-          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
-              show (acc.push eo)[k]'h_k = _
-              rw [Array.getElem_push, dif_pos h_k_lt]
-            rw [this]; exact h_safe k h_k_lt
-          · subst h_k_eq
-            have : acc'[acc.size]'h_k = eo := by
-              show (acc.push eo)[acc.size]'h_k = eo
-              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
-            rw [this]; exact h_eoSafe
-        have h_inv' : ∀ k (h_k : k < acc'.size) (h_src : k < bp.n),
-            ElfBuildInvariant bp ⟨k, h_src⟩ (acc'[k]'h_k) := by
-          intro k h_k h_src
-          have h_k_split : k < acc.size ∨ k = acc.size := by
-            rw [Array.size_push] at h_k; omega
-          rcases h_k_split with h_k_lt | h_k_eq
-          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
-              show (acc.push eo)[k]'h_k = _
-              rw [Array.getElem_push, dif_pos h_k_lt]
-            rw [this]; exact h_inv k h_k_lt h_src
-          · subst h_k_eq
-            have h_idx_eq : acc.size = elfIdx := h_size
-            have h_acc'_eq : acc'[acc.size]'h_k = eo := by
-              show (acc.push eo)[acc.size]'h_k = eo
-              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
-            rw [h_acc'_eq]
-            -- h_eoInv : ElfBuildInvariant bp ⟨elfIdx, h_lt⟩ eo.
-            -- Goal: ElfBuildInvariant bp ⟨acc.size, h_src⟩ eo.
-            -- Same Fin underlying value (acc.size = elfIdx); proof
-            -- irrelevant.
-            have h_fin_eq : (⟨acc.size, h_src⟩ : Fin bp.n) =
-                            ⟨elfIdx, h_lt⟩ :=
-              Fin.eq_of_val_eq h_idx_eq
-            rw [h_fin_eq]; exact h_eoInv
-        buildLoadElvesAux bp (elfIdx + 1) h_lt acc' h_size' h_safe' h_inv'
-termination_by bp.n - elfIdx
-decreasing_by omega
 
 /-- Build all elves with `ElfSafe` + `ElfBuildInvariant` witnesses. -/
 def buildLoadElves (bp : BasedPlan) :
@@ -372,10 +305,18 @@ def buildLoadElves (bp : BasedPlan) :
       (∀ k (h_k : k < result.size),
         ElfSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
       (∀ k (h_k : k < result.size) (h_src : k < bp.n),
-        ElfBuildInvariant bp ⟨k, h_src⟩ (result[k]'h_k)) } :=
-  buildLoadElvesAux bp 0 (Nat.zero_le _) #[] rfl
-    (by intro k h_k; exact absurd h_k (by simp))
-    (by intro k h_k _; exact absurd h_k (by simp))
+        ElfBuildInvariant bp ⟨k, h_src⟩ (result[k]'h_k)) } := do
+  -- Combined predicate: ElfSafe ∧ (bound-discharged) ElfBuildInvariant.
+  let ⟨arr, h_size, h_p⟩ ← buildSafeArray bp.n
+    (fun k eo =>
+      ElfSafe bp.rsv.addr bp.rsv.len eo ∧
+      ∀ (h_src : k < bp.n), ElfBuildInvariant bp ⟨k, h_src⟩ eo)
+    (fun k h_k => do
+      let ⟨eo, h_safe, h_inv⟩ ← buildElfSafe bp ⟨k, h_k⟩
+      return ⟨eo, h_safe, fun _ => h_inv⟩)
+  return ⟨arr, h_size,
+    fun k h_k => (h_p k h_k).1,
+    fun k h_k h_src => (h_p k h_k).2 h_src⟩
 
 -- ============================================================================
 -- buildSafe — the final constructive build. Assembles the full
@@ -403,8 +344,8 @@ def buildSafe (bp : BasedPlan) :
       let fi₂ : Fin bp.n := ⟨i₂, h_i₂_n⟩
       have h_inv₁ := h_inv i₁ h_i₁ h_i₁_n
       have h_inv₂ := h_inv i₂ h_i₂ h_i₂_n
-      obtain ⟨_h_base_eq₁, h_size_eq₁, h_mmap_eq₁⟩ := h_inv₁
-      obtain ⟨_h_base_eq₂, h_size_eq₂, h_mmap_eq₂⟩ := h_inv₂
+      obtain ⟨h_size_eq₁, h_mmap_eq₁⟩ := h_inv₁
+      obtain ⟨h_size_eq₂, h_mmap_eq₂⟩ := h_inv₂
       have h_k_src₁ : k_i₁ < (bp.elfAt fi₁).segments.size := by
         rw [h_size_eq₁] at h_k_i₁; exact h_k_i₁
       have h_k_src₂ : k_i₂ < (bp.elfAt fi₂).segments.size := by
