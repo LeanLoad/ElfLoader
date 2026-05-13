@@ -62,6 +62,7 @@ import LeanLoad.Discover.Plan
 import LeanLoad.Discover.IO
 
 import LeanLoad.Plan.Align
+import LeanLoad.Plan.SegmentPlan
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Reloc
