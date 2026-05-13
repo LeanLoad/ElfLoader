@@ -357,9 +357,9 @@ private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- pa
 private def fileAnonBss     : Option Segment := synthSeg? 0 0x2000 0x1000  -- full-page BSS only
 private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- partial + full-page
 
-/-- Count of slots (`Mmap` + `Zero` + `Mprotect`) `setupSlots` emits
-    for one segment. `Mmap` is 1 if `hasFileBacked`, else 0; `Zero`
-    is 1 if `hasPartialBss`, else 0; `Mprotect` is always 1. -/
+/-- Count of slots (`MmapSlot` + `ZeroSlot` + `MprotectSlot`) `setupSlots` emits
+    for one segment. `MmapSlot` is 1 if `hasFileBacked`, else 0; `ZeroSlot`
+    is 1 if `hasPartialBss`, else 0; `MprotectSlot` is always 1. -/
 private def slotCount (seg : Option Segment) : Option Nat :=
   seg.map fun s =>
     let (mmap, zero, _mp) :=

@@ -10,9 +10,9 @@ Phase 1 of 2 in the relocation pipeline:
      `coversRela` witness. *Base-free*: no field knows about an mmap
      base. Result lives on each `SegmentLayout.relocs`.
   2. **Bake** (`Materialize/Reloc.lean`) — `RelocEntry n seg + base →
-     Option Store`. Computes the absolute place and symbol value once
+     Option StoreSlot`. Computes the absolute place and symbol value once
      a reservation base is chosen, then turns each entry into a
-     4-or-8-byte `Store` slot. Used by `Materialize.buildSegmentSafe`.
+     4-or-8-byte `StoreSlot` slot. Used by `Materialize.buildSegmentSafe`.
 
 The split exists because the kernel picks the per-elf base (`Reserve.run`)
 between phases 1 and 2; phase 1 is pure and runs ahead of any IO.
