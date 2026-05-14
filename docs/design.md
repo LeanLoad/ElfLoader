@@ -86,7 +86,8 @@ Plan:        LoadGraph → Plan  + per-SegmentLayout (pageEnd_lt /
                                   pageInset_eq_vaddr)
                                  + ElfLayout (segmentsSorted,
                                             pageEndAddr_le_advance)
-                                 + Layout (elfs_size, totalSpan_eq)
+                                 + Layout.elfs : Vector ElfLayout objCount
+                                 + Layout (totalSpan_eq)
                                  + Resolve.Table.entries discharges no
                                    strong-undef remains (rejected at
                                    ofObjects)
