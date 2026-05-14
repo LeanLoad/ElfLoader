@@ -18,7 +18,7 @@ stages plus boundary-rejection cases that span more than one file:
 
   4. **Materialize** — the `Array MemoryOp` derived from a
      `LoadOps` tree that `Main.realize` runs. Shows how
-     `Materialize.setupOps` shapes change with BSS-only vs file+BSS
+     `Materialize.setupSegment` shapes change with BSS-only vs file+BSS
      segments, and how `Materialize.safe` flattens + checks the
      full op list.
 
@@ -322,7 +322,7 @@ private def bssOnlyPlan : Option (SegmentLayout 0) :=
 -- already covers it (kernel zero-fills MAP_ANONYMOUS).
 #guard bssOnlyPlan.map (·.hasFileBacked) = some false
 
--- ---- 4b. setupOps shape — `#guard`-able since `MemoryOp` is pure. ---------
+-- ---- 4b. setupSegment shape — `#guard`-able since `MemoryOp` is pure. ---------
 --
 -- Each segment emits 1–3 ops inside the kernel-picked reservation:
 --   • mmapFile (if hasFileBacked) — file overlay (with PROT_WRITE widening)
@@ -357,13 +357,13 @@ private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- pa
 private def fileAnonBss     : Option Segment := synthSeg? 0 0x2000 0x1000  -- full-page BSS only
 private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- partial + full-page
 
-/-- Count of slots (`MmapOp` + `ZeroOp` + `MprotectOp`) `setupOps` emits
+/-- Count of slots (`MmapOp` + `ZeroOp` + `MprotectOp`) `setupSegment` emits
     for one segment. `MmapOp` is 1 if `hasFileBacked`, else 0; `ZeroOp`
     is 1 if `hasPartialBss`, else 0; `MprotectOp` is always 1. -/
 private def slotCount (seg : Option Segment) : Option Nat :=
   seg.map fun s =>
     let (mmap, zero, _mp) :=
-      Materialize.setupOps (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
+      Materialize.setupSegment (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
     (if mmap.isSome then 1 else 0) + (if zero.isSome then 1 else 0) + 1
 
 #guard slotCount bssOnlySeg     = some 1  -- mprotect only

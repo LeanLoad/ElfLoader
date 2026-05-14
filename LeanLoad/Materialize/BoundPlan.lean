@@ -165,7 +165,7 @@ def mainBase (bp : BoundPlan) : UInt64 :=
 
 -- ============================================================================
 -- Per-segment slot bounds. Each of these turns a `(bp, i, j)` index
--- into an `InRange` fact about the slot `setupOps` or `bakeReloc`
+-- into an `InRange` fact about the slot `setupSegment` or `bakeReloc`
 -- emits at that position. Consumed by `Materialize.Build` to assemble
 -- `SegmentSafe` witnesses in lock-step with `SegmentOps`.
 -- ============================================================================

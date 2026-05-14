@@ -62,7 +62,7 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `extends Plan with rsv : Reserve, h_total`. Canonical input to `Materialize.build`. Inherits `bp.graph`, `bp.layout`, etc. |
 | `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
 | `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |
-| `Materialize.SetupOps`      | `Materialize.LoadOps`        | Per-segment setup slot record `{ mmap?, zero?, mprotect }` returned by `setupOps`.      |
+| `Materialize.SegmentSetup`      | `Materialize.LoadOps`        | Per-segment setup slot record `{ mmap?, zero?, mprotect }` returned by `setupSegment`.      |
 | `Materialize.LoadSafe`        | `Materialize.Safety`         | Tree-shaped safety witness (per-segment InRange + within-/cross-elf disjoint). `runSafe` accepts only witnessed `LoadOps`. |
 | `MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp` / `Reserve` | `Runtime` | Typed records wrapping each FFI signature.                                            |
 

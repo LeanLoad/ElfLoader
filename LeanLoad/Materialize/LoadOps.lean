@@ -47,7 +47,7 @@ open LeanLoad
 open LeanLoad.Plan (SegmentLayout)
 
 -- ============================================================================
--- Hierarchy: SetupOps + (layout, stores) → SegmentOps n → ElfOps n → LoadOps n.
+-- Hierarchy: SegmentSetup + (layout, stores) → SegmentOps n → ElfOps n → LoadOps n.
 -- ============================================================================
 
 /-- The three setup ops for one segment: file overlay (`mmap`),
@@ -57,17 +57,17 @@ open LeanLoad.Plan (SegmentLayout)
     boundary have no partial BSS). `mprotect` is mandatory. The
     relocation stores are computed separately and added when extending
     to a full `SegmentOps`. -/
-structure SetupOps where
+structure SegmentSetup where
   mmap     : Option MmapOp
   zero     : Option ZeroOp
   mprotect : MprotectOp
 
-/-- Per-segment ops bundle: extends `SetupOps` (the three setup-time
+/-- Per-segment ops bundle: extends `SegmentSetup` (the three setup-time
     ops) with the underlying layout and the baked relocation stores.
-    `setupOps` produces the parent `SetupOps`; `bakeSegmentRelocs`
+    `setupSegment` produces the parent `SegmentSetup`; `bakeSegmentRelocs`
     produces `stores`; `Materialize.buildSegment` combines them via
     `{ setup with layout, stores }`. -/
-structure SegmentOps (n : Nat) extends SetupOps where
+structure SegmentOps (n : Nat) extends SegmentSetup where
   layout   : SegmentLayout n
   stores   : Array StoreOp
 
@@ -87,8 +87,8 @@ abbrev LoadOps (n : Nat) := Array (ElfOps n)
 /-- Compute the setup slots for one segment at the chosen base. The
     mmap is widened with `PROT_WRITE` so reloc stores can land before
     `mprotect` flips to final perms. -/
-def setupOps (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) : SetupOps :=
+def setupSegment (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+    (base : UInt64) : SegmentSetup :=
   let absVaddr := base + sp.pageVaddr
   { mmap :=
       if sp.hasFileBacked then
@@ -104,7 +104,7 @@ def setupOps (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     mprotect := { addr := absVaddr, len := sp.pageLength, prot := sp.prot } }
 
 -- ============================================================================
--- `setupOps` characterisation. The three slot positions are simple
+-- `setupSegment` characterisation. The three slot positions are simple
 -- closed forms of `(base, sp)`; these lemmas extract them so the
 -- `SegmentSafe` construction below can invoke the matching
 -- `BoundPlan.segment_*_in_rsv` theorem directly.
@@ -112,10 +112,10 @@ def setupOps (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 
 /-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
     length `sp.fileOverlayLen`. -/
-theorem setupOps_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) (m : MmapOp) (h : (setupOps sp handle base).mmap = some m) :
+theorem setupSegment_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+    (base : UInt64) (m : MmapOp) (h : (setupSegment sp handle base).mmap = some m) :
     m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
-  unfold setupOps at h
+  unfold setupSegment at h
   simp only at h
   by_cases h_fb : sp.hasFileBacked
   · rw [if_pos h_fb] at h
@@ -126,11 +126,11 @@ theorem setupOps_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 /-- The zero slot, when present, sits at
     `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz` of length
     `sp.partialBssLen`. -/
-theorem setupOps_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) (z : ZeroOp) (h : (setupOps sp handle base).zero = some z) :
+theorem setupSegment_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+    (base : UInt64) (z : ZeroOp) (h : (setupSegment sp handle base).zero = some z) :
     z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz ∧
     z.len = sp.partialBssLen := by
-  unfold setupOps at h
+  unfold setupSegment at h
   simp only at h
   by_cases h_pb : sp.hasPartialBss
   · rw [if_pos h_pb] at h
@@ -140,10 +140,10 @@ theorem setupOps_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 
 /-- The mprotect slot always sits at `base + sp.pageVaddr` of length
     `sp.pageLength`. -/
-theorem setupOps_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+theorem setupSegment_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) :
-    (setupOps sp handle base).mprotect.addr = base + sp.pageVaddr ∧
-    (setupOps sp handle base).mprotect.len = sp.pageLength := by
+    (setupSegment sp handle base).mprotect.addr = base + sp.pageVaddr ∧
+    (setupSegment sp handle base).mprotect.len = sp.pageLength := by
   exact ⟨rfl, rfl⟩
 
 -- ============================================================================
