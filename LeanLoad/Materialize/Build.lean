@@ -156,7 +156,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
   | .error e => .error e
   | .ok stores =>
     let so : SegmentOps n :=
-      { plan := sp, mmap := slots.mmap, zero := slots.zero,
+      { layout := sp, mmap := slots.mmap, zero := slots.zero,
         stores, mprotect := slots.mprotect }
     let h_safe : SegmentSafe bp.rsv.addr bp.rsv.len so := by
       refine ⟨?_, ?_, ?_, ?_⟩

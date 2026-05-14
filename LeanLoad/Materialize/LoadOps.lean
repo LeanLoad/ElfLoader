@@ -50,10 +50,10 @@ open LeanLoad.Plan (SegmentLayout)
 -- Hierarchy: SegmentOps n → ElfOps n → LoadOps n.
 -- ============================================================================
 
-/-- Per-segment ops bundle: the base-free plan + the 4 typed slots
-    for the segment-realize protocol. -/
+/-- Per-segment ops bundle: the base-free layout + the 4 typed
+    op records for the segment-realize protocol. -/
 structure SegmentOps (n : Nat) where
-  plan     : SegmentLayout n
+  layout   : SegmentLayout n
   mmap     : Option MmapOp
   zero     : Option ZeroOp
   stores   : Array StoreOp
