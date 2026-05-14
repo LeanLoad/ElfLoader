@@ -12,7 +12,7 @@ An object's symbol is a *definition* if `st_shndx ≠ SHN_UNDEF` and is
 not `STB_LOCAL`. An *undefined reference* has `st_shndx = SHN_UNDEF`.
 For each undefined reference across all loaded objects, we find a
 defining (object, symbol) pair via breadth-first search over the
-`ObjectList.objects` array (which `Discover` already returns in BFS
+`LoadGraph.objects` array (which `Discover` already returns in BFS
 order: main first, then NEEDED entries in their declared order).
 
 Each entry's resolution is one of three explicit cases:
