@@ -21,7 +21,7 @@ Pipeline (one row per `--debug` section):
 Reserve` and `h_total : rsv.len = layout.totalSpan`. Constructed once
 in `Main.load` via `{ plan with rsv, h_total }` after `Reserve.run`
 allocates the kernel-picked anon block. Consumers access planning
-fields directly (`bp.layout`, `bp.objects`, …) — no `bp.plan.X`
+fields directly (`bp.layout`, `bp.graph`, …) — no `bp.plan.X`
 indirection. The reservation bounds every safety predicate in
 `Materialize`.
 
@@ -58,8 +58,8 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Plan.Layout n`             | `Plan.Layout`                | All elves' `ElfLayout`s + cumulative `totalSpan` + `totalSpan_eq` Nat↔UInt64 bridge.        |
 | `Reloc.Entry n seg`      | `Plan.Reloc`                 | One planned relocation, base-free, with `coversRela` witness inherited from `Segment`.    |
 | `Reloc.Formula`               | `Elaborate.Reloc`            | `(type, S, A, B, P) → Option write`. Pluggable per-arch.                                  |
-| `Plan.Aggregate`                   | `Plan.Aggregate`             | `objects + resolve + layout + initOrder`, all indexed at `objects.val.size`.              |
-| `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `extends Plan with rsv : Reserve, h_total`. Canonical input to `Materialize.build`. Inherits `bp.objects`, `bp.layout`, etc. |
+| `Plan.Aggregate`                   | `Plan.Aggregate`             | `objects + resolve + layout + initOrder`, all indexed at `graph.objects.size`.              |
+| `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `extends Plan with rsv : Reserve, h_total`. Canonical input to `Materialize.build`. Inherits `bp.graph`, `bp.layout`, etc. |
 | `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
 | `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |
 | `Materialize.SetupOps`      | `Materialize.LoadOps`        | Per-segment setup slot record `{ mmap?, zero?, mprotect }` returned by `setupOps`.      |

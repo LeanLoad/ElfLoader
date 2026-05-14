@@ -34,7 +34,7 @@ private def realize (bp : Materialize.BoundPlan)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
-  let mainElf := bp.objects.main.elf
+  let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
   let stack ← Reserve.run stackBytes
   let entry  := mainBase + mainElf.entry
@@ -73,7 +73,7 @@ private def Nat.hex12 (n : Nat) : String :=
     → realize. **Does not return.** -/
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
-  let plan ← IO.ofExcept (Plan.Aggregate.ofObjects g)
+  let plan ← IO.ofExcept (Plan.Aggregate.ofGraph g)
   let rsvW ← Reserve.run plan.layout.totalSpan
   let bp : Materialize.BoundPlan :=
     { plan with rsv := rsvW.val, h_total := rsvW.property }
@@ -86,12 +86,12 @@ def load (path : String) : IO Unit := do
 def debug (path : String) : IO Unit := do
   IO.eprintln "== 1. Discover (BFS over DT_NEEDED) =="
   let g ← Discover.discover path
-  for obj in g.val do
+  for obj in g.objects do
     IO.eprintln s!"  {obj.name}"
 
   IO.eprintln "\n== 2. Parse + Elaborate (per-object Elf views) =="
-  for h : i in [:g.val.size] do
-    let obj := g.val[i]
+  for h : i in [:g.objects.size] do
+    let obj := g.objects[i]
     let elf := obj.elf
     IO.eprintln s!"[{i}] {obj.name}"
     IO.eprintln s!"  elfType    = {repr elf.elfType}"
@@ -116,11 +116,11 @@ def debug (path : String) : IO Unit := do
         prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
 
   -- One-shot pure-pipeline build. Every later stage reads from `plan`.
-  let plan ← IO.ofExcept (Plan.Aggregate.ofObjects g)
+  let plan ← IO.ofExcept (Plan.Aggregate.ofGraph g)
 
   IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
-  let providerName (r : Plan.Resolve.SymRef plan.objects.val.size) : String :=
-    plan.objects.val[r.objectIdx.val] |>.name
+  let providerName (r : Plan.Resolve.SymRef plan.graph.objects.size) : String :=
+    plan.graph.objects[r.objectIdx.val] |>.name
   let nameW := plan.resolve.entries.foldl (init := 0) (fun w (u, _) => max w u.name.length)
   let providerW := plan.resolve.entries.foldl (init := "<unresolved>".length) fun w (_, res) =>
     match res with
@@ -129,7 +129,7 @@ def debug (path : String) : IO Unit := do
   let mut currentObj : Option Nat := none
   for (u, res) in plan.resolve.entries do
     if currentObj != some u.objectIdx then
-      if let some obj := plan.objects.val[u.objectIdx]? then
+      if let some obj := plan.graph.objects[u.objectIdx]? then
         IO.eprintln s!"{obj.name}:"
       currentObj := some u.objectIdx
     let suffix : String := match res with
@@ -137,7 +137,7 @@ def debug (path : String) : IO Unit := do
       | .strongUndef => s!"{padR "<unresolved>" providerW}"
       | .found r =>
         let p := padR (providerName r) providerW
-        match plan.objects.val[r.objectIdx]?.bind
+        match plan.graph.objects[r.objectIdx]?.bind
             (fun obj => obj.elf.symtab[r.symIdx]?) with
         | some entry => s!"{p} [sym {r.symIdx} @0x{Nat.hex entry.value.toNat}]"
         | none       => s!"{p} [sym {r.symIdx}]"
@@ -155,7 +155,7 @@ def debug (path : String) : IO Unit := do
   have h_bases : bases.size = bp.n := bp.bases_size
   for h : i in [:bp.n] do
     let base := bases[i]'(by rw [h_bases]; exact h.upper)
-    let obj := plan.objects.val[i]
+    let obj := plan.graph.objects[i]
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
     have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; exact h.upper
     let ep := lp.elfs[i]'hi_lp
@@ -170,7 +170,7 @@ def debug (path : String) : IO Unit := do
   let elfs := plan.objectElfs
   let labelW := 16
   for h : i in [:bp.n] do
-    let obj  := plan.objects.val[i]
+    let obj  := plan.graph.objects[i]
     let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW
     have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; exact h.upper

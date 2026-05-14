@@ -5,7 +5,7 @@ output bound to a concrete reservation — hence "BoundPlan".
 
 `BoundPlan extends Plan` (Lean structure inheritance), so the four
 planning fields (`objects`, `resolve`, `layout`, `initOrder`) are
-accessed directly as `bp.objects`, `bp.layout`, etc. — no `bp.plan.X`
+accessed directly as `bp.graph`, `bp.layout`, etc. — no `bp.plan.X`
 indirection. The original `Plan` projection is available as `bp.toPlan`
 when needed by helpers that take a bare `Plan`.
 
@@ -40,7 +40,7 @@ namespace BoundPlan
 
 /-- The number of loaded elves. Used as the `n` parameter on every
     `n`-indexed downstream type (`LoadOps n`, `SegmentOps n`, ...). -/
-abbrev n (bp : BoundPlan) : Nat := bp.objects.val.size
+abbrev n (bp : BoundPlan) : Nat := bp.graph.objects.size
 
 /-- Per-elf base addresses inside the reservation. `abbrev` so
     `bp.bases[i]` reduces to `assignBases bp.rsv.addr bp.layout`
@@ -54,7 +54,7 @@ theorem bases_size (bp : BoundPlan) : bp.bases.size = bp.n :=
 
 /-- `0 < bp.n` — the main executable is always present. -/
 theorem n_pos (bp : BoundPlan) : 0 < bp.n :=
-  bp.objects.sizePos
+  bp.graph.sizePos
 
 theorem bases_size_pos (bp : BoundPlan) : 0 < bp.bases.size := by
   rw [bases_size]; exact bp.n_pos
@@ -82,7 +82,7 @@ abbrev baseAt (bp : BoundPlan) (i : Fin bp.n) : UInt64 :=
 
 /-- `i`-th elf's open file handle (held until process exit). -/
 abbrev handleAt (bp : BoundPlan) (i : Fin bp.n) : Runtime.FileHandle :=
-  (bp.objects.val[i.val]'i.isLt).handle
+  (bp.graph.objects[i.val]'i.isLt).handle
 
 /-- `(i, j)`-th segment plan. -/
 abbrev segAt (bp : BoundPlan) (i : Fin bp.n)

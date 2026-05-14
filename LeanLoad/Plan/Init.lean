@@ -13,7 +13,7 @@ edge-creation time, so the canonical-name dedup that converts
 `DT_NEEDED libfoo.so` → loaded `libfoo.so.1` cannot drop edges
 silently. `Init.order` just projects them and runs DFS post-order.
 
-`order : (g : LoadGraph) → Array (Fin g.val.size)` returns
+`order : (g : LoadGraph) → Array (Fin g.objects.size)` returns
 Fin-indexed object indices so downstream consumers
 (`Materialize.initAddrs`) can index `lp.elfs` and `bases` totally,
 without `[]?`. The `Fin n` bound is preserved structurally through
@@ -91,10 +91,10 @@ def computeOrder (deps : Array (Array Nat)) (n : Nat) : Array (Fin n) :=
 
 /-- Init order over an `LoadGraph`: project the BFS-recorded
     `g.deps` and run DFS post-order. The returned indices are typed
-    `Fin g.val.size` so downstream consumers can index `lp.elfs` /
+    `Fin g.objects.size` so downstream consumers can index `lp.elfs` /
     `bases` totally. -/
-def order (g : LoadGraph) : Array (Fin g.val.size) :=
-  computeOrder g.deps g.val.size
+def order (g : LoadGraph) : Array (Fin g.objects.size) :=
+  computeOrder g.deps g.objects.size
 
 section Example
 -- Three-object DAG: 0 (main) → {1, 2}; 1 → {2}; 2 → ∅.

@@ -2,17 +2,17 @@
 Top-level pure-pipeline aggregate.
 
 An `Aggregate` bundles the four base-free planner outputs under one
-structure parameterised by the object count `objects.val.size`:
+structure parameterised by the object count `graph.objects.size`:
 
-  · `objects   : LoadGraph` — main + transitive deps in BFS order.
-                 Carries non-emptiness + name-Nodup invariants.
-  · `resolve   : Resolve.Table objects.val.size` — per-undef-ref
-                 resolution outcome. `ofObjects` rejects when a
+  · `graph     : LoadGraph` — main + transitive deps in BFS order.
+                 Carries non-emptiness + name-Nodup + dep invariants.
+  · `resolve   : Resolve.Table graph.objects.size` — per-undef-ref
+                 resolution outcome. `ofGraph` rejects when a
                  `strongUndef` remains.
-  · `layout      : Layout objects.val.size` — page math, per-elf
+  · `layout    : Layout graph.objects.size` — page math, per-elf
                  advance + cumulative span, plus per-segment
                  invariants (`pageEnd_lt` etc.).
-  · `initOrder : Array (Fin objects.val.size)` — DFS post-order
+  · `initOrder : Array (Fin graph.objects.size)` — DFS post-order
                  init sequence over the dep DAG.
 
 Every contained index (`SymRef`, `Entry.target`, `initOrder`,
@@ -20,14 +20,14 @@ the per-elf `bases` computed later) is typed at the same `n`, so
 consumers (`Materialize.build`, `Materialize.ctorAddrs`) thread one
 object instead of parallel arrays + coherence proofs.
 
-`Aggregate.ofObjects` is the single fallible construction:
+`Aggregate.ofGraph` is the single fallible construction:
   1. Build the resolve table; reject if any strong undef remains.
   2. Plan every elf's segments and relocations (`Layout.ofElfs`).
      This is where `SegmentLayout`'s per-segment invariants are
      discharged and `ElfLayout.segmentsSorted` is validated.
   3. Compute the DFS post-order init sequence.
 
-The IO bookend (`Main.load` / `Main.debug`) calls `Aggregate.ofObjects`
+The IO bookend (`Main.load` / `Main.debug`) calls `Aggregate.ofGraph`
 once, wraps the result in a `Materialize.BoundPlan` together with
 the IO-supplied `Reserve`, and passes that down to materialize.
 -/
@@ -44,60 +44,60 @@ open LeanLoad.Discover (LoadGraph)
 open LeanLoad.Elaborate (Elf)
 
 /-- The unified pure-pipeline aggregate. Every sub-output is indexed
-    by `objects.val.size`, so consumers can index `lp.elfs`,
+    by `graph.objects.size`, so consumers can index `lp.elfs`,
     `bases`, and per-rela `SymRef.objectIdx` totally without size-
     coherence proofs at every call site. -/
 structure Aggregate where
-  /-- Discovered objects (main + transitive deps), in BFS order. -/
-  objects   : LoadGraph
-  /-- Per-undef-reference resolution outcome. `Aggregate.ofObjects`
+  /-- Discovered objects + dep edges (the BFS-built dependency graph). -/
+  graph     : LoadGraph
+  /-- Per-undef-reference resolution outcome. `Aggregate.ofGraph`
       rejects when any entry is `strongUndef`. -/
-  resolve   : Resolve.Table objects.val.size
+  resolve   : Resolve.Table graph.objects.size
   /-- Page math + per-segment relocations, with `elfs_size` tying
       `layout.elfs` to the object count. -/
-  layout      : Layout objects.val.size
+  layout    : Layout graph.objects.size
   /-- DFS post-order over the dep DAG; `Fin n` typed so
       `Materialize.initAddrs` indexes `layout.elfs` and `bases`
       totally. -/
-  initOrder : Array (Fin objects.val.size)
+  initOrder : Array (Fin graph.objects.size)
 
 namespace Aggregate
 
 /-- Project the elf array of the bundled object list — convenience
     for `Materialize.build` (which needs `Array Elf` parallel to
     `layout.elfs` for `bakeSegmentRelocs`). The size lemma
-    `objectElfs_size` says it has size `objects.val.size`. -/
+    `objectElfs_size` says it has size `graph.objects.size`. -/
 def objectElfs (p : Aggregate) : Array Elf :=
-  p.objects.val.map (·.elf)
+  p.graph.objects.map (·.elf)
 
 theorem objectElfs_size (p : Aggregate) :
-    p.objectElfs.size = p.objects.val.size := by
+    p.objectElfs.size = p.graph.objects.size := by
   unfold objectElfs; simp
 
 /-- Per-arch relocation formula, picked off the main elf's
     `e_machine`. -/
 def formula (p : Aggregate) : Elaborate.Formula :=
-  Elaborate.formulaFor p.objects.main.elf.machine
+  Elaborate.formulaFor p.graph.main.elf.machine
 
-/-- Build an `Aggregate` from a discovered object list. Fails with a typed
+/-- Build an `Aggregate` from a `LoadGraph`. Fails with a typed
     error if:
       • any strong undef remains unresolved, or
       • `Layout.ofElfs` rejects the layout (page-aligned overlap or
         UInt64 cumulative-span overflow). -/
-def ofObjects (objs : LoadGraph) : Except String Aggregate := do
-  let elfs := objs.val.map (·.elf)
-  have h_size : elfs.size = objs.val.size := by simp [elfs]
-  -- Sized variants thread `h_size` through their construction so the
-  -- result types are already at `objs.val.size` — no outer `▸` cast.
+def ofGraph (g : LoadGraph) : Except String Aggregate := do
+  let elfs := g.objects.map (·.elf)
+  have h_size : elfs.size = g.objects.size := by simp [elfs]
+  -- The optional `h_size` argument retypes the result at
+  -- `g.objects.size` (instead of `elfs.size`) — no outer `▸` cast needed.
   let resolve := Resolve.buildTable elfs h_size
   -- Reject loads with strong-undef references — production loaders
   -- would surface this as an early `ld.so` failure.
   if let some u := resolve.missing[0]? then
-    .error s!"Aggregate.ofObjects: {resolve.missing.size} unresolved strong symbol(s); \
+    .error s!"Aggregate.ofGraph: {resolve.missing.size} unresolved strong symbol(s); \
       first: {u.name}"
   let layout ← Layout.ofElfs elfs resolve h_size
-  let initOrder := Init.order objs
-  return { objects := objs, resolve, layout, initOrder }
+  let initOrder := Init.order g
+  return { graph := g, resolve, layout, initOrder }
 
 end Aggregate
 

@@ -349,8 +349,8 @@ private def ofElfsImpl (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
 /-- Public entry point. The implicit `n` defaults to `elfs.size` via
     the `h_size := by rfl` argument (last so callers can omit it);
     pass an explicit `h_size` to retype at any provably-equal size
-    (used by `Plan.Aggregate.ofObjects` to land at `Layout
-    objs.val.size` without an outer `▸` cast). The `subst h_size;
+    (used by `Plan.Aggregate.ofGraph` to land at `Layout
+    objs.objects.size` without an outer `▸` cast). The `subst h_size;
     exact ofElfsImpl …` body absorbs the rewrite at the wrapper. -/
 def ofElfs {n : Nat} (elfs : Array Elf) (rt : Resolve.Table n)
     (h_size : elfs.size = n := by rfl) : Except String (Layout n) := by

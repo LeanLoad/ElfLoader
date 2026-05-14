@@ -179,8 +179,8 @@ private def buildTableImpl (elfs : Array Elf) : Table elfs.size := Id.run do
 /-- Public entry point. The implicit `n` defaults to `elfs.size`
     via the `h_size : elfs.size = n := by rfl` argument; callers can
     pass an explicit `h_size` to retype the result at any provably-
-    equal size (used by `Plan.Aggregate.ofObjects` to land at
-    `Table objs.val.size` without an outer `▸` cast). The
+    equal size (used by `Plan.Aggregate.ofGraph` to land at
+    `Table objs.objects.size` without an outer `▸` cast). The
     `subst h_size; exact buildTableImpl elfs` body absorbs the
     rewrite at the wrapper. -/
 def buildTable {n : Nat} (elfs : Array Elf)

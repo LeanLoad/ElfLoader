@@ -103,37 +103,37 @@ structure LoadedObject where
         (`DT_SONAME` / basename) names. `Init.order` consumes this
         directly — no name-based re-derivation, no silent drops.
 
-      * `depsSize` — `deps.size = val.size`. Maintained by every push.
+      * `depsSize` — `deps.size = objects.size`. Maintained by every push.
 
       * `depsBounds` — every recorded edge target is a valid index
-        into `val`. Maintained because edges only originate from
+        into `objects`. Maintained because edges only originate from
         `findLoadedIdx` (iterates `[:objs.size]`) or from the index
         about to be pushed (always `< objs.size + 1`).
 
-    Access pattern: callers peel via `g.val` to use Array methods
-    (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). Use `g.main`
-    whenever main is what you want, not `g.val[0]?`. -/
+    Access pattern: `g.objects[i]` (indexed) / `for obj in g.objects do`
+    (iteration). Use `g.main` for the main executable instead of
+    `g.objects[0]?`. -/
 structure LoadGraph where
   /-- The loaded objects, in BFS discovery order. Main at index 0. -/
-  val        : Array LoadedObject
+  objects    : Array LoadedObject
   /-- Per-object dependency indices, recorded during BFS. -/
   deps       : Array (Array Nat)
-  /-- Non-emptiness — `0 < val.size`. Witnessed by `discover` seeding
-      with `main` before entering the BFS loop. -/
-  sizePos    : 0 < val.size
+  /-- Non-emptiness — `0 < objects.size`. Witnessed by `discover`
+      seeding with `main` before entering the BFS loop. -/
+  sizePos    : 0 < objects.size
   /-- Names pairwise distinct. Witnessed by the BFS `alreadyLoaded`
       dedup check. -/
-  namesNodup : (val.map (·.name)).toList.Nodup
-  /-- `deps` is parallel to `val`. -/
-  depsSize   : deps.size = val.size
-  /-- Every recorded edge target is a valid index. -/
-  depsBounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < val.size
+  namesNodup : (objects.map (·.name)).toList.Nodup
+  /-- `deps` is parallel to `objects`. -/
+  depsSize   : deps.size = objects.size
+  /-- Every recorded edge target is a valid index into `objects`. -/
+  depsBounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
 
 namespace LoadGraph
 
 /-- The main executable — total because `LoadGraph` carries the
     non-emptiness witness. -/
-def main (g : LoadGraph) : LoadedObject := g.val[0]'g.sizePos
+def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
 
 end LoadGraph
 
