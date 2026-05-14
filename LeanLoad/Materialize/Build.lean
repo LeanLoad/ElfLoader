@@ -148,16 +148,17 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
   let base := bp.baseAt i
   -- Don't destructure `setupOps` — keep the projection form so the
   -- characterisation lemmas (`setupOps_*_eq`) align on the goal.
-  let slots := setupOps sp handle base
+  let setup := setupOps sp handle base
   -- Use the sized variant so `sp.relocs : Array (Entry n sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
   match h_bake : bakeSegmentRelocs bp.formula elfs h_elfs bp.bases
                    h_bases base sp.segment sp.relocs with
   | .error e => .error e
   | .ok stores =>
-    let so : SegmentOps n :=
-      { layout := sp, mmap := slots.mmap, zero := slots.zero,
-        stores, mprotect := slots.mprotect }
+    -- `SegmentOps extends SetupOps`, so `{ setup with layout, stores }`
+    -- inherits mmap/zero/mprotect from `setup` and adds the layout
+    -- and baked stores.
+    let so : SegmentOps n := { setup with layout := sp, stores }
     let h_safe : SegmentSafe bp.rsv.addr bp.rsv.len so := by
       refine ⟨?_, ?_, ?_, ?_⟩
       · -- mmapInRange
@@ -188,9 +189,9 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
           s'.byteLen h_byteLen
       · -- mprotectInRange — mprotect is at (base + pageVaddr, pageLength).
         have ⟨h_addr, h_len⟩ := setupOps_mprotect_eq sp handle base
-        rw [show so.mprotect = slots.mprotect from rfl, h_addr, h_len]
+        rw [show so.mprotect = setup.mprotect from rfl, h_addr, h_len]
         exact bp.segment_mprotectRange_in_rsv i j
-    -- The `mmap_eq` field — `so.mmap = slots.mmap` by construction (rfl).
+    -- The `mmap_eq` field — `so.mmap = setup.mmap` by construction (rfl).
     .ok ⟨so, h_safe, rfl⟩
 
 -- ============================================================================

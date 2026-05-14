@@ -47,17 +47,29 @@ open LeanLoad
 open LeanLoad.Plan (SegmentLayout)
 
 -- ============================================================================
--- Hierarchy: SegmentOps n → ElfOps n → LoadOps n.
+-- Hierarchy: SetupOps + (layout, stores) → SegmentOps n → ElfOps n → LoadOps n.
 -- ============================================================================
 
-/-- Per-segment ops bundle: the base-free layout + the 4 typed
-    op records for the segment-realize protocol. -/
-structure SegmentOps (n : Nat) where
-  layout   : SegmentLayout n
+/-- The three setup ops for one segment: file overlay (`mmap`),
+    partial-page BSS clear (`zero`), and final permission (`mprotect`).
+    `mmap` and `zero` are `Option`-typed because they may be skipped
+    (BSS-only segments have no mmap; segments aligned to a page
+    boundary have no partial BSS). `mprotect` is mandatory. The
+    relocation stores are computed separately and added when extending
+    to a full `SegmentOps`. -/
+structure SetupOps where
   mmap     : Option MmapOp
   zero     : Option ZeroOp
-  stores   : Array StoreOp
   mprotect : MprotectOp
+
+/-- Per-segment ops bundle: extends `SetupOps` (the three setup-time
+    ops) with the underlying layout and the baked relocation stores.
+    `setupOps` produces the parent `SetupOps`; `bakeSegmentRelocs`
+    produces `stores`; `Materialize.buildSegment` combines them via
+    `{ setup with layout, stores }`. -/
+structure SegmentOps (n : Nat) extends SetupOps where
+  layout   : SegmentLayout n
+  stores   : Array StoreOp
 
 /-- Per-elf ops: chosen base + per-segment ops bundles. -/
 structure ElfOps (n : Nat) where
@@ -68,19 +80,9 @@ structure ElfOps (n : Nat) where
 abbrev LoadOps (n : Nat) := Array (ElfOps n)
 
 -- ============================================================================
--- Construction helper — compute the setup slots from a SegmentLayout.
+-- Construction helper — compute the setup ops from a SegmentLayout.
 -- Reloc stores are added separately by `Materialize.bakeSegmentRelocs`.
 -- ============================================================================
-
-/-- The three setup slots for one segment: file overlay (`mmap`),
-    partial-page BSS clear (`zero`), and final permission (`mprotect`).
-    `mmap` and `zero` are `Option`-typed because they may be skipped
-    (BSS-only segments have no mmap; segments aligned to a page
-    boundary have no partial BSS). `mprotect` is mandatory. -/
-structure SetupOps where
-  mmap     : Option MmapOp
-  zero     : Option ZeroOp
-  mprotect : MprotectOp
 
 /-- Compute the setup slots for one segment at the chosen base. The
     mmap is widened with `PROT_WRITE` so reloc stores can land before
