@@ -13,14 +13,32 @@ Pipeline (one row per `--debug` section):
 | **Parse**       | IO   | `FileHandle` → `RawElf` (per-section `pread`s; bytes only, no semantic checks)       |
 | **Elaborate**   | pure | `RawElf` → `Except String Elf` (gabi-07 invariants discharged as `Segment`/`Elf` fields) |
 | **Discover**    | IO   | `path → ObjectList` (BFS over `DT_NEEDED`; calls Parse + Elaborate per file; deps recorded inline) |
-| **Plan**        | pure | `ObjectList → Plan` (resolve table + per-elf `LoadPlan` + `initOrder`)               |
-| **Materialize** | pure | `BasedPlan → { lo : LoadOps n // Safe rsv.addr rsv.len lo }` (typed slot tree + structural safety) |
+| **Plan**        | pure | `ObjectList → Plan` (resolve table + per-elf `Layout` + `initOrder`)               |
+| **Materialize** | pure | `BoundPlan → { lo : LoadOps n // Safe rsv.addr rsv.len lo }` (typed slot tree + structural safety) |
 | **Runtime**     | IO   | witnessed `LoadOps` → `IO Unit` (mmap + zeroout + mprotect + reloc stores + ctor calls + stack + jump; no return) |
 
-`BasedPlan = Plan + Reserve + h_total : rsv.len = plan.load.totalSpan`,
+`BoundPlan = Plan + Reserve + h_total : rsv.len = plan.layout.totalSpan`,
 constructed once in `Main.load` after `Reserve.run` allocates the
 kernel-picked anon block. The reservation bounds every safety predicate
 in `Materialize`.
+
+### Plan stage — three internal sub-phases
+
+`Plan.ofObjects : ObjectList → Except String Plan` runs three sub-phases
+in sequence. They could in principle be top-level stages, but bundling
+them keeps the stage count manageable; the `Plan/` directory makes the
+breakdown discoverable:
+
+| Sub-phase | Module             | Produces                                       | Can fail?                                |
+| --------- | ------------------ | ---------------------------------------------- | ---------------------------------------- |
+| Resolve   | `Plan/Resolve.lean`| `Resolve.Table` (per-undef BFS lookup)         | yes — strong-undef rejected at top level |
+| Layout    | `Plan/Layout.lean` (uses `Plan/SegmentLayout.lean`) | per-segment + per-elf + cumulative layout | yes — page-aligned overlap or cumulative span overflow |
+| Init      | `Plan/Init.lean`   | DFS post-order over `g.deps`                   | no — total                               |
+
+Reloc planning runs *inside* Layout: each `SegmentLayout`'s `relocs`
+field is filled by `Plan.Reloc.planSegment` while the layout is being
+built. Bake (turning `Reloc.Entry` into `StoreSlot`) lives separately
+in `Materialize/Reloc.lean` and runs base-aware.
 
 ## Key types
 
@@ -30,19 +48,19 @@ in `Materialize`.
 | `Parse.RawElf`                | `Parse.RawElf`               | Per-file byte decode (header, phdrs, strtab, symtab, needed, soname, runpath, rela, jmprel, init/fini arrays). |
 | `Elaborate.Segment`           | `Elaborate.Segment`          | One PT_LOAD with gabi-07 invariants (`fileszLeMemsz`, `alignPow2`, `alignCong`, `addrBound`) + per-segment relocs in `coversRela` subtype. |
 | `Elaborate.Elf`               | `Elaborate.Elf`              | Per-elf bundle with `Sorted` / `NonOverlap` / `PhdrCovered` / `CtorsInExecSeg` witnesses. |
-| `Discover.ObjectList`         | `Discover.Plan`              | Loaded objects in BFS order + `sizePos` / `namesNodup` / `deps` (recorded during BFS).    |
+| `Discover.ObjectList`         | `Discover.Step`              | Loaded objects in BFS order + `sizePos` / `namesNodup` / `deps` (recorded during BFS).    |
 | `Resolve.SymRef n`            | `Plan.Resolve`               | Resolved symbol `(objectIdx : Fin n, symIdx : Nat)`.                                      |
-| `Plan.SegmentPlan n`          | `Plan.Layout`                | One `Segment` lifted with page math + 5 per-segment Prop fields (`pageEnd_lt`, …) + per-segment relocs. |
-| `Plan.ElfPlan n`              | `Plan.Layout`                | One elf's `SegmentPlan`s + `advance` + cross-segment proofs (`segmentsSorted`, `pageEndAddr_le_advance`). |
-| `Plan.LoadPlan n`             | `Plan.Layout`                | All elves' `ElfPlan`s + cumulative `totalSpan` + `totalSpan_eq` Nat↔UInt64 bridge.        |
-| `Reloc.RelocEntry n seg`      | `Plan.Reloc`                 | One planned relocation, base-free, with `coversRela` witness inherited from `Segment`.    |
+| `Plan.SegmentLayout n`          | `Plan.Layout`                | One `Segment` lifted with page math + 5 per-segment Prop fields (`pageEnd_lt`, …) + per-segment relocs. |
+| `Plan.ElfLayout n`              | `Plan.Layout`                | One elf's `SegmentLayout`s + `advance` + cross-segment proofs (`segmentsSorted`, `pageEndAddr_le_advance`). |
+| `Plan.Layout n`             | `Plan.Layout`                | All elves' `ElfLayout`s + cumulative `totalSpan` + `totalSpan_eq` Nat↔UInt64 bridge.        |
+| `Reloc.Entry n seg`      | `Plan.Reloc`                 | One planned relocation, base-free, with `coversRela` witness inherited from `Segment`.    |
 | `Reloc.Formula`               | `Elaborate.Reloc`            | `(type, S, A, B, P) → Option write`. Pluggable per-arch.                                  |
-| `Plan.Plan`                   | `Plan.Aggregate`             | `objects + resolve + load + initOrder`, all indexed at `objects.val.size`.                |
-| `Materialize.BasedPlan`       | `Materialize.BasedPlan`      | `Plan + Reserve + h_total`. The canonical input to `Materialize.build`.                   |
+| `Plan.Plan`                   | `Plan.Aggregate`             | `objects + resolve + layout + initOrder`, all indexed at `objects.val.size`.              |
+| `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `Plan + Reserve + h_total`. The canonical input to `Materialize.build`.                   |
 | `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
 | `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |
 | `Materialize.Safe`            | `Materialize.LoadOps`        | Five-predicate bundle (mmaps disjoint + 4× contained); `runSafe` accepts only witnessed `LoadOps`. |
-| `Mmap` / `Zero` / `Store` / `Mprotect` / `Reserve` | `Runtime`     | Typed records wrapping each FFI signature.                                                |
+| `MmapSlot` / `ZeroSlot` / `StoreSlot` / `MprotectSlot` / `Reserve` | `Runtime` | Typed records wrapping each FFI signature.                                            |
 
 ## Witness flow
 
@@ -57,21 +75,21 @@ Elaborate:   RawElf → Elf       + Segment.{fileszLeMemsz, alignPow2,
                                          phdrCovered, initArrInExecSeg,
                                          finiArrInExecSeg}
 Discover:    path → ObjectList  + sizePos, namesNodup, depsSize, depsBounds
-Plan:        ObjectList → Plan  + per-SegmentPlan (pageEnd_lt /
+Plan:        ObjectList → Plan  + per-SegmentLayout (pageEnd_lt /
                                   fileOverlay_le_pageLength /
                                   vaddr_memsz_le_pageEnd /
                                   zero_end_le_pageLength /
                                   pageInset_eq_vaddr)
-                                 + ElfPlan (segmentsSorted,
+                                 + ElfLayout (segmentsSorted,
                                             pageEndAddr_le_advance)
-                                 + LoadPlan (elfs_size, totalSpan_eq)
+                                 + Layout (elfs_size, totalSpan_eq)
                                  + Resolve.Table.entries discharges no
                                    strong-undef remains (rejected at
                                    ofObjects)
-Materialize: BasedPlan → { lo : LoadOps n // Safe lo }
+Materialize: BoundPlan → { lo : LoadOps n // Safe lo }
                                  (every slot witnessed in-range, mmaps
                                   pairwise disjoint — chained from
-                                  BasedPlan's per-(i,j) theorems)
+                                  BoundPlan's per-(i,j) theorems)
 Runtime:     witnessed lo → IO Unit
                                  (FFI dispatch; no further checks)
 ```
@@ -107,12 +125,9 @@ A grep for `@[extern]` outside `LeanLoad/Runtime.lean` is a smell.
 - **Opaque Lean types named for what they are** (`Reserve`, not
   `ReservePtr`).
 - **Per-stage namespaces** — `LeanLoad.Parse`, `LeanLoad.Elaborate`,
-  `LeanLoad.Discover`, `LeanLoad.Plan`, `LeanLoad.Resolve`,
-  `LeanLoad.Reloc`, `LeanLoad.Init`, `LeanLoad.Materialize`,
-  `LeanLoad.Runtime`. (The four `LeanLoad.{Resolve,Reloc,Init}` files
-  live under `LeanLoad/Plan/` for proximity to `Plan.Aggregate`; the
-  namespace mismatch is intentional historical baggage that may be
-  cleaned up later.)
+  `LeanLoad.Discover`, `LeanLoad.Plan`, `LeanLoad.Plan.Resolve`,
+  `LeanLoad.Plan.Reloc`, `LeanLoad.Plan.Init`, `LeanLoad.Materialize`,
+  `LeanLoad.Runtime`. File path matches namespace.
 
 ## Scope
 
@@ -174,8 +189,8 @@ Both have a job, and adding one doesn't retire the other:
   has interesting edge cases (empty inputs, alignment boundaries,
   symbol-less relocations).
 - **Theorems live next to the definitions they characterise.**
-  `Plan/Layout.lean`'s `raw_*` lemmas discharge the per-`SegmentPlan`
-  invariants; `Materialize/BasedPlan.lean`'s `segment_*_in_rsv` and
+  `Plan/Layout.lean`'s `raw_*` lemmas discharge the per-`SegmentLayout`
+  invariants; `Materialize/BoundPlan.lean`'s `segment_*_in_rsv` and
   `*_disjoint` theorems power the structural `Safe` proof in
   `Materialize/Build.lean`. There is no separate `Thm/` tree — the
   proofs live with the code they're about.
