@@ -152,13 +152,11 @@ def debug (path : String) : IO Unit := do
     { plan with rsv := rsvW.val, h_total := rsvW.property }
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := bp.bases
-  have h_bases : bases.size = bp.objCount := bp.bases_size
   for h : i in [:bp.objCount] do
-    let base := bases[i]'(by rw [h_bases]; exact h.upper)
+    let base := bases[i]'h.upper
     let obj := plan.graph.objects[i]
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
-    have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; exact h.upper
-    let ep := lp.elfs[i]'hi_lp
+    let ep := lp.elfs[i]'h.upper
     for sp in ep.segments do
       let absVa := base + sp.pageVaddr
       IO.eprintln s!"  vaddr=0x{Nat.hex absVa.toNat} len=0x{Nat.hex sp.pageLength.toNat} prot={sp.prot}"
@@ -171,10 +169,9 @@ def debug (path : String) : IO Unit := do
   let labelW := 16
   for h : i in [:bp.objCount] do
     let obj  := plan.graph.objects[i]
-    let some base := bases[i]? | continue
+    let base := bases[i]'h.upper
     let label := padR s!"[{i}] {obj.name}" labelW
-    have hi_lp : i < lp.elfs.size := by rw [lp.elfs_size]; exact h.upper
-    let ep := lp.elfs[i]'hi_lp
+    let ep := lp.elfs[i]'h.upper
     for h2 : segI in [:ep.segments.size] do
       let sp := ep.segments[segI]
       for entry in sp.relocs do
@@ -182,12 +179,10 @@ def debug (path : String) : IO Unit := do
         let symValue : UInt64 := match symRef with
           | none => 0
           | some ref =>
-            match bases[ref.objectIdx.val]? with
-            | none => 0
-            | some provBase =>
-              match elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?) with
-              | none     => 0
-              | some sym => provBase + sym.value
+            let provBase := bases[ref.objectIdx.val]'ref.objectIdx.isLt
+            match elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?) with
+            | none     => 0
+            | some sym => provBase + sym.value
         let inputs : Elaborate.FormulaInputs :=
           { symValue, addend := entry.addend, base, place := base + entry.r_offset }
         match formula entry.type inputs with

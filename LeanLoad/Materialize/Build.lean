@@ -142,7 +142,8 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
   let elfs := bp.objectElfs
   let objCount := bp.objCount
   have h_elfs : elfs.size = objCount := bp.objectElfs_size
-  have h_bases : bp.bases.size = objCount := bp.bases_size
+  let basesArr := bp.bases.toArray
+  have h_bases : basesArr.size = objCount := bp.bases.size_toArray
   let sp := bp.segAt i j
   let handle := bp.handleAt i
   let base := bp.baseAt i
@@ -151,7 +152,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
   let setup := setupSegment sp handle base
   -- Use the sized variant so `sp.relocs : Array (Entry objCount sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
-  match h_bake : bakeSegmentRelocs bp.formula elfs h_elfs bp.bases
+  match h_bake : bakeSegmentRelocs bp.formula elfs h_elfs basesArr
                    h_bases base sp.segment sp.relocs with
   | .error e => .error e
   | .ok stores =>
@@ -176,14 +177,14 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
         -- with `entry.covered` and `segment_storeRange_in_rsv`.
         intro s h_s
         refine bakeSegmentRelocs_storesInvariant bp.formula elfs h_elfs
-          bp.bases h_bases base sp.segment sp.relocs
+          basesArr h_bases base sp.segment sp.relocs
           (fun s' => Runtime.InRange s'.addr s'.byteLen bp.rsv.addr bp.rsv.len)
           ?_ stores h_bake s h_s
         intro e s' h_br
         obtain ⟨h_addr, _h_size⟩ := bakeReloc_ok_some bp.formula elfs
-          h_elfs bp.bases h_bases base sp.segment e s' h_br
+          h_elfs basesArr h_bases base sp.segment e s' h_br
         have h_byteLen := bakeReloc_byteLen_le_8 bp.formula elfs
-          h_elfs bp.bases h_bases base sp.segment e s' h_br
+          h_elfs basesArr h_bases base sp.segment e s' h_br
         rw [h_addr]
         exact bp.segment_storeRange_in_rsv i j e.r_offset e.covered
           s'.byteLen h_byteLen
@@ -381,14 +382,14 @@ def build (bp : BoundPlan) :
 
     `order : Array (Fin objCount)` carries the bound at the type level; both
     `lp.elfs[…]` and `bases[…]` are total — no `[]?` needed. -/
-def collectAddrs (lp : Layout objCount) (bases : Array UInt64)
-    (h_bases : bases.size = objCount) (order : Array (Fin objCount))
+def collectAddrs (lp : Layout objCount) (bases : Vector UInt64 objCount)
+    (order : Array (Fin objCount))
     (arrOf : Elaborate.Elf → Array UInt64) : Array UInt64 :=
   Id.run do
     let mut addrs : Array UInt64 := #[]
     for objectIdx in order do
-      let ep   := lp.elfs[objectIdx.val]'(by rw [lp.elfs_size]; exact objectIdx.isLt)
-      let base := bases[objectIdx.val]'(by rw [h_bases]; exact objectIdx.isLt)
+      let ep   := lp.elfs[objectIdx]
+      let base := bases[objectIdx]
       let isExec := ep.elf.elfType == .exec
       for entry in arrOf ep.elf do
         let fnAddr := if isExec then entry else base + entry
@@ -397,14 +398,13 @@ def collectAddrs (lp : Layout objCount) (bases : Array UInt64)
 
 /-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
 def ctorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.layout bp.bases bp.bases_size bp.initOrder (·.initArr)
+  collectAddrs bp.layout bp.bases bp.initOrder (·.initArr)
 
 /-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
     so deepest-dep fini runs after shallower fini, mirroring init's
     "deps first" order. gabi 08 mandates a partial order; reverse-init
     is glibc / musl's conventional choice. -/
 def dtorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.layout bp.bases bp.bases_size
-    bp.initOrder.reverse (·.finiArr)
+  collectAddrs bp.layout bp.bases bp.initOrder.reverse (·.finiArr)
 
 end LeanLoad.Materialize

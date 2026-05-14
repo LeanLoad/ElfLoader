@@ -289,23 +289,22 @@ theorem cumOffset_mono (elfs : Array (ElfLayout m)) {a b : Nat} (h : a ≤ b) :
 /-- Top-level base-free plan. `totalSpan` is the `len` to pass to
     `Reserve.run` at the IO boundary; `totalSpan_eq` says it equals
     the `cumOffset` Nat sum (no UInt64 wrap during construction).
-    `elfs_size` ties the elf array length to `objCount`. -/
+    `elfs` is a length-indexed `Vector` so `lp.elfs[i]` is total for
+    any `i : Fin objCount` — no separate `elfs_size` rewrite needed
+    at indexing sites. -/
 structure Layout (objCount : Nat) where
-  elfs      : Array (ElfLayout objCount)
-  /-- The elf array has exactly `objCount` entries — every consumer
-      indexes totally with `Fin objCount`. -/
-  elfs_size : elfs.size = objCount
+  elfs      : Vector (ElfLayout objCount) objCount
   /-- `Σ alignUp objectSpan 0x1000` — cumulative reservation span. -/
   totalSpan : UInt64
   /-- Connects UInt64 `totalSpan` to the `Nat` cumulative sum.
       Discharged in `ofElfs` by checking the sum fits in UInt64. -/
-  totalSpan_eq : totalSpan.toNat = cumOffset elfs elfs.size
+  totalSpan_eq : totalSpan.toNat = cumOffset elfs.toArray elfs.toArray.size
 
 namespace Layout
 
 /-- Convenience: `lp.cumOffset k` over the elf array. -/
 def cumOffset (lp : Layout objCount) (k : Nat) : Nat :=
-  _root_.LeanLoad.Plan.cumOffset lp.elfs k
+  _root_.LeanLoad.Plan.cumOffset lp.elfs.toArray k
 
 /-- Tail-recursive accumulator that lifts each `Elf` through
     `ElfLayout.ofElf` while maintaining `acc.size = i`. -/
@@ -336,12 +335,15 @@ private def ofElfsImpl (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
   let totalNat :=
     _root_.LeanLoad.Plan.cumOffset elfLayouts.val elfLayouts.val.size
   if h : totalNat < 2 ^ 64 then
+    let elfsV : Vector (ElfLayout elfs.size) elfs.size :=
+      ⟨elfLayouts.val, elfLayouts.property⟩
     return {
-      elfs := elfLayouts.val,
-      elfs_size := elfLayouts.property,
+      elfs := elfsV,
       totalSpan := UInt64.ofNat totalNat,
       totalSpan_eq := by
         show totalNat % 2 ^ 64 = _
+        have h_to : elfsV.toArray = elfLayouts.val := rfl
+        rw [h_to]
         exact Nat.mod_eq_of_lt h }
   else
     .error s!"Layout.ofElfs: cumulative span {totalNat} exceeds UInt64"
@@ -366,35 +368,37 @@ end Layout
 -- ============================================================================
 
 /-- Stack each elf at `base + cumOffset i`. Total: every `Layout`
-    produces a valid bases array of size `n`. -/
-def assignBases (base : UInt64) (lp : Layout n) : Array UInt64 :=
-  Array.ofFn fun (i : Fin lp.elfs.size) =>
-    base + UInt64.ofNat (cumOffset lp.elfs i.val)
-
-theorem assignBases_size (base : UInt64) (lp : Layout n) :
-    (assignBases base lp).size = lp.elfs.size := by
-  unfold assignBases; simp
+    produces a valid bases vector of length `objCount`. -/
+def assignBases (base : UInt64) (lp : Layout objCount) : Vector UInt64 objCount :=
+  Vector.ofFn fun (i : Fin objCount) =>
+    base + UInt64.ofNat (cumOffset lp.elfs.toArray i.val)
 
 /-- The `i`-th base equals `rsvAddr + cumOffset i` in `Nat`, given
     the global no-wrap precondition `rsvAddr.toNat + lp.totalSpan.toNat
     < 2^64` (which `Reserve.noWrap` discharges). Falls out of
-    `Array.getElem_ofFn` plus a small ofNat reduction. -/
-theorem assignBases_at_toNat (base : UInt64) (lp : Layout n)
+    `Vector.getElem_ofFn` plus a small ofNat reduction. -/
+theorem assignBases_at_toNat (base : UInt64) (lp : Layout objCount)
     (h_no_wrap : base.toNat + lp.totalSpan.toNat < 2 ^ 64)
-    (i : Nat) (h : i < lp.elfs.size) :
-    ((assignBases base lp)[i]'(by rw [assignBases_size]; exact h)).toNat =
-    base.toNat + cumOffset lp.elfs i := by
+    (i : Fin objCount) :
+    ((assignBases base lp)[i]).toNat =
+    base.toNat + cumOffset lp.elfs.toArray i.val := by
   unfold assignBases
-  rw [Array.getElem_ofFn]
-  have h_cum_le : cumOffset lp.elfs i ≤ cumOffset lp.elfs lp.elfs.size :=
-    cumOffset_mono _ (Nat.le_of_lt h)
-  have h_total_eq : lp.totalSpan.toNat = cumOffset lp.elfs lp.elfs.size :=
+  have h_get : (Vector.ofFn fun (i : Fin objCount) =>
+      base + UInt64.ofNat (cumOffset lp.elfs.toArray i.val))[i] =
+      base + UInt64.ofNat (cumOffset lp.elfs.toArray i.val) := by simp
+  rw [h_get]
+  have h_size_eq : lp.elfs.toArray.size = objCount := lp.elfs.size_toArray
+  have h_lt_arr : i.val < lp.elfs.toArray.size := h_size_eq.symm ▸ i.isLt
+  have h_cum_le : cumOffset lp.elfs.toArray i.val ≤
+      cumOffset lp.elfs.toArray lp.elfs.toArray.size :=
+    cumOffset_mono _ (Nat.le_of_lt h_lt_arr)
+  have h_total_eq : lp.totalSpan.toNat = cumOffset lp.elfs.toArray lp.elfs.toArray.size :=
     lp.totalSpan_eq
-  have h_cum_lt : cumOffset lp.elfs i < 2 ^ 64 := by omega
-  have h_sum_lt : base.toNat + cumOffset lp.elfs i < 2 ^ 64 := by omega
+  have h_cum_lt : cumOffset lp.elfs.toArray i.val < 2 ^ 64 := by omega
+  have h_sum_lt : base.toNat + cumOffset lp.elfs.toArray i.val < 2 ^ 64 := by omega
   rw [UInt64.toNat_add]
-  show (base.toNat + (cumOffset lp.elfs i) % 2 ^ 64) % 2 ^ 64 =
-       base.toNat + cumOffset lp.elfs i
+  show (base.toNat + (cumOffset lp.elfs.toArray i.val) % 2 ^ 64) % 2 ^ 64 =
+       base.toNat + cumOffset lp.elfs.toArray i.val
   rw [Nat.mod_eq_of_lt h_cum_lt, Nat.mod_eq_of_lt h_sum_lt]
 
 end LeanLoad.Plan
