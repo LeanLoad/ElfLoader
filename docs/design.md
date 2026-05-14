@@ -17,10 +17,13 @@ Pipeline (one row per `--debug` section):
 | **Materialize** | pure | `BoundPlan → { lo : LoadOps n // Safe rsv.addr rsv.len lo }` (typed slot tree + structural safety) |
 | **Runtime**     | IO   | witnessed `LoadOps` → `IO Unit` (mmap + zeroout + mprotect + reloc stores + ctor calls + stack + jump; no return) |
 
-`BoundPlan = Plan + Reserve + h_total : rsv.len = plan.layout.totalSpan`,
-constructed once in `Main.load` after `Reserve.run` allocates the
-kernel-picked anon block. The reservation bounds every safety predicate
-in `Materialize`.
+`BoundPlan extends Plan` (Lean structure inheritance) with `rsv :
+Reserve` and `h_total : rsv.len = layout.totalSpan`. Constructed once
+in `Main.load` via `{ plan with rsv, h_total }` after `Reserve.run`
+allocates the kernel-picked anon block. Consumers access planning
+fields directly (`bp.layout`, `bp.objects`, …) — no `bp.plan.X`
+indirection. The reservation bounds every safety predicate in
+`Materialize`.
 
 ### Plan stage — three internal sub-phases
 
@@ -56,7 +59,7 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Reloc.Entry n seg`      | `Plan.Reloc`                 | One planned relocation, base-free, with `coversRela` witness inherited from `Segment`.    |
 | `Reloc.Formula`               | `Elaborate.Reloc`            | `(type, S, A, B, P) → Option write`. Pluggable per-arch.                                  |
 | `Plan.Plan`                   | `Plan.Aggregate`             | `objects + resolve + layout + initOrder`, all indexed at `objects.val.size`.              |
-| `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `Plan + Reserve + h_total`. The canonical input to `Materialize.build`.                   |
+| `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `extends Plan with rsv : Reserve, h_total`. Canonical input to `Materialize.build`. Inherits `bp.objects`, `bp.layout`, etc. |
 | `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
 | `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |
 | `Materialize.Safe`            | `Materialize.LoadOps`        | Five-predicate bundle (mmaps disjoint + 4× contained); `runSafe` accepts only witnessed `LoadOps`. |
