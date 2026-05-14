@@ -34,7 +34,7 @@ private def realize (bp : Materialize.BoundPlan)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
-  let mainElf := bp.plan.objects.main.elf
+  let mainElf := bp.objects.main.elf
   let mainBase := bp.mainBase
   let stack ← Reserve.run stackBytes
   let entry  := mainBase + mainElf.entry
@@ -76,13 +76,13 @@ def load (path : String) : IO Unit := do
   let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
   let rsvW ← Reserve.run plan.layout.totalSpan
   let bp : Materialize.BoundPlan :=
-    { plan, rsv := rsvW.val, h_total := rsvW.property }
+    { plan with rsv := rsvW.val, h_total := rsvW.property }
   let witnessed ← IO.ofExcept (Materialize.build bp)
   let ctorAddrs := Materialize.ctorAddrs bp
   realize bp witnessed ctorAddrs path
 
-/-- `--debug`: same as `layout` but with a stage-by-stage summary on
-    stderr. Like `layout`, this transfers control and does not return. -/
+/-- `--debug`: same as `load` but with a stage-by-stage summary on
+    stderr. Like `load`, this transfers control and does not return. -/
 def debug (path : String) : IO Unit := do
   IO.eprintln "== 1. Discover (BFS over DT_NEEDED) =="
   let g ← Discover.discover path
@@ -149,7 +149,7 @@ def debug (path : String) : IO Unit := do
   let lp := plan.layout
   let rsvW ← Reserve.run lp.totalSpan
   let bp : Materialize.BoundPlan :=
-    { plan, rsv := rsvW.val, h_total := rsvW.property }
+    { plan with rsv := rsvW.val, h_total := rsvW.property }
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := bp.bases
   have h_bases : bases.size = bp.n := bp.bases_size

@@ -1,15 +1,17 @@
 /-
-Base-aware plan: bundles a base-free `Plan.Plan` with the IO-supplied
-`Reserve` and the coherence proof that ties them.
+Base-aware plan: extends `Plan.Plan` with the IO-supplied `Reserve`
+and the coherence proof that ties them. Reads as the pure planning
+output bound to a concrete reservation — hence "BoundPlan".
+
+`BoundPlan extends Plan` (Lean structure inheritance), so the four
+planning fields (`objects`, `resolve`, `layout`, `initOrder`) are
+accessed directly as `bp.objects`, `bp.layout`, etc. — no `bp.plan.X`
+indirection. The original `Plan` projection is available as `bp.toPlan`
+when needed by helpers that take a bare `Plan`.
 
 `BoundPlan` is the canonical input to `Materialize.build` and
-`Materialize.ctorAddrs`. It replaces the ad-hoc `(plan, rsv, h_total)`
-triple threaded through `Main.load` / `Main.debug` and centralises
-the three separate `assignBases` invocations into one projection
-(`bp.bases`) with closed-form lemmas.
-
-Once `BoundPlan` exists, the materialize-stage safety witness
-`LoadSafe` (and its `ElfSafe` / `SegmentSafe` constituents) becomes
+`Materialize.ctorAddrs`. The materialize-stage safety witness
+`LoadSafe` (and its `ElfSafe` / `SegmentSafe` constituents) is
 provable structurally from plan invariants. The bounds chain —
 `pageVaddr + fileOverlayLen ≤ pageEndAddr ≤ advance` (existing
 lemmas in `Plan/Layout.lean`) plus `base + advance ≤ rsv.addr +
@@ -25,35 +27,34 @@ open LeanLoad
 open LeanLoad.Plan (cumOffset cumOffset_succ_of_lt cumOffset_mono
                      assignBases assignBases_size assignBases_at_toNat)
 
-/-- A pure-pipeline `Plan` plus the IO-supplied reservation it'll be
-    materialized into, with the coherence proof threaded from
-    `Reserve.run`'s subtype. Every materialize-stage consumer
-    (`build`, `ctorAddrs`, `Main.realize`) takes a `BoundPlan` in
-    place of `(plan, rsv, h_total)`. -/
-structure BoundPlan where
-  plan    : Plan.Plan
+/-- The pure-pipeline `Plan` extended with the IO-supplied reservation,
+    plus the coherence proof threaded from `Reserve.run`'s subtype.
+    Every materialize-stage consumer (`build`, `ctorAddrs`,
+    `Main.realize`) takes a `BoundPlan` and accesses its planning
+    fields directly via inheritance. -/
+structure BoundPlan extends Plan.Plan where
   rsv     : Reserve
-  h_total : rsv.len = plan.layout.totalSpan
+  h_total : rsv.len = layout.totalSpan
 
 namespace BoundPlan
 
 /-- The number of loaded elves. Used as the `n` parameter on every
     `n`-indexed downstream type (`LoadOps n`, `SegmentOps n`, ...). -/
-abbrev n (bp : BoundPlan) : Nat := bp.plan.objects.val.size
+abbrev n (bp : BoundPlan) : Nat := bp.objects.val.size
 
 /-- Per-elf base addresses inside the reservation. `abbrev` so
-    `bp.bases[i]` reduces to `assignBases bp.rsv.addr bp.plan.layout`
+    `bp.bases[i]` reduces to `assignBases bp.rsv.addr bp.layout`
     transparently in proofs. Hot consumers bind once via
     `let bases := bp.bases` to avoid re-materialising the array. -/
 abbrev bases (bp : BoundPlan) : Array UInt64 :=
-  assignBases bp.rsv.addr bp.plan.layout
+  assignBases bp.rsv.addr bp.layout
 
 theorem bases_size (bp : BoundPlan) : bp.bases.size = bp.n :=
-  (assignBases_size _ _).trans bp.plan.layout.elfs_size
+  (assignBases_size _ _).trans bp.layout.elfs_size
 
 /-- `0 < bp.n` — the main executable is always present. -/
 theorem n_pos (bp : BoundPlan) : 0 < bp.n :=
-  bp.plan.objects.sizePos
+  bp.objects.sizePos
 
 theorem bases_size_pos (bp : BoundPlan) : 0 < bp.bases.size := by
   rw [bases_size]; exact bp.n_pos
@@ -61,7 +62,7 @@ theorem bases_size_pos (bp : BoundPlan) : 0 < bp.bases.size := by
 /-- Global no-wrap: `rsv.addr + totalSpan` fits in UInt64. Falls out
     of `Reserve.noWrap` plus `h_total`. -/
 theorem rsv_noWrap (bp : BoundPlan) :
-    bp.rsv.addr.toNat + bp.plan.layout.totalSpan.toNat < 2 ^ 64 := by
+    bp.rsv.addr.toNat + bp.layout.totalSpan.toNat < 2 ^ 64 := by
   rw [← bp.h_total]; exact bp.rsv.noWrap
 
 -- ============================================================================
@@ -73,7 +74,7 @@ theorem rsv_noWrap (bp : BoundPlan) :
 
 /-- `i`-th elf plan, indexed totally by `Fin bp.n`. -/
 abbrev elfAt (bp : BoundPlan) (i : Fin bp.n) : Plan.ElfLayout bp.n :=
-  bp.plan.layout.elfs[i.val]'(by rw [bp.plan.layout.elfs_size]; exact i.isLt)
+  bp.layout.elfs[i.val]'(by rw [bp.layout.elfs_size]; exact i.isLt)
 
 /-- `i`-th elf's base address. -/
 abbrev baseAt (bp : BoundPlan) (i : Fin bp.n) : UInt64 :=
@@ -81,7 +82,7 @@ abbrev baseAt (bp : BoundPlan) (i : Fin bp.n) : UInt64 :=
 
 /-- `i`-th elf's open file handle (held until process exit). -/
 abbrev handleAt (bp : BoundPlan) (i : Fin bp.n) : Runtime.FileHandle :=
-  (bp.plan.objects.val[i.val]'i.isLt).handle
+  (bp.objects.val[i.val]'i.isLt).handle
 
 /-- `(i, j)`-th segment plan. -/
 abbrev segAt (bp : BoundPlan) (i : Fin bp.n)
@@ -91,10 +92,10 @@ abbrev segAt (bp : BoundPlan) (i : Fin bp.n)
 /-- Closed-form for `bp.baseAt i`. -/
 theorem baseAt_toNat (bp : BoundPlan) (i : Fin bp.n) :
     (bp.baseAt i).toNat =
-    bp.rsv.addr.toNat + cumOffset bp.plan.layout.elfs i.val := by
-  have h_lp : i.val < bp.plan.layout.elfs.size := by
-    rw [bp.plan.layout.elfs_size]; exact i.isLt
-  exact assignBases_at_toNat bp.rsv.addr bp.plan.layout bp.rsv_noWrap i.val h_lp
+    bp.rsv.addr.toNat + cumOffset bp.layout.elfs i.val := by
+  have h_lp : i.val < bp.layout.elfs.size := by
+    rw [bp.layout.elfs_size]; exact i.isLt
+  exact assignBases_at_toNat bp.rsv.addr bp.layout bp.rsv_noWrap i.val h_lp
 
 /-- Workhorse: the i-th elf's `[base, base + advance)` fits inside
     `[rsv.addr, rsv.addr + rsv.len)` in `Nat`. Every per-slot
@@ -102,17 +103,17 @@ theorem baseAt_toNat (bp : BoundPlan) (i : Fin bp.n) :
 theorem base_plus_advance_le_rsv_end (bp : BoundPlan) (i : Fin bp.n) :
     (bp.baseAt i).toNat + (bp.elfAt i).advance.toNat ≤
     bp.rsv.addr.toNat + bp.rsv.len.toNat := by
-  have h_lp : i.val < bp.plan.layout.elfs.size := by
-    rw [bp.plan.layout.elfs_size]; exact i.isLt
+  have h_lp : i.val < bp.layout.elfs.size := by
+    rw [bp.layout.elfs_size]; exact i.isLt
   show (bp.baseAt i).toNat +
-       (bp.plan.layout.elfs[i.val]'h_lp).advance.toNat ≤ _
-  rw [bp.baseAt_toNat i, bp.h_total, bp.plan.layout.totalSpan_eq]
-  have h_succ : cumOffset bp.plan.layout.elfs i.val +
-                (bp.plan.layout.elfs[i.val]'h_lp).advance.toNat =
-                cumOffset bp.plan.layout.elfs (i.val + 1) :=
+       (bp.layout.elfs[i.val]'h_lp).advance.toNat ≤ _
+  rw [bp.baseAt_toNat i, bp.h_total, bp.layout.totalSpan_eq]
+  have h_succ : cumOffset bp.layout.elfs i.val +
+                (bp.layout.elfs[i.val]'h_lp).advance.toNat =
+                cumOffset bp.layout.elfs (i.val + 1) :=
     (cumOffset_succ_of_lt _ h_lp).symm
-  have h_mono : cumOffset bp.plan.layout.elfs (i.val + 1) ≤
-                cumOffset bp.plan.layout.elfs bp.plan.layout.elfs.size :=
+  have h_mono : cumOffset bp.layout.elfs (i.val + 1) ≤
+                cumOffset bp.layout.elfs bp.layout.elfs.size :=
     cumOffset_mono _ h_lp
   omega
 
@@ -120,11 +121,11 @@ theorem base_plus_advance_le_rsv_end (bp : BoundPlan) (i : Fin bp.n) :
     `baseAt_toNat` + `cumOffset_mono` + `totalSpan_eq`. -/
 theorem baseAt_le_rsv_end (bp : BoundPlan) (i : Fin bp.n) :
     (bp.baseAt i).toNat ≤ bp.rsv.addr.toNat + bp.rsv.len.toNat := by
-  have h_lp : i.val < bp.plan.layout.elfs.size := by
-    rw [bp.plan.layout.elfs_size]; exact i.isLt
-  rw [bp.baseAt_toNat i, bp.h_total, bp.plan.layout.totalSpan_eq]
-  have h_mono : cumOffset bp.plan.layout.elfs i.val ≤
-                cumOffset bp.plan.layout.elfs bp.plan.layout.elfs.size :=
+  have h_lp : i.val < bp.layout.elfs.size := by
+    rw [bp.layout.elfs_size]; exact i.isLt
+  rw [bp.baseAt_toNat i, bp.h_total, bp.layout.totalSpan_eq]
+  have h_mono : cumOffset bp.layout.elfs i.val ≤
+                cumOffset bp.layout.elfs bp.layout.elfs.size :=
     cumOffset_mono _ (Nat.le_of_lt h_lp)
   omega
 
@@ -144,17 +145,17 @@ theorem base_plus_advance_le_base (bp : BoundPlan) (i₁ i₂ : Fin bp.n)
     (h_lt : i₁ < i₂) :
     (bp.baseAt i₁).toNat + (bp.elfAt i₁).advance.toNat ≤
     (bp.baseAt i₂).toNat := by
-  have h_lp₁ : i₁.val < bp.plan.layout.elfs.size := by
-    rw [bp.plan.layout.elfs_size]; exact i₁.isLt
+  have h_lp₁ : i₁.val < bp.layout.elfs.size := by
+    rw [bp.layout.elfs_size]; exact i₁.isLt
   show (bp.baseAt i₁).toNat +
-       (bp.plan.layout.elfs[i₁.val]'h_lp₁).advance.toNat ≤ _
+       (bp.layout.elfs[i₁.val]'h_lp₁).advance.toNat ≤ _
   rw [bp.baseAt_toNat i₁, bp.baseAt_toNat i₂]
-  have h_succ : cumOffset bp.plan.layout.elfs i₁.val +
-                (bp.plan.layout.elfs[i₁.val]'h_lp₁).advance.toNat =
-                cumOffset bp.plan.layout.elfs (i₁.val + 1) :=
+  have h_succ : cumOffset bp.layout.elfs i₁.val +
+                (bp.layout.elfs[i₁.val]'h_lp₁).advance.toNat =
+                cumOffset bp.layout.elfs (i₁.val + 1) :=
     (cumOffset_succ_of_lt _ h_lp₁).symm
-  have h_mono : cumOffset bp.plan.layout.elfs (i₁.val + 1) ≤
-                cumOffset bp.plan.layout.elfs i₂.val :=
+  have h_mono : cumOffset bp.layout.elfs (i₁.val + 1) ≤
+                cumOffset bp.layout.elfs i₂.val :=
     cumOffset_mono _ h_lt
   omega
 
@@ -207,7 +208,7 @@ theorem segment_base_add_pageVaddr_toNat (bp : BoundPlan) (i : Fin bp.n)
 theorem rsv_addr_le_baseAt (bp : BoundPlan) (i : Fin bp.n) :
     bp.rsv.addr.toNat ≤ (bp.baseAt i).toNat := by
   rw [bp.baseAt_toNat i]
-  have h_cum_nonneg : 0 ≤ Plan.cumOffset bp.plan.layout.elfs i.val := Nat.zero_le _
+  have h_cum_nonneg : 0 ≤ Plan.cumOffset bp.layout.elfs i.val := Nat.zero_le _
   omega
 
 /-- The mmap range fits in the reservation. -/

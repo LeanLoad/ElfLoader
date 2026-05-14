@@ -138,10 +138,9 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
       so.mmap =
         (setupSlots (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).1 } := do
-  let plan := bp.plan
-  let elfs := plan.objectElfs
+  let elfs := bp.objectElfs
   let n := bp.n
-  have h_elfs : elfs.size = n := plan.objectElfs_size
+  have h_elfs : elfs.size = n := bp.objectElfs_size
   have h_bases : bp.bases.size = n := bp.bases_size
   let sp := bp.segAt i j
   let handle := bp.handleAt i
@@ -151,7 +150,7 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
   let slots := setupSlots sp handle base
   -- Use the sized variant so `sp.relocs : Array (Entry n sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
-  match h_bake : bakeSegmentRelocsSized plan.formula elfs h_elfs bp.bases
+  match h_bake : bakeSegmentRelocsSized bp.formula elfs h_elfs bp.bases
                    h_bases base sp.segment sp.relocs with
   | .error e => .error e
   | .ok stores =>
@@ -174,14 +173,14 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
         -- so `addr = base + entry.r_offset` and `byteLen ≤ 8`; combine
         -- with `entry.covered` and `segment_storeRange_in_rsv`.
         intro s h_s
-        refine bakeSegmentRelocs_storesInvariantSized plan.formula elfs h_elfs
+        refine bakeSegmentRelocs_storesInvariantSized bp.formula elfs h_elfs
           bp.bases h_bases base sp.segment sp.relocs
           (fun s' => Runtime.InRange s'.addr s'.byteLen bp.rsv.addr bp.rsv.len)
           ?_ stores h_bake s h_s
         intro e s' h_br
-        obtain ⟨h_addr, _h_size⟩ := bakeReloc_ok_someSized plan.formula elfs
+        obtain ⟨h_addr, _h_size⟩ := bakeReloc_ok_someSized bp.formula elfs
           h_elfs bp.bases h_bases base sp.segment e s' h_br
-        have h_byteLen := bakeReloc_byteLen_le_8Sized plan.formula elfs
+        have h_byteLen := bakeReloc_byteLen_le_8Sized bp.formula elfs
           h_elfs bp.bases h_bases base sp.segment e s' h_br
         rw [h_addr]
         exact bp.segment_storeRange_in_rsv i j e.r_offset e.covered
@@ -402,14 +401,14 @@ def collectAddrs (lp : Layout n) (bases : Array UInt64)
 
 /-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
 def ctorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.plan.layout bp.bases bp.bases_size bp.plan.initOrder (·.initArr)
+  collectAddrs bp.layout bp.bases bp.bases_size bp.initOrder (·.initArr)
 
 /-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
     so deepest-dep fini runs after shallower fini, mirroring init's
     "deps first" order. gabi 08 mandates a partial order; reverse-init
     is glibc / musl's conventional choice. -/
 def dtorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.plan.layout bp.bases bp.bases_size
-    bp.plan.initOrder.reverse (·.finiArr)
+  collectAddrs bp.layout bp.bases bp.bases_size
+    bp.initOrder.reverse (·.finiArr)
 
 end LeanLoad.Materialize
