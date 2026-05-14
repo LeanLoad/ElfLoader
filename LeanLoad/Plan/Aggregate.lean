@@ -89,13 +89,13 @@ def ofObjects (objs : LoadGraph) : Except String Aggregate := do
   have h_size : elfs.size = objs.val.size := by simp [elfs]
   -- Sized variants thread `h_size` through their construction so the
   -- result types are already at `objs.val.size` — no outer `▸` cast.
-  let resolve := Resolve.buildTableSized elfs h_size
+  let resolve := Resolve.buildTable elfs h_size
   -- Reject loads with strong-undef references — production loaders
   -- would surface this as an early `ld.so` failure.
   if let some u := resolve.missing[0]? then
     .error s!"Aggregate.ofObjects: {resolve.missing.size} unresolved strong symbol(s); \
       first: {u.name}"
-  let layout ← Layout.ofElfsSized elfs h_size resolve
+  let layout ← Layout.ofElfs elfs resolve h_size
   let initOrder := Init.order objs
   return { objects := objs, resolve, layout, initOrder }
 

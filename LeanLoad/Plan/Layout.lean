@@ -330,7 +330,7 @@ termination_by elfs.size - i
     non-overlap and plans each segment's relocations. Computes the
     `Nat` cumulative span and checks it fits in UInt64 so the
     resulting `Layout` carries the `totalSpan_eq` invariant. -/
-def ofElfs (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
+private def ofElfsImpl (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
     Except String (Layout elfs.size) := do
   let elfLayouts ← buildElfLayouts elfs rt 0 (Nat.zero_le _) ⟨#[], by simp⟩
   let totalNat :=
@@ -346,14 +346,15 @@ def ofElfs (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
   else
     .error s!"Layout.ofElfs: cumulative span {totalNat} exceeds UInt64"
 
-/-- Sized variant of `ofElfs` — returns `Layout n` for any `n` equal
-    to `elfs.size`. The `subst h_size; exact ofElfs elfs rt` body
-    absorbs the `▸` cast at the wrapper, so `Plan.ofObjects` can write
-    `Layout.ofElfsSized elfs h_size rt : Layout objs.val.size`
-    without an outer rewrite. -/
-def ofElfsSized {n : Nat} (elfs : Array Elf) (h_size : elfs.size = n)
-    (rt : Resolve.Table n) : Except String (Layout n) := by
-  subst h_size; exact ofElfs elfs rt
+/-- Public entry point. The implicit `n` defaults to `elfs.size` via
+    the `h_size := by rfl` argument (last so callers can omit it);
+    pass an explicit `h_size` to retype at any provably-equal size
+    (used by `Plan.Aggregate.ofObjects` to land at `Layout
+    objs.val.size` without an outer `▸` cast). The `subst h_size;
+    exact ofElfsImpl …` body absorbs the rewrite at the wrapper. -/
+def ofElfs {n : Nat} (elfs : Array Elf) (rt : Resolve.Table n)
+    (h_size : elfs.size = n := by rfl) : Except String (Layout n) := by
+  subst h_size; exact ofElfsImpl elfs rt
 
 end Layout
 

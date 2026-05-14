@@ -123,7 +123,7 @@ private def relocTest (g : LoadGraph) (formula : Elaborate.Formula) : Except Str
     let base := bases[i]'(by rw [h_bases]; rw [← lp.elfs_size]; exact h.upper)
     for sp in ep.segments do
       stores := stores ++
-        (← Materialize.bakeSegmentRelocs formula elfs bases h_bases base
+        (← Materialize.bakeSegmentRelocs formula elfs rfl bases h_bases base
               sp.segment sp.relocs)
   check (stores.size > 0) "expected nonzero baked Store ops"
 

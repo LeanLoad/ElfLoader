@@ -89,7 +89,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     `have`/`let` wrappers) so the characterisation lemmas
     `bakeReloc_ok_some` / `bakeReloc_byteLen_le_8` can split on it
     directly. -/
-private def bakeReloc (formula : Formula) (elfs : Array Elf)
+private def bakeRelocImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg) :
     Except String (Option StoreSlot) :=
@@ -115,39 +115,38 @@ private def bakeReloc (formula : Formula) (elfs : Array Elf)
     Implemented as `Array.foldlM` so the origin lemma
     `bakeSegmentRelocs_mem_origin` can chain through
     `Array.foldlM`'s induction principle. -/
-def bakeSegmentRelocs (formula : Formula) (elfs : Array Elf)
+private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg)) :
     Except String (Array StoreSlot) :=
   relocs.foldlM (init := (#[] : Array StoreSlot)) fun acc entry => do
-    match ← bakeReloc formula elfs bases h_bases base seg entry with
+    match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
     | none    => pure acc
     | some w  => pure (acc.push w)
 
-/-- Sized variant of `bakeSegmentRelocs` — accepts `relocs : Array
-    (Entry n seg)` for any `n` equal to `elfs.size`. The
-    `subst h_elfs; exact bakeSegmentRelocs …` body absorbs the `▸`
-    cast at the wrapper, so `Materialize.buildSegmentSafe` can pass
-    `sp.relocs : Array (Entry bp.n seg)` directly without an
-    outer rewrite. -/
-def bakeSegmentRelocsSized (formula : Formula) {n : Nat}
+/-- Public entry point for baking a whole segment's relocations. The
+    explicit `h_elfs : elfs.size = n` retypes `relocs` at any
+    provably-equal size — used by `Materialize.buildSegmentSafe` to
+    accept `sp.relocs : Array (Entry bp.n seg)` directly without an
+    outer `▸` cast. The `subst h_elfs; exact bakeSegmentRelocsImpl …`
+    body absorbs the rewrite. -/
+def bakeSegmentRelocs (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg)) :
     Except String (Array StoreSlot) := by
   subst h_elfs
-  exact bakeSegmentRelocs formula elfs bases h_bases base seg relocs
+  exact bakeSegmentRelocsImpl formula elfs bases h_bases base seg relocs
 
-/-- Sized variant of `bakeReloc`, exposed via `bakeRelocSized` for
-    the characterisation lemmas below to refer to. Identical to
-    `bakeReloc` modulo `subst h_elfs`. -/
-private def bakeRelocSized (formula : Formula) {n : Nat}
+/-- Public entry point for baking a single relocation. Same shape as
+    `bakeSegmentRelocs` — explicit `h_elfs` retypes `entry`'s `n`. -/
+def bakeReloc (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (entry : Entry n seg) :
     Except String (Option StoreSlot) := by
   subst h_elfs
-  exact bakeReloc formula elfs bases h_bases base seg entry
+  exact bakeRelocImpl formula elfs bases h_bases base seg entry
 
 -- ============================================================================
 -- bakeReloc characterisation.
@@ -162,13 +161,13 @@ private def bakeRelocSized (formula : Formula) {n : Nat}
 /-- `bakeReloc` either errors out (32-bit overflow), returns `.ok
     none` (no-op type), or returns `.ok (some s)` with the closed form
     `s.addr = base + entry.r_offset` and `s.size ∈ {4, 8}`. -/
-theorem bakeReloc_ok_some (formula : Formula) (elfs : Array Elf)
+private theorem bakeReloc_ok_someImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
     (s : StoreSlot)
-    (h : bakeReloc formula elfs bases h_bases base seg entry = .ok (some s)) :
+    (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
-  unfold bakeReloc at h
+  unfold bakeRelocImpl at h
   split at h
   · cases h    -- formula = none → .ok none, not .ok (some s)
   · split at h
@@ -189,13 +188,13 @@ theorem bakeReloc_ok_some (formula : Formula) (elfs : Array Elf)
       · cases h    -- overflow: .error, not .ok
 
 /-- `StoreSlot.byteLen.toNat ≤ 8` for any store emitted by `bakeReloc`. -/
-theorem bakeReloc_byteLen_le_8 (formula : Formula) (elfs : Array Elf)
+private theorem bakeReloc_byteLen_le_8Impl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
     (s : StoreSlot)
-    (h : bakeReloc formula elfs bases h_bases base seg entry = .ok (some s)) :
+    (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
-  obtain ⟨_, h_size⟩ := bakeReloc_ok_some formula elfs bases h_bases base seg entry s h
+  obtain ⟨_, h_size⟩ := bakeReloc_ok_someImpl formula elfs bases h_bases base seg entry s h
   unfold StoreSlot.byteLen
   rcases h_size with h4 | h8
   · rw [h4]; decide
@@ -250,17 +249,17 @@ private theorem listFoldlM_except_preserves {α : Type} {β : Type}
     predicate that `bakeReloc`'s `.ok (some _)` results satisfy
     universally (in particular: `byteLen ≤ 8` + `addr = base +
     entry.r_offset` for some `entry`). -/
-theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
+private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg))
     (P : StoreSlot → Prop)
-    (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs bases h_bases base seg entry =
+    (h_baked : ∀ entry, ∀ s, bakeRelocImpl formula elfs bases h_bases base seg entry =
                               .ok (some s) → P s)
     (out : Array StoreSlot)
-    (h_out : bakeSegmentRelocs formula elfs bases h_bases base seg relocs = .ok out) :
+    (h_out : bakeSegmentRelocsImpl formula elfs bases h_bases base seg relocs = .ok out) :
     ∀ s ∈ out, P s := by
   -- Convert the Array.foldlM to List.foldlM via `Array.foldlM_toList`.
-  unfold bakeSegmentRelocs at h_out
+  unfold bakeSegmentRelocsImpl at h_out
   rw [← Array.foldlM_toList] at h_out
   refine listFoldlM_except_preserves _ ?_ #[]
     (by intros _ h_mem; exact absurd h_mem (by simp)) relocs.toList out h_out
@@ -269,25 +268,25 @@ theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
   -- pure acc | some w => pure (acc.push w)`. The outer `do` desugars to
   -- a `bind`, so `f acc entry = bakeReloc entry >>= …`.
   intro acc entry newAcc h_step h_acc
-  cases h_br : bakeReloc formula elfs bases h_bases base seg entry with
+  cases h_br : bakeRelocImpl formula elfs bases h_bases base seg entry with
   | error e =>
     -- `bakeReloc = .error e` propagates as `.error e`, contradicts `.ok`.
     rw [show ((do
-        match ← bakeReloc formula elfs bases h_bases base seg entry with
+        match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
         | none => pure acc
         | some w => pure (acc.push w))
         : Except String (Array StoreSlot)) =
-        (bakeReloc formula elfs bases h_bases base seg entry).bind
+        (bakeRelocImpl formula elfs bases h_bases base seg entry).bind
           (fun r => match r with | none => pure acc | some w => pure (acc.push w))
         from rfl, h_br] at h_step
     simp [Except.bind] at h_step
   | ok r =>
     rw [show ((do
-        match ← bakeReloc formula elfs bases h_bases base seg entry with
+        match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
         | none => pure acc
         | some w => pure (acc.push w))
         : Except String (Array StoreSlot)) =
-        (bakeReloc formula elfs bases h_bases base seg entry).bind
+        (bakeRelocImpl formula elfs bases h_bases base seg entry).bind
           (fun r => match r with | none => pure acc | some w => pure (acc.push w))
         from rfl, h_br] at h_step
     simp [Except.bind, pure, Except.pure] at h_step
@@ -306,47 +305,46 @@ theorem bakeSegmentRelocs_storesInvariant (formula : Formula) (elfs : Array Elf)
       · rw [h_eq]; exact h_baked entry w h_br
 
 -- ============================================================================
--- Sized variants of the characterisation lemmas. Each is one
--- `subst h_elfs; exact unsizedVersion` line — after substituting
--- `n := elfs.size`, the Sized variants reduce to the unsized ones.
--- Kept as named lemmas so callers (`Materialize.buildSegmentSafe`) can
--- chain via `bakeSegmentRelocsSized` without an outer `▸` cast on
--- the relocs array.
+-- Public characterisation lemmas. Each is one `subst h_elfs; exact
+-- impl` line — after substituting `n := elfs.size`, they reduce to
+-- the private `*Impl` versions above. Callers
+-- (`Materialize.buildSegmentSafe`) chain through the public surface
+-- so the relocs array's `n` parameter doesn't need an outer `▸` cast.
 -- ============================================================================
 
-theorem bakeReloc_ok_someSized (formula : Formula) {n : Nat} (elfs : Array Elf)
+theorem bakeReloc_ok_some (formula : Formula) {n : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreSlot)
-    (h : bakeRelocSized formula elfs h_elfs bases h_bases base seg entry =
+    (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
   subst h_elfs
-  exact bakeReloc_ok_some formula elfs bases h_bases base seg entry s h
+  exact bakeReloc_ok_someImpl formula elfs bases h_bases base seg entry s h
 
-theorem bakeReloc_byteLen_le_8Sized (formula : Formula) {n : Nat} (elfs : Array Elf)
+theorem bakeReloc_byteLen_le_8 (formula : Formula) {n : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreSlot)
-    (h : bakeRelocSized formula elfs h_elfs bases h_bases base seg entry =
+    (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
   subst h_elfs
-  exact bakeReloc_byteLen_le_8 formula elfs bases h_bases base seg entry s h
+  exact bakeReloc_byteLen_le_8Impl formula elfs bases h_bases base seg entry s h
 
-theorem bakeSegmentRelocs_storesInvariantSized (formula : Formula) {n : Nat}
+theorem bakeSegmentRelocs_storesInvariant (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg))
     (P : StoreSlot → Prop)
-    (h_baked : ∀ entry, ∀ s, bakeRelocSized formula elfs h_elfs bases h_bases base
+    (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs h_elfs bases h_bases base
                                 seg entry = .ok (some s) → P s)
     (out : Array StoreSlot)
-    (h_out : bakeSegmentRelocsSized formula elfs h_elfs bases h_bases base
+    (h_out : bakeSegmentRelocs formula elfs h_elfs bases h_bases base
               seg relocs = .ok out) :
     ∀ s ∈ out, P s := by
   subst h_elfs
-  exact bakeSegmentRelocs_storesInvariant formula elfs bases h_bases base seg
+  exact bakeSegmentRelocs_storesInvariantImpl formula elfs bases h_bases base seg
     relocs P h_baked out h_out
 
 end LeanLoad.Materialize

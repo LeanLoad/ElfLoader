@@ -151,7 +151,7 @@ end Table
     reference; a strong-undef without a name is a malformed ELF that
     the linker shouldn't have produced). `entries` skips them since
     they have no useful diagnostic string. -/
-def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
+private def buildTableImpl (elfs : Array Elf) : Table elfs.size := Id.run do
   let mut entries : Array (Unresolved elfs.size × Resolution elfs.size) := #[]
   let mut index : Std.HashMap (Nat × Nat) (Resolution elfs.size) := ∅
   for h : objectIdx in [:elfs.size] do
@@ -176,13 +176,15 @@ def buildTable (elfs : Array Elf) : Table elfs.size := Id.run do
       symIdx := symIdx + 1
   return { entries, index }
 
-/-- Sized variant of `buildTable` — returns a `Table n` for any `n`
-    equal to `elfs.size`. The `subst h_size; exact buildTable elfs`
-    body absorbs the `▸` cast at the wrapper, so `Plan.ofObjects` can
-    write `Resolve.buildTableSized elfs h_size : Table objs.val.size`
-    without an outer rewrite. -/
-def buildTableSized {n : Nat} (elfs : Array Elf) (h_size : elfs.size = n) :
-    Table n := by
-  subst h_size; exact buildTable elfs
+/-- Public entry point. The implicit `n` defaults to `elfs.size`
+    via the `h_size : elfs.size = n := by rfl` argument; callers can
+    pass an explicit `h_size` to retype the result at any provably-
+    equal size (used by `Plan.Aggregate.ofObjects` to land at
+    `Table objs.val.size` without an outer `▸` cast). The
+    `subst h_size; exact buildTableImpl elfs` body absorbs the
+    rewrite at the wrapper. -/
+def buildTable {n : Nat} (elfs : Array Elf)
+    (h_size : elfs.size = n := by rfl) : Table n := by
+  subst h_size; exact buildTableImpl elfs
 
 end LeanLoad.Plan.Resolve
