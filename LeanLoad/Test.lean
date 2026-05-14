@@ -117,7 +117,7 @@ private def relocTest (g : LoadGraph) (formula : Elaborate.Formula) : Except Str
   let bases := assignBases testAnchor lp
   have h_bases : bases.size = elfs.size :=
     (assignBases_size testAnchor lp).trans lp.elfs_size
-  let mut stores : Array StoreSlot := #[]
+  let mut stores : Array StoreOp := #[]
   for h : i in [:lp.elfs.size] do
     let ep := lp.elfs[i]
     let base := bases[i]'(by rw [h_bases]; rw [← lp.elfs_size]; exact h.upper)

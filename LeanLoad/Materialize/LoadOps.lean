@@ -1,6 +1,6 @@
 /-
 Materialized op tree: `SegmentOps n` / `ElfOps n` / `LoadOps n` over
-the typed slot records (`MmapSlot` / `ZeroSlot` / `StoreSlot` / `MprotectSlot`)
+the typed slot records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
 defined in `Runtime`.
 
 Stage boundary:
@@ -16,13 +16,13 @@ The natural number parameter `n` is the elf count, threaded through
 from `SegmentLayout n` (for the per-segment `Entry n`s).
 
 Per-segment shape (the "realize protocol"):
-  1. *MmapSlot* — `Option MmapSlot` — `mmapFile` for the file-backed prefix,
+  1. *MmapOp* — `Option MmapOp` — `mmapFile` for the file-backed prefix,
      with `PROT_WRITE` widened so reloc stores can land before the
      final `mprotect`. Absent for BSS-only segments.
-  2. *Zero* — `Option ZeroSlot` — clears the partial-page BSS tail past
+  2. *Zero* — `Option ZeroOp` — clears the partial-page BSS tail past
      `filesz`, where the file overlay maps non-zero file bytes.
-  3. *Stores* — `Array StoreSlot` — one per applicable relocation.
-  4. *MprotectSlot* — mandatory — flips final permissions over the whole
+  3. *Stores* — `Array StoreOp` — one per applicable relocation.
+  4. *MprotectOp* — mandatory — flips final permissions over the whole
      segment range.
 
 Hierarchy:
@@ -54,10 +54,10 @@ open LeanLoad.Plan (SegmentLayout)
     for the segment-realize protocol. -/
 structure SegmentOps (n : Nat) where
   plan     : SegmentLayout n
-  mmap     : Option MmapSlot
-  zero     : Option ZeroSlot
-  stores   : Array StoreSlot
-  mprotect : MprotectSlot
+  mmap     : Option MmapOp
+  zero     : Option ZeroOp
+  stores   : Array StoreOp
+  mprotect : MprotectOp
 
 /-- Per-elf ops: chosen base + per-segment ops bundles. -/
 structure ElfOps (n : Nat) where
@@ -77,16 +77,16 @@ abbrev LoadOps (n : Nat) := Array (ElfOps n)
     `mmap` and `zero` are `Option`-typed because they may be skipped
     (BSS-only segments have no mmap; segments aligned to a page
     boundary have no partial BSS). `mprotect` is mandatory. -/
-structure SetupSlots where
-  mmap     : Option MmapSlot
-  zero     : Option ZeroSlot
-  mprotect : MprotectSlot
+structure SetupOps where
+  mmap     : Option MmapOp
+  zero     : Option ZeroOp
+  mprotect : MprotectOp
 
 /-- Compute the setup slots for one segment at the chosen base. The
     mmap is widened with `PROT_WRITE` so reloc stores can land before
     `mprotect` flips to final perms. -/
-def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) : SetupSlots :=
+def setupOps (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+    (base : UInt64) : SetupOps :=
   let absVaddr := base + sp.pageVaddr
   { mmap :=
       if sp.hasFileBacked then
@@ -102,7 +102,7 @@ def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     mprotect := { addr := absVaddr, len := sp.pageLength, prot := sp.prot } }
 
 -- ============================================================================
--- `setupSlots` characterisation. The three slot positions are simple
+-- `setupOps` characterisation. The three slot positions are simple
 -- closed forms of `(base, sp)`; these lemmas extract them so the
 -- `SegmentSafe` construction below can invoke the matching
 -- `BoundPlan.segment_*_in_rsv` theorem directly.
@@ -110,10 +110,10 @@ def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 
 /-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
     length `sp.fileOverlayLen`. -/
-theorem setupSlots_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) (m : MmapSlot) (h : (setupSlots sp handle base).mmap = some m) :
+theorem setupOps_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+    (base : UInt64) (m : MmapOp) (h : (setupOps sp handle base).mmap = some m) :
     m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
-  unfold setupSlots at h
+  unfold setupOps at h
   simp only at h
   by_cases h_fb : sp.hasFileBacked
   · rw [if_pos h_fb] at h
@@ -124,11 +124,11 @@ theorem setupSlots_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 /-- The zero slot, when present, sits at
     `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz` of length
     `sp.partialBssLen`. -/
-theorem setupSlots_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) (z : ZeroSlot) (h : (setupSlots sp handle base).zero = some z) :
+theorem setupOps_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+    (base : UInt64) (z : ZeroOp) (h : (setupOps sp handle base).zero = some z) :
     z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz ∧
     z.len = sp.partialBssLen := by
-  unfold setupSlots at h
+  unfold setupOps at h
   simp only at h
   by_cases h_pb : sp.hasPartialBss
   · rw [if_pos h_pb] at h
@@ -138,10 +138,10 @@ theorem setupSlots_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 
 /-- The mprotect slot always sits at `base + sp.pageVaddr` of length
     `sp.pageLength`. -/
-theorem setupSlots_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+theorem setupOps_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) :
-    (setupSlots sp handle base).mprotect.addr = base + sp.pageVaddr ∧
-    (setupSlots sp handle base).mprotect.len = sp.pageLength := by
+    (setupOps sp handle base).mprotect.addr = base + sp.pageVaddr ∧
+    (setupOps sp handle base).mprotect.len = sp.pageLength := by
   exact ⟨rfl, rfl⟩
 
 -- ============================================================================
@@ -153,19 +153,19 @@ theorem setupSlots_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHand
 namespace LoadOps
 
 /-- Every mmap across every elf and segment, in tree-walk order. -/
-def mmaps (lo : LoadOps n) : Array MmapSlot :=
+def mmaps (lo : LoadOps n) : Array MmapOp :=
   lo.flatMap fun eo => eo.segments.filterMap (·.mmap)
 
 /-- Every zero across every elf and segment. -/
-def zeros (lo : LoadOps n) : Array ZeroSlot :=
+def zeros (lo : LoadOps n) : Array ZeroOp :=
   lo.flatMap fun eo => eo.segments.filterMap (·.zero)
 
 /-- Every store across every elf and segment. -/
-def stores (lo : LoadOps n) : Array StoreSlot :=
+def stores (lo : LoadOps n) : Array StoreOp :=
   lo.flatMap fun eo => eo.segments.flatMap (·.stores)
 
 /-- Every mprotect across every elf and segment. -/
-def mprotects (lo : LoadOps n) : Array MprotectSlot :=
+def mprotects (lo : LoadOps n) : Array MprotectOp :=
   lo.flatMap fun eo => eo.segments.map (·.mprotect)
 
 end LoadOps

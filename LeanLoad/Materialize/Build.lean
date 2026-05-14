@@ -8,7 +8,7 @@ Two top-level entry points:
                   Returns `{ lo : LoadOps bp.n // LoadSafe … lo }`.
                   The `LoadSafe` witness is built structurally:
                     1. `buildSegment` per segment — combines
-                       `setupSlots_*_eq` (closed form of (addr, len))
+                       `setupOps_*_eq` (closed form of (addr, len))
                        with `BoundPlan.segment_*_in_rsv` (per-slot
                        InRange) and `bakeReloc` characterisation +
                        `bakeSegmentRelocs_storesInvariant`.
@@ -119,7 +119,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
 -- ============================================================================
 -- buildSegment — assemble one segment's `SegmentOps` together
 -- with its `SegmentSafe` witness, in one shot. The witness is built
--- by chaining `setupSlots_*_eq` (closed forms of the slots) with the
+-- by chaining `setupOps_*_eq` (closed forms of the slots) with the
 -- matching `BoundPlan.segment_*_in_rsv` theorems. Stores come from
 -- `bakeSegmentRelocs`; their bound is `bakeSegmentRelocs_storesInvariant`
 -- with the universal predicate "byteLen ≤ 8 ∧ addr = base +
@@ -129,7 +129,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
 
 /-- Build one `SegmentOps` + its `SegmentSafe` witness + the
     `mmap_eq` equality that ties the built mmap back to its
-    `setupSlots` source (needed by the enclosing `buildElfSegments`
+    `setupOps` source (needed by the enclosing `buildElfSegments`
     to chain to `within_elf_mmapRange_disjoint`). The only `Except`
     failure source is `bakeSegmentRelocs`'s 32-bit overflow check —
     safety itself is established structurally. -/
@@ -138,7 +138,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
     Except String { so : SegmentOps bp.n //
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
       so.mmap =
-        (setupSlots (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap } := do
+        (setupOps (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap } := do
   let elfs := bp.objectElfs
   let n := bp.n
   have h_elfs : elfs.size = n := bp.objectElfs_size
@@ -146,9 +146,9 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
   let sp := bp.segAt i j
   let handle := bp.handleAt i
   let base := bp.baseAt i
-  -- Don't destructure `setupSlots` — keep the projection form so the
-  -- characterisation lemmas (`setupSlots_*_eq`) align on the goal.
-  let slots := setupSlots sp handle base
+  -- Don't destructure `setupOps` — keep the projection form so the
+  -- characterisation lemmas (`setupOps_*_eq`) align on the goal.
+  let slots := setupOps sp handle base
   -- Use the sized variant so `sp.relocs : Array (Entry n sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
   match h_bake : bakeSegmentRelocs bp.formula elfs h_elfs bp.bases
@@ -162,12 +162,12 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
       refine ⟨?_, ?_, ?_, ?_⟩
       · -- mmapInRange
         intro m h_m
-        have ⟨h_addr, h_len⟩ := setupSlots_mmap_eq sp handle base m h_m
+        have ⟨h_addr, h_len⟩ := setupOps_mmap_eq sp handle base m h_m
         rw [h_addr, h_len]
         exact bp.segment_mmapRange_in_rsv i j
       · -- zeroInRange
         intro z h_z
-        have ⟨h_addr, h_len⟩ := setupSlots_zero_eq sp handle base z h_z
+        have ⟨h_addr, h_len⟩ := setupOps_zero_eq sp handle base z h_z
         rw [h_addr, h_len]
         exact bp.segment_zeroRange_in_rsv i j
       · -- storesInRange: every store came from some entry via `bakeReloc`,
@@ -187,7 +187,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
         exact bp.segment_storeRange_in_rsv i j e.r_offset e.covered
           s'.byteLen h_byteLen
       · -- mprotectInRange — mprotect is at (base + pageVaddr, pageLength).
-        have ⟨h_addr, h_len⟩ := setupSlots_mprotect_eq sp handle base
+        have ⟨h_addr, h_len⟩ := setupOps_mprotect_eq sp handle base
         rw [show so.mprotect = slots.mprotect from rfl, h_addr, h_len]
         exact bp.segment_mprotectRange_in_rsv i j
     -- The `mmap_eq` field — `so.mmap = slots.mmap` by construction (rfl).
@@ -211,7 +211,7 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
       (∀ k (h_k : k < result.size)
         (h_src : k < (bp.elfAt i).segments.size),
         (result[k]'h_k).mmap =
-          (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap) } := do
+          (setupOps (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap) } := do
   -- Combined predicate: SegmentSafe ∧ (bound-discharged) mmap_eq.
   -- The mmap_eq clause is wrapped in `∀ h_src` so the step's bound
   -- proof can produce it for any equal-by-proof-irrelevance witness.
@@ -219,7 +219,7 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
     (fun k so =>
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
       ∀ (h_src : k < (bp.elfAt i).segments.size),
-        so.mmap = (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i)
+        so.mmap = (setupOps (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i)
                     (bp.baseAt i)).mmap)
     (fun k h_k => do
       let ⟨so, h_safe, h_mmap⟩ ← buildSegment bp i ⟨k, h_k⟩
@@ -233,13 +233,13 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
 -- ============================================================================
 -- buildElf — assemble one elf's `ElfOps` + its `ElfSafe` witness.
 -- Within-elf disjointness chains `mmap_eq` (segment k's built mmap
--- matches setupSlots's output) with `setupSlots_mmap_eq` (closed form
+-- matches setupOps's output) with `setupOps_mmap_eq` (closed form
 -- of (addr, len)) into `within_elf_mmapRange_disjoint`'s conclusion.
 -- ============================================================================
 
 /-- Per-elf invariant carried across `buildLoadElves`: each elf's
     `segments` array has the matching length, and each built segment's
-    `mmap` matches what `setupSlots` produced on the source segment.
+    `mmap` matches what `setupOps` produced on the source segment.
     The cross-elf disjointness proof in `buildSafe` rewrites along
     these to land in `cross_elf_mmapRange_disjoint`. -/
 private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
@@ -248,7 +248,7 @@ private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
   (∀ k (h_k : k < eo.segments.size)
     (h_src : k < (bp.elfAt i).segments.size),
     (eo.segments[k]'h_k).mmap =
-      (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
+      (setupOps (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
 
 /-- Build one `ElfOps` + its `ElfSafe` witness + `ElfBuildInvariant`. -/
 def buildElf (bp : BoundPlan) (i : Fin bp.n) :
@@ -261,7 +261,7 @@ def buildElf (bp : BoundPlan) (i : Fin bp.n) :
     refine ⟨?_, ?_⟩
     · intro k h_k; exact h_safe k h_k
     · -- Within-elf mmap disjointness: for j₁ < j₂, both segments' mmaps
-      -- come from setupSlots on the corresponding source segments.
+      -- come from setupOps on the corresponding source segments.
       intro j₁ j₂ h_j₁ h_j₂ h_lt m₁ m₂ h_m₁ h_m₂
       have h_j₁_src : j₁ < (bp.elfAt i).segments.size := by
         rw [h_size] at h_j₁; exact h_j₁
@@ -269,15 +269,15 @@ def buildElf (bp : BoundPlan) (i : Fin bp.n) :
         rw [h_size] at h_j₂; exact h_j₂
       have h_mmap_eq₁ := h_mmap j₁ h_j₁ h_j₁_src
       have h_mmap_eq₂ := h_mmap j₂ h_j₂ h_j₂_src
-      have h_su₁ : (setupSlots (bp.segAt i ⟨j₁, h_j₁_src⟩) (bp.handleAt i)
+      have h_su₁ : (setupOps (bp.segAt i ⟨j₁, h_j₁_src⟩) (bp.handleAt i)
             (bp.baseAt i)).mmap = some m₁ := by
         rw [← h_mmap_eq₁]; exact h_m₁
-      have h_su₂ : (setupSlots (bp.segAt i ⟨j₂, h_j₂_src⟩) (bp.handleAt i)
+      have h_su₂ : (setupOps (bp.segAt i ⟨j₂, h_j₂_src⟩) (bp.handleAt i)
             (bp.baseAt i)).mmap = some m₂ := by
         rw [← h_mmap_eq₂]; exact h_m₂
-      have ⟨h_a₁, h_l₁⟩ := setupSlots_mmap_eq (bp.segAt i ⟨j₁, h_j₁_src⟩)
+      have ⟨h_a₁, h_l₁⟩ := setupOps_mmap_eq (bp.segAt i ⟨j₁, h_j₁_src⟩)
         (bp.handleAt i) (bp.baseAt i) m₁ h_su₁
-      have ⟨h_a₂, h_l₂⟩ := setupSlots_mmap_eq (bp.segAt i ⟨j₂, h_j₂_src⟩)
+      have ⟨h_a₂, h_l₂⟩ := setupOps_mmap_eq (bp.segAt i ⟨j₂, h_j₂_src⟩)
         (bp.handleAt i) (bp.baseAt i) m₂ h_su₂
       have h_disj := bp.within_elf_mmapRange_disjoint i
         ⟨j₁, h_j₁_src⟩ ⟨j₂, h_j₂_src⟩ h_lt
@@ -315,8 +315,8 @@ def buildLoadElves (bp : BoundPlan) :
 -- buildSafe — the final constructive build. Assembles the full
 -- safety-witnessed `LoadOps` via `buildLoadElves` + `LoadSafe` proof.
 -- Cross-elf disjointness chains:
---   ElfBuildInvariant.mmap (each elf's segments[k].mmap = setupSlots …)
---   → setupSlots_mmap_eq (closed-form addr/len)
+--   ElfBuildInvariant.mmap (each elf's segments[k].mmap = setupOps …)
+--   → setupOps_mmap_eq (closed-form addr/len)
 --   → BoundPlan.cross_elf_mmapRange_disjoint
 -- The only `Except` failure path is `bakeReloc`'s 32-bit overflow.
 -- ============================================================================
@@ -348,15 +348,15 @@ def build (bp : BoundPlan) :
         rw [h_size_eq₁] at h_k_i₁; exact h_k_i₁
       have h_k_src₂ : k_i₂ < (bp.elfAt fi₂).segments.size := by
         rw [h_size_eq₂] at h_k_i₂; exact h_k_i₂
-      have h_mmap_su₁ : (setupSlots (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
+      have h_mmap_su₁ : (setupOps (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
             (bp.handleAt fi₁) (bp.baseAt fi₁)).mmap = some m₁ := by
         rw [← h_mmap_eq₁ k_i₁ h_k_i₁ h_k_src₁]; exact h_m₁
-      have h_mmap_su₂ : (setupSlots (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
+      have h_mmap_su₂ : (setupOps (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
             (bp.handleAt fi₂) (bp.baseAt fi₂)).mmap = some m₂ := by
         rw [← h_mmap_eq₂ k_i₂ h_k_i₂ h_k_src₂]; exact h_m₂
-      have ⟨h_a₁, h_l₁⟩ := setupSlots_mmap_eq (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
+      have ⟨h_a₁, h_l₁⟩ := setupOps_mmap_eq (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
         (bp.handleAt fi₁) (bp.baseAt fi₁) m₁ h_mmap_su₁
-      have ⟨h_a₂, h_l₂⟩ := setupSlots_mmap_eq (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
+      have ⟨h_a₂, h_l₂⟩ := setupOps_mmap_eq (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
         (bp.handleAt fi₂) (bp.baseAt fi₂) m₂ h_mmap_su₂
       have h_disj := bp.cross_elf_mmapRange_disjoint fi₁ fi₂
         ⟨k_i₁, h_k_src₁⟩ ⟨k_i₂, h_k_src₂⟩ h_lt

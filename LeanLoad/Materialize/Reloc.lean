@@ -6,11 +6,11 @@ Phase 2 of 2 in the relocation pipeline:
   1. **Plan** (`Plan/Reloc.lean`) — `RawRela → Entry n seg`. Pure,
      base-free; resolves the symbol reference and stores the result on
      each `SegmentLayout.relocs`.
-  2. **Bake** (this file) — `Entry n seg + base → Option StoreSlot`.
+  2. **Bake** (this file) — `Entry n seg + base → Option StoreOp`.
      Looks up the symbol's absolute value `S = base[target] +
      symtab[target].value` (or 0 when `target = noSymbol`/
      `weakUnresolved`), feeds `(S, A, base, place)` into the per-arch
-     `Formula`, and emits a 4-or-8-byte `StoreSlot` at `base + r_offset`.
+     `Formula`, and emits a 4-or-8-byte `StoreOp` at `base + r_offset`.
      32-bit writes are overflow-checked (psABI per-relocation
      `OVERFLOW_CHECK`); see the banner below.
 
@@ -19,8 +19,8 @@ The split exists because the kernel picks the per-elf base
 of any IO.
 
 Entry points:
-  • `bakeReloc` — one entry → `Option StoreSlot` (none for `R_*_NONE`).
-  • `bakeSegmentRelocs` — one segment's relas → flat `Array StoreSlot`.
+  • `bakeReloc` — one entry → `Option StoreOp` (none for `R_*_NONE`).
+  • `bakeSegmentRelocs` — one segment's relas → flat `Array StoreOp`.
 
 Used by `Materialize.buildSegment` (one call per segment).
 -/
@@ -81,7 +81,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     | some sym => provBase + sym.value
 
 -- ============================================================================
--- Bake one Entry into an Option StoreSlot.
+-- Bake one Entry into an Option StoreOp.
 -- ============================================================================
 
 /-- Bake one entry. Returns `.ok none` for no-op relocations
@@ -93,7 +93,7 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
 private def bakeRelocImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg) :
-    Except String (Option StoreSlot) :=
+    Except String (Option StoreOp) :=
   match formula entry.type
     { symValue := symValueOf elfs bases h_bases entry.target,
       addend := entry.addend, base,
@@ -102,25 +102,25 @@ private def bakeRelocImpl (formula : Formula) (elfs : Array Elf)
   | some res =>
     match res.size with
     | .b8 => .ok (some ({ addr := base + entry.r_offset,
-                          size := 8, value := res.value } : StoreSlot))
+                          size := 8, value := res.value } : StoreOp))
     | .b4 =>
       if fitsLow32 res.value then
         .ok (some ({ addr := base + entry.r_offset,
-                     size := 4, value := res.value } : StoreSlot))
+                     size := 4, value := res.value } : StoreOp))
       else
         .error s!"reloc type {entry.type}: 32-bit overflow at \
           place=0x{(base + entry.r_offset).toNat} \
           (value=0x{res.value.toNat} doesn't fit signed-32 or unsigned-32)"
 
-/-- Bake every entry in one segment into a flat `Array StoreSlot`.
+/-- Bake every entry in one segment into a flat `Array StoreOp`.
     Implemented as `Array.foldlM` so the origin lemma
     `bakeSegmentRelocs_mem_origin` can chain through
     `Array.foldlM`'s induction principle. -/
 private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg)) :
-    Except String (Array StoreSlot) :=
-  relocs.foldlM (init := (#[] : Array StoreSlot)) fun acc entry => do
+    Except String (Array StoreOp) :=
+  relocs.foldlM (init := (#[] : Array StoreOp)) fun acc entry => do
     match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
     | none    => pure acc
     | some w  => pure (acc.push w)
@@ -135,7 +135,7 @@ def bakeSegmentRelocs (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg)) :
-    Except String (Array StoreSlot) := by
+    Except String (Array StoreOp) := by
   subst h_elfs
   exact bakeSegmentRelocsImpl formula elfs bases h_bases base seg relocs
 
@@ -145,7 +145,7 @@ def bakeReloc (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (entry : Entry n seg) :
-    Except String (Option StoreSlot) := by
+    Except String (Option StoreOp) := by
   subst h_elfs
   exact bakeRelocImpl formula elfs bases h_bases base seg entry
 
@@ -165,7 +165,7 @@ def bakeReloc (formula : Formula) {n : Nat}
 private theorem bakeReloc_ok_someImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
-    (s : StoreSlot)
+    (s : StoreOp)
     (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
   unfold bakeRelocImpl at h
@@ -177,26 +177,26 @@ private theorem bakeReloc_ok_someImpl (formula : Formula) (elfs : Array Elf)
       injection h with h_some
       injection h_some with h_eq
       refine ⟨?_, Or.inr ?_⟩
-      · have := congrArg StoreSlot.addr h_eq; simpa using this.symm
-      · have := congrArg StoreSlot.size h_eq; simpa using this.symm
+      · have := congrArg StoreOp.addr h_eq; simpa using this.symm
+      · have := congrArg StoreOp.size h_eq; simpa using this.symm
     · split at h
       · -- b4 fitsLow32: same destructuring chain.
         injection h with h_some
         injection h_some with h_eq
         refine ⟨?_, Or.inl ?_⟩
-        · have := congrArg StoreSlot.addr h_eq; simpa using this.symm
-        · have := congrArg StoreSlot.size h_eq; simpa using this.symm
+        · have := congrArg StoreOp.addr h_eq; simpa using this.symm
+        · have := congrArg StoreOp.size h_eq; simpa using this.symm
       · cases h    -- overflow: .error, not .ok
 
-/-- `StoreSlot.byteLen.toNat ≤ 8` for any store emitted by `bakeReloc`. -/
+/-- `StoreOp.byteLen.toNat ≤ 8` for any store emitted by `bakeReloc`. -/
 private theorem bakeReloc_byteLen_le_8Impl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
-    (s : StoreSlot)
+    (s : StoreOp)
     (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
   obtain ⟨_, h_size⟩ := bakeReloc_ok_someImpl formula elfs bases h_bases base seg entry s h
-  unfold StoreSlot.byteLen
+  unfold StoreOp.byteLen
   rcases h_size with h4 | h8
   · rw [h4]; decide
   · rw [h8]; decide
@@ -253,10 +253,10 @@ private theorem listFoldlM_except_preserves {α : Type} {β : Type}
 private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg))
-    (P : StoreSlot → Prop)
+    (P : StoreOp → Prop)
     (h_baked : ∀ entry, ∀ s, bakeRelocImpl formula elfs bases h_bases base seg entry =
                               .ok (some s) → P s)
-    (out : Array StoreSlot)
+    (out : Array StoreOp)
     (h_out : bakeSegmentRelocsImpl formula elfs bases h_bases base seg relocs = .ok out) :
     ∀ s ∈ out, P s := by
   -- Convert the Array.foldlM to List.foldlM via `Array.foldlM_toList`.
@@ -276,7 +276,7 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
         match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
         | none => pure acc
         | some w => pure (acc.push w))
-        : Except String (Array StoreSlot)) =
+        : Except String (Array StoreOp)) =
         (bakeRelocImpl formula elfs bases h_bases base seg entry).bind
           (fun r => match r with | none => pure acc | some w => pure (acc.push w))
         from rfl, h_br] at h_step
@@ -286,7 +286,7 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
         match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
         | none => pure acc
         | some w => pure (acc.push w))
-        : Except String (Array StoreSlot)) =
+        : Except String (Array StoreOp)) =
         (bakeRelocImpl formula elfs bases h_bases base seg entry).bind
           (fun r => match r with | none => pure acc | some w => pure (acc.push w))
         from rfl, h_br] at h_step
@@ -316,7 +316,7 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
 theorem bakeReloc_ok_some (formula : Formula) {n : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreSlot)
+    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
@@ -326,7 +326,7 @@ theorem bakeReloc_ok_some (formula : Formula) {n : Nat} (elfs : Array Elf)
 theorem bakeReloc_byteLen_le_8 (formula : Formula) {n : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreSlot)
+    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
@@ -337,10 +337,10 @@ theorem bakeSegmentRelocs_storesInvariant (formula : Formula) {n : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = n)
     (bases : Array UInt64) (h_bases : bases.size = n)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg))
-    (P : StoreSlot → Prop)
+    (P : StoreOp → Prop)
     (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs h_elfs bases h_bases base
                                 seg entry = .ok (some s) → P s)
-    (out : Array StoreSlot)
+    (out : Array StoreOp)
     (h_out : bakeSegmentRelocs formula elfs h_elfs bases h_bases base
               seg relocs = .ok out) :
     ∀ s ∈ out, P s := by

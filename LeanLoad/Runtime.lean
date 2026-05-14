@@ -1,7 +1,7 @@
 /-
 Trust seam: every `@[extern]` declaration that crosses into the C
-shims under `runtime/`, the five typed records (`MmapSlot` / `ZeroSlot` /
-`StoreSlot` / `MprotectSlot` / `Reserve`) that wrap each FFI signature,
+shims under `runtime/`, the five typed records (`MmapOp` / `ZeroOp` /
+`StoreOp` / `MprotectOp` / `Reserve`) that wrap each FFI signature,
 the per-record `run` dispatchers, and the `Disjoint` / `InRange`
 range predicates the safety witness consumes.
 
@@ -46,8 +46,8 @@ opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
 
 -- ============================================================================
 -- FFI primitives — one Lean signature per C shim. *Private*: the
--- public path is via the typed slot records below (`MmapSlot.run` /
--- `Zero.run` / `Store.run` / `MprotectSlot.run` / `Reserve.run`).
+-- public path is via the typed slot records below (`MmapOp.run` /
+-- `Zero.run` / `Store.run` / `MprotectOp.run` / `Reserve.run`).
 -- ============================================================================
 
 /-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap at `vaddr`.
@@ -114,7 +114,7 @@ end Runtime
 -- ============================================================================
 
 /-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap. -/
-structure MmapSlot where
+structure MmapOp where
   handle : Runtime.FileHandle
   addr   : UInt64
   len    : UInt64
@@ -122,24 +122,24 @@ structure MmapSlot where
   offset : UInt64
 
 /-- Zero `len` bytes starting at `addr`. -/
-structure ZeroSlot where
+structure ZeroOp where
   addr : UInt64
   len  : UInt64
 
 /-- Store the low `size` bytes (4 or 8) of `value` at `addr`. -/
-structure StoreSlot where
+structure StoreOp where
   addr  : UInt64
   size  : UInt8
   value : UInt64
 
 /-- Set protection on `[addr, addr+len)`. -/
-structure MprotectSlot where
+structure MprotectOp where
   addr : UInt64
   len  : UInt64
   prot : UInt32
 
-/-- Width of a `StoreSlot` as a `UInt64`, for range arithmetic. -/
-@[inline] def StoreSlot.byteLen (s : StoreSlot) : UInt64 := s.size.toUInt64
+/-- Width of a `StoreOp` as a `UInt64`, for range arithmetic. -/
+@[inline] def StoreOp.byteLen (s : StoreOp) : UInt64 := s.size.toUInt64
 
 /-- Anon reservation: address + length + the no-wrap proof every
     downstream safety predicate relies on. Used both for the per-layout
@@ -161,25 +161,25 @@ structure Reserve where
 -- pre-planned data; `Reserve.run` requests a fresh allocation.
 -- ============================================================================
 
-namespace MmapSlot
-def run (m : MmapSlot) : IO Unit :=
+namespace MmapOp
+def run (m : MmapOp) : IO Unit :=
   Runtime.mmapFile m.handle m.addr m.len m.prot m.offset
-end MmapSlot
+end MmapOp
 
-namespace ZeroSlot
-def run (z : ZeroSlot) : IO Unit :=
+namespace ZeroOp
+def run (z : ZeroOp) : IO Unit :=
   Runtime.zero z.addr z.len
-end ZeroSlot
+end ZeroOp
 
-namespace StoreSlot
-def run (s : StoreSlot) : IO Unit :=
+namespace StoreOp
+def run (s : StoreOp) : IO Unit :=
   Runtime.store s.addr s.size s.value
-end StoreSlot
+end StoreOp
 
-namespace MprotectSlot
-def run (m : MprotectSlot) : IO Unit :=
+namespace MprotectOp
+def run (m : MprotectOp) : IO Unit :=
   Runtime.mprotect m.addr m.len m.prot
-end MprotectSlot
+end MprotectOp
 
 namespace Reserve
 /-- Allocate a reservation of exactly `len` bytes. Calls the private

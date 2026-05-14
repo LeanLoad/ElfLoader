@@ -40,7 +40,7 @@ breakdown discoverable:
 
 Reloc planning runs *inside* Layout: each `SegmentLayout`'s `relocs`
 field is filled by `Plan.Reloc.planSegment` while the layout is being
-built. Bake (turning `Reloc.Entry` into `StoreSlot`) lives separately
+built. Bake (turning `Reloc.Entry` into `StoreOp`) lives separately
 in `Materialize/Reloc.lean` and runs base-aware.
 
 ## Key types
@@ -62,9 +62,9 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `extends Plan with rsv : Reserve, h_total`. Canonical input to `Materialize.build`. Inherits `bp.objects`, `bp.layout`, etc. |
 | `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
 | `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |
-| `Materialize.SetupSlots`      | `Materialize.LoadOps`        | Per-segment setup slot record `{ mmap?, zero?, mprotect }` returned by `setupSlots`.      |
+| `Materialize.SetupOps`      | `Materialize.LoadOps`        | Per-segment setup slot record `{ mmap?, zero?, mprotect }` returned by `setupOps`.      |
 | `Materialize.LoadSafe`        | `Materialize.Safety`         | Tree-shaped safety witness (per-segment InRange + within-/cross-elf disjoint). `runSafe` accepts only witnessed `LoadOps`. |
-| `MmapSlot` / `ZeroSlot` / `StoreSlot` / `MprotectSlot` / `Reserve` | `Runtime` | Typed records wrapping each FFI signature.                                            |
+| `MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp` / `Reserve` | `Runtime` | Typed records wrapping each FFI signature.                                            |
 
 ## Witness flow
 
