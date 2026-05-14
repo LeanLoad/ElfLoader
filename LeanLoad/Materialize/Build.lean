@@ -7,18 +7,18 @@ Two top-level entry points:
   • `build`     — pure: `BoundPlan → safety-witnessed LoadOps`.
                   Returns `{ lo : LoadOps bp.n // LoadSafe … lo }`.
                   The `LoadSafe` witness is built structurally:
-                    1. `buildSegmentSafe` per segment — combines
+                    1. `buildSegment` per segment — combines
                        `setupSlots_*_eq` (closed form of (addr, len))
                        with `BoundPlan.segment_*_in_rsv` (per-slot
                        InRange) and `bakeReloc` characterisation +
                        `bakeSegmentRelocs_storesInvariant`.
-                    2. `buildElfSafe` per elf — assembles
+                    2. `buildElf` per elf — assembles
                        `buildElfSegments`'s output + within-elf
                        disjointness from
                        `BoundPlan.within_elf_mmapRange_disjoint`.
                     3. `buildLoadElves` across elves — threads
                        `ElfBuildInvariant` so the cross-elf
-                       disjointness in `buildSafe` can chain to
+                       disjointness in `build` can chain to
                        `BoundPlan.cross_elf_mmapRange_disjoint`.
                   The only `Except` failure path is `bakeReloc`'s
                   32-bit overflow check (psABI per-relocation
@@ -117,7 +117,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
     (by intro k h_k; exact absurd h_k (by simp))
 
 -- ============================================================================
--- buildSegmentSafe — assemble one segment's `SegmentOps` together
+-- buildSegment — assemble one segment's `SegmentOps` together
 -- with its `SegmentSafe` witness, in one shot. The witness is built
 -- by chaining `setupSlots_*_eq` (closed forms of the slots) with the
 -- matching `BoundPlan.segment_*_in_rsv` theorems. Stores come from
@@ -133,7 +133,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
     to chain to `within_elf_mmapRange_disjoint`). The only `Except`
     failure source is `bakeSegmentRelocs`'s 32-bit overflow check —
     safety itself is established structurally. -/
-def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
+def buildSegment (bp : BoundPlan) (i : Fin bp.n)
     (j : Fin (bp.elfAt i).segments.size) :
     Except String { so : SegmentOps bp.n //
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
@@ -202,7 +202,7 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
 
 /-- Build an elf's segments array with per-index `SegmentSafe` and
     `mmap_eq` invariants. The `mmap_eq` invariant lets
-    `buildElfSafe` chain to `within_elf_mmapRange_disjoint`. -/
+    `buildElf` chain to `within_elf_mmapRange_disjoint`. -/
 def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
     Except String { result : Array (SegmentOps bp.n) //
       result.size = (bp.elfAt i).segments.size ∧
@@ -220,9 +220,9 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
       ∀ (h_src : k < (bp.elfAt i).segments.size),
         so.mmap = (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i)
-                    (bp.baseAt i)).1)
+                    (bp.baseAt i)).mmap)
     (fun k h_k => do
-      let ⟨so, h_safe, h_mmap⟩ ← buildSegmentSafe bp i ⟨k, h_k⟩
+      let ⟨so, h_safe, h_mmap⟩ ← buildSegment bp i ⟨k, h_k⟩
       -- `h_mmap` is for `⟨k, h_k⟩`; `fun _ => h_mmap` reuses it for
       -- any `⟨k, h_src⟩` by definitional proof-irrelevance of `<`.
       return ⟨so, h_safe, fun _ => h_mmap⟩)
@@ -231,7 +231,7 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
     fun k h_k h_src => (h_p k h_k).2 h_src⟩
 
 -- ============================================================================
--- buildElfSafe — assemble one elf's `ElfOps` + its `ElfSafe` witness.
+-- buildElf — assemble one elf's `ElfOps` + its `ElfSafe` witness.
 -- Within-elf disjointness chains `mmap_eq` (segment k's built mmap
 -- matches setupSlots's output) with `setupSlots_mmap_eq` (closed form
 -- of (addr, len)) into `within_elf_mmapRange_disjoint`'s conclusion.
@@ -251,7 +251,7 @@ private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
       (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
 
 /-- Build one `ElfOps` + its `ElfSafe` witness + `ElfBuildInvariant`. -/
-def buildElfSafe (bp : BoundPlan) (i : Fin bp.n) :
+def buildElf (bp : BoundPlan) (i : Fin bp.n) :
     Except String { eo : ElfOps bp.n //
       ElfSafe bp.rsv.addr bp.rsv.len eo ∧
       ElfBuildInvariant bp i eo } := do
@@ -270,10 +270,10 @@ def buildElfSafe (bp : BoundPlan) (i : Fin bp.n) :
       have h_mmap_eq₁ := h_mmap j₁ h_j₁ h_j₁_src
       have h_mmap_eq₂ := h_mmap j₂ h_j₂ h_j₂_src
       have h_su₁ : (setupSlots (bp.segAt i ⟨j₁, h_j₁_src⟩) (bp.handleAt i)
-            (bp.baseAt i)).1 = some m₁ := by
+            (bp.baseAt i)).mmap = some m₁ := by
         rw [← h_mmap_eq₁]; exact h_m₁
       have h_su₂ : (setupSlots (bp.segAt i ⟨j₂, h_j₂_src⟩) (bp.handleAt i)
-            (bp.baseAt i)).1 = some m₂ := by
+            (bp.baseAt i)).mmap = some m₂ := by
         rw [← h_mmap_eq₂]; exact h_m₂
       have ⟨h_a₁, h_l₁⟩ := setupSlots_mmap_eq (bp.segAt i ⟨j₁, h_j₁_src⟩)
         (bp.handleAt i) (bp.baseAt i) m₁ h_su₁
@@ -305,7 +305,7 @@ def buildLoadElves (bp : BoundPlan) :
       ElfSafe bp.rsv.addr bp.rsv.len eo ∧
       ∀ (h_src : k < bp.n), ElfBuildInvariant bp ⟨k, h_src⟩ eo)
     (fun k h_k => do
-      let ⟨eo, h_safe, h_inv⟩ ← buildElfSafe bp ⟨k, h_k⟩
+      let ⟨eo, h_safe, h_inv⟩ ← buildElf bp ⟨k, h_k⟩
       return ⟨eo, h_safe, fun _ => h_inv⟩)
   return ⟨arr, h_size,
     fun k h_k => (h_p k h_k).1,
@@ -321,8 +321,13 @@ def buildLoadElves (bp : BoundPlan) :
 -- The only `Except` failure path is `bakeReloc`'s 32-bit overflow.
 -- ============================================================================
 
-/-- Build the `LoadOps` tree + `LoadSafe` witness directly. -/
-def buildSafe (bp : BoundPlan) :
+/-- Witnessed build — fully constructive. Assembles the `LoadOps`
+    tree alongside its `LoadSafe` witness. The only `Except` failure
+    path is `bakeReloc`'s 32-bit overflow check (psABI per-relocation
+    `OVERFLOW_CHECK`); safety itself is established structurally,
+    no decidable fallback. Callers consume the result via
+    `LoadOps.runSafe`. -/
+def build (bp : BoundPlan) :
     Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } := do
   let ⟨elves, h_size, h_safe, h_inv⟩ ← buildLoadElves bp
   let lo : LoadOps bp.n := elves
@@ -344,10 +349,10 @@ def buildSafe (bp : BoundPlan) :
       have h_k_src₂ : k_i₂ < (bp.elfAt fi₂).segments.size := by
         rw [h_size_eq₂] at h_k_i₂; exact h_k_i₂
       have h_mmap_su₁ : (setupSlots (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
-            (bp.handleAt fi₁) (bp.baseAt fi₁)).1 = some m₁ := by
+            (bp.handleAt fi₁) (bp.baseAt fi₁)).mmap = some m₁ := by
         rw [← h_mmap_eq₁ k_i₁ h_k_i₁ h_k_src₁]; exact h_m₁
       have h_mmap_su₂ : (setupSlots (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
-            (bp.handleAt fi₂) (bp.baseAt fi₂)).1 = some m₂ := by
+            (bp.handleAt fi₂) (bp.baseAt fi₂)).mmap = some m₂ := by
         rw [← h_mmap_eq₂ k_i₂ h_k_i₂ h_k_src₂]; exact h_m₂
       have ⟨h_a₁, h_l₁⟩ := setupSlots_mmap_eq (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
         (bp.handleAt fi₁) (bp.baseAt fi₁) m₁ h_mmap_su₁
@@ -357,17 +362,6 @@ def buildSafe (bp : BoundPlan) :
         ⟨k_i₁, h_k_src₁⟩ ⟨k_i₂, h_k_src₂⟩ h_lt
       rw [h_a₁, h_l₁, h_a₂, h_l₂]; exact h_disj
   return ⟨lo, h_loadSafe⟩
-
-/-- Witnessed build — fully constructive. Assembles the `LoadOps`
-    tree alongside its `LoadSafe` witness via `buildSafe`. The only
-    `Except` failure path is `bakeReloc`'s 32-bit overflow check
-    (psABI per-relocation `OVERFLOW_CHECK`); safety itself is
-    established structurally, no decidable fallback.
-
-    Callers consume the result via `LoadOps.runSafe`. -/
-def build (bp : BoundPlan) :
-    Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } :=
-  buildSafe bp
 
 -- ============================================================================
 -- Ctor / dtor address resolution: init-array / fini-array entries →

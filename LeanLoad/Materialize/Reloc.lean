@@ -22,7 +22,7 @@ Entry points:
   • `bakeReloc` — one entry → `Option StoreSlot` (none for `R_*_NONE`).
   • `bakeSegmentRelocs` — one segment's relas → flat `Array StoreSlot`.
 
-Used by `Materialize.buildSegmentSafe` (one call per segment).
+Used by `Materialize.buildSegment` (one call per segment).
 -/
 
 import LeanLoad.Plan.Layout
@@ -127,7 +127,7 @@ private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
 
 /-- Public entry point for baking a whole segment's relocations. The
     explicit `h_elfs : elfs.size = n` retypes `relocs` at any
-    provably-equal size — used by `Materialize.buildSegmentSafe` to
+    provably-equal size — used by `Materialize.buildSegment` to
     accept `sp.relocs : Array (Entry bp.n seg)` directly without an
     outer `▸` cast. The `subst h_elfs; exact bakeSegmentRelocsImpl …`
     body absorbs the rewrite. -/
@@ -309,7 +309,7 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
 -- Public characterisation lemmas. Each is one `subst h_elfs; exact
 -- impl` line — after substituting `n := elfs.size`, they reduce to
 -- the private `*Impl` versions above. Callers
--- (`Materialize.buildSegmentSafe`) chain through the public surface
+-- (`Materialize.buildSegment`) chain through the public surface
 -- so the relocs array's `n` parameter doesn't need an outer `▸` cast.
 -- ============================================================================
 
