@@ -103,10 +103,10 @@ instance (segs : Array (SegmentLayout n)) : Decidable (Sorted segs) := by
     Construction (`ofElf`) is fallible: it fails when the page-
     aligned non-overlap validation rejects the elf, or if the
     `advance` computation would wrap UInt64 (impossible on Linux). -/
-structure ElfLayout (n : Nat) where
+structure ElfLayout (objCount : Nat) where
   elf            : Elf
   /-- Parallel to `elf.segments`, lifted to the loader view + relocs. -/
-  segments       : Array (SegmentLayout n)
+  segments       : Array (SegmentLayout objCount)
   /-- Per-elf cursor advance: at least `alignUp (max pageEndAddr) 0x1000`,
       possibly more if the no-wrap dance demands. The reservation
       reserves exactly `advance` bytes per elf via `assignBases`. -/
@@ -289,12 +289,12 @@ theorem cumOffset_mono (elfs : Array (ElfLayout m)) {a b : Nat} (h : a ≤ b) :
 /-- Top-level base-free plan. `totalSpan` is the `len` to pass to
     `Reserve.run` at the IO boundary; `totalSpan_eq` says it equals
     the `cumOffset` Nat sum (no UInt64 wrap during construction).
-    `elfs_size` ties the elf array length to `n`. -/
-structure Layout (n : Nat) where
-  elfs      : Array (ElfLayout n)
-  /-- The elf array has exactly `n` entries — every consumer indexes
-      totally with `Fin n`. -/
-  elfs_size : elfs.size = n
+    `elfs_size` ties the elf array length to `objCount`. -/
+structure Layout (objCount : Nat) where
+  elfs      : Array (ElfLayout objCount)
+  /-- The elf array has exactly `objCount` entries — every consumer
+      indexes totally with `Fin objCount`. -/
+  elfs_size : elfs.size = objCount
   /-- `Σ alignUp objectSpan 0x1000` — cumulative reservation span. -/
   totalSpan : UInt64
   /-- Connects UInt64 `totalSpan` to the `Nat` cumulative sum.
@@ -303,8 +303,8 @@ structure Layout (n : Nat) where
 
 namespace Layout
 
-/-- Convenience: `lp.cumOffset n` over the elf array. -/
-def cumOffset (lp : Layout n) (k : Nat) : Nat :=
+/-- Convenience: `lp.cumOffset k` over the elf array. -/
+def cumOffset (lp : Layout objCount) (k : Nat) : Nat :=
   _root_.LeanLoad.Plan.cumOffset lp.elfs k
 
 /-- Tail-recursive accumulator that lifts each `Elf` through
@@ -346,14 +346,15 @@ private def ofElfsImpl (elfs : Array Elf) (rt : Resolve.Table elfs.size) :
   else
     .error s!"Layout.ofElfs: cumulative span {totalNat} exceeds UInt64"
 
-/-- Public entry point. The implicit `n` defaults to `elfs.size` via
-    the `h_size := by rfl` argument (last so callers can omit it);
+/-- Public entry point. The implicit `objCount` defaults to `elfs.size`
+    via the `h_size := by rfl` argument (last so callers can omit it);
     pass an explicit `h_size` to retype at any provably-equal size
     (used by `Plan.Aggregate.ofGraph` to land at `Layout
-    objs.objects.size` without an outer `▸` cast). The `subst h_size;
+    g.objects.size` without an outer `▸` cast). The `subst h_size;
     exact ofElfsImpl …` body absorbs the rewrite at the wrapper. -/
-def ofElfs {n : Nat} (elfs : Array Elf) (rt : Resolve.Table n)
-    (h_size : elfs.size = n := by rfl) : Except String (Layout n) := by
+def ofElfs {objCount : Nat} (elfs : Array Elf) (rt : Resolve.Table objCount)
+    (h_size : elfs.size = objCount := by rfl) :
+    Except String (Layout objCount) := by
   subst h_size; exact ofElfsImpl elfs rt
 
 end Layout
