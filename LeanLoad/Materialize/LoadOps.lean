@@ -72,30 +72,37 @@ abbrev LoadOps (n : Nat) := Array (ElfOps n)
 -- Reloc stores are added separately by `Materialize.bakeSegmentRelocs`.
 -- ============================================================================
 
-/-- Setup slots (mmap, zero, mprotect) for one segment at the chosen
-    base. The mmap is widened with `PROT_WRITE` so reloc stores can
-    land before `mprotect` flips to final perms. -/
+/-- The three setup slots for one segment: file overlay (`mmap`),
+    partial-page BSS clear (`zero`), and final permission (`mprotect`).
+    `mmap` and `zero` are `Option`-typed because they may be skipped
+    (BSS-only segments have no mmap; segments aligned to a page
+    boundary have no partial BSS). `mprotect` is mandatory. -/
+structure SetupSlots where
+  mmap     : Option MmapSlot
+  zero     : Option ZeroSlot
+  mprotect : MprotectSlot
+
+/-- Compute the setup slots for one segment at the chosen base. The
+    mmap is widened with `PROT_WRITE` so reloc stores can land before
+    `mprotect` flips to final perms. -/
 def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) :
-    Option MmapSlot × Option ZeroSlot × MprotectSlot :=
+    (base : UInt64) : SetupSlots :=
   let absVaddr := base + sp.pageVaddr
-  let mmap : Option MmapSlot :=
-    if sp.hasFileBacked then
-      some { handle, addr := absVaddr, len := sp.fileOverlayLen,
-             prot := sp.prot ||| Runtime.PROT_WRITE,
-             offset := sp.fileOffset }
-    else none
-  let zero : Option ZeroSlot :=
-    if sp.hasPartialBss then
-      some { addr := absVaddr + sp.pageInset + sp.segment.filesz,
-             len := sp.partialBssLen }
-    else none
-  let mprotect : MprotectSlot :=
-    { addr := absVaddr, len := sp.pageLength, prot := sp.prot }
-  (mmap, zero, mprotect)
+  { mmap :=
+      if sp.hasFileBacked then
+        some { handle, addr := absVaddr, len := sp.fileOverlayLen,
+               prot := sp.prot ||| Runtime.PROT_WRITE,
+               offset := sp.fileOffset }
+      else none
+    zero :=
+      if sp.hasPartialBss then
+        some { addr := absVaddr + sp.pageInset + sp.segment.filesz,
+               len := sp.partialBssLen }
+      else none
+    mprotect := { addr := absVaddr, len := sp.pageLength, prot := sp.prot } }
 
 -- ============================================================================
--- `setupSlots` characterisation. The four slot positions are simple
+-- `setupSlots` characterisation. The three slot positions are simple
 -- closed forms of `(base, sp)`; these lemmas extract them so the
 -- `SegmentSafe` construction below can invoke the matching
 -- `BoundPlan.segment_*_in_rsv` theorem directly.
@@ -104,7 +111,7 @@ def setupSlots (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 /-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
     length `sp.fileOverlayLen`. -/
 theorem setupSlots_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) (m : MmapSlot) (h : (setupSlots sp handle base).1 = some m) :
+    (base : UInt64) (m : MmapSlot) (h : (setupSlots sp handle base).mmap = some m) :
     m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
   unfold setupSlots at h
   simp only at h
@@ -118,7 +125,7 @@ theorem setupSlots_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz` of length
     `sp.partialBssLen`. -/
 theorem setupSlots_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
-    (base : UInt64) (z : ZeroSlot) (h : (setupSlots sp handle base).2.1 = some z) :
+    (base : UInt64) (z : ZeroSlot) (h : (setupSlots sp handle base).zero = some z) :
     z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz ∧
     z.len = sp.partialBssLen := by
   unfold setupSlots at h
@@ -133,8 +140,8 @@ theorem setupSlots_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     `sp.pageLength`. -/
 theorem setupSlots_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
     (base : UInt64) :
-    (setupSlots sp handle base).2.2.addr = base + sp.pageVaddr ∧
-    (setupSlots sp handle base).2.2.len = sp.pageLength := by
+    (setupSlots sp handle base).mprotect.addr = base + sp.pageVaddr ∧
+    (setupSlots sp handle base).mprotect.len = sp.pageLength := by
   exact ⟨rfl, rfl⟩
 
 -- ============================================================================

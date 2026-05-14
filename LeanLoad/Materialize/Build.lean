@@ -137,7 +137,7 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
     Except String { so : SegmentOps bp.n //
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
       so.mmap =
-        (setupSlots (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).1 } := do
+        (setupSlots (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap } := do
   let elfs := bp.objectElfs
   let n := bp.n
   have h_elfs : elfs.size = n := bp.objectElfs_size
@@ -155,8 +155,8 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
   | .error e => .error e
   | .ok stores =>
     let so : SegmentOps n :=
-      { plan := sp, mmap := slots.1, zero := slots.2.1,
-        stores, mprotect := slots.2.2 }
+      { plan := sp, mmap := slots.mmap, zero := slots.zero,
+        stores, mprotect := slots.mprotect }
     let h_safe : SegmentSafe bp.rsv.addr bp.rsv.len so := by
       refine ⟨?_, ?_, ?_, ?_⟩
       · -- mmapInRange
@@ -187,9 +187,9 @@ def buildSegmentSafe (bp : BoundPlan) (i : Fin bp.n)
           s'.byteLen h_byteLen
       · -- mprotectInRange — mprotect is at (base + pageVaddr, pageLength).
         have ⟨h_addr, h_len⟩ := setupSlots_mprotect_eq sp handle base
-        rw [show so.mprotect = slots.2.2 from rfl, h_addr, h_len]
+        rw [show so.mprotect = slots.mprotect from rfl, h_addr, h_len]
         exact bp.segment_mprotectRange_in_rsv i j
-    -- The `mmap_eq` field — `so.mmap = slots.1` by construction (rfl).
+    -- The `mmap_eq` field — `so.mmap = slots.mmap` by construction (rfl).
     .ok ⟨so, h_safe, rfl⟩
 
 -- ============================================================================
@@ -210,7 +210,7 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
       (∀ k (h_k : k < result.size)
         (h_src : k < (bp.elfAt i).segments.size),
         (result[k]'h_k).mmap =
-          (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1) } := do
+          (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap) } := do
   -- Combined predicate: SegmentSafe ∧ (bound-discharged) mmap_eq.
   -- The mmap_eq clause is wrapped in `∀ h_src` so the step's bound
   -- proof can produce it for any equal-by-proof-irrelevance witness.
@@ -247,7 +247,7 @@ private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
   (∀ k (h_k : k < eo.segments.size)
     (h_src : k < (bp.elfAt i).segments.size),
     (eo.segments[k]'h_k).mmap =
-      (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).1)
+      (setupSlots (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
 
 /-- Build one `ElfOps` + its `ElfSafe` witness + `ElfBuildInvariant`. -/
 def buildElfSafe (bp : BoundPlan) (i : Fin bp.n) :
