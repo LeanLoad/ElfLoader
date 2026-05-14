@@ -58,7 +58,7 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Plan.Layout n`             | `Plan.Layout`                | All elves' `ElfLayout`s + cumulative `totalSpan` + `totalSpan_eq` Nat↔UInt64 bridge.        |
 | `Reloc.Entry n seg`      | `Plan.Reloc`                 | One planned relocation, base-free, with `coversRela` witness inherited from `Segment`.    |
 | `Reloc.Formula`               | `Elaborate.Reloc`            | `(type, S, A, B, P) → Option write`. Pluggable per-arch.                                  |
-| `Plan.Plan`                   | `Plan.Aggregate`             | `objects + resolve + layout + initOrder`, all indexed at `objects.val.size`.              |
+| `Plan.Aggregate`                   | `Plan.Aggregate`             | `objects + resolve + layout + initOrder`, all indexed at `objects.val.size`.              |
 | `Materialize.BoundPlan`       | `Materialize.BoundPlan`      | `extends Plan with rsv : Reserve, h_total`. Canonical input to `Materialize.build`. Inherits `bp.objects`, `bp.layout`, etc. |
 | `Materialize.SegmentOps n`    | `Materialize.LoadOps`        | Per-segment slot bundle: `(plan, mmap?, zero?, stores, mprotect)`.                        |
 | `Materialize.LoadOps n`       | `Materialize.LoadOps`        | `Array (ElfOps n)` — the structured op tree consumed by `runSafe`.                        |

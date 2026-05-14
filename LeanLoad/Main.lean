@@ -73,7 +73,7 @@ private def Nat.hex12 (n : Nat) : String :=
     → realize. **Does not return.** -/
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
-  let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
+  let plan ← IO.ofExcept (Plan.Aggregate.ofObjects g)
   let rsvW ← Reserve.run plan.layout.totalSpan
   let bp : Materialize.BoundPlan :=
     { plan with rsv := rsvW.val, h_total := rsvW.property }
@@ -116,7 +116,7 @@ def debug (path : String) : IO Unit := do
         prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
 
   -- One-shot pure-pipeline build. Every later stage reads from `plan`.
-  let plan ← IO.ofExcept (Plan.Plan.ofObjects g)
+  let plan ← IO.ofExcept (Plan.Aggregate.ofObjects g)
 
   IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
   let providerName (r : Plan.Resolve.SymRef plan.objects.val.size) : String :=

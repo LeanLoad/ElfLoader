@@ -33,7 +33,7 @@ stage re-checks it — the witness travels in the type.
         safety proofs (`pageEnd_lt`, `fileOverlay_le`,
         `vaddr_memsz_le`, `zero_end_le`, `pageInset_eq_vaddr`).
       · `Init.order` — DFS post-order init sequence (`Fin n` typed).
-      All four bundled in `Plan.Plan`.
+      All four bundled in `Plan.Aggregate`.
 
   • Materialize — base-aware. Takes a `BoundPlan` (= `Plan` + IO
     `Reserve` + coherence proof) and emits a `LoadOps` tree of

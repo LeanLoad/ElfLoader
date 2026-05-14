@@ -1,5 +1,5 @@
 /-
-Base-aware plan: extends `Plan.Plan` with the IO-supplied `Reserve`
+Base-aware plan: extends `Plan.Aggregate` with the IO-supplied `Reserve`
 and the coherence proof that ties them. Reads as the pure planning
 output bound to a concrete reservation — hence "BoundPlan".
 
@@ -32,7 +32,7 @@ open LeanLoad.Plan (cumOffset cumOffset_succ_of_lt cumOffset_mono
     Every materialize-stage consumer (`build`, `ctorAddrs`,
     `Main.realize`) takes a `BoundPlan` and accesses its planning
     fields directly via inheritance. -/
-structure BoundPlan extends Plan.Plan where
+structure BoundPlan extends Plan.Aggregate where
   rsv     : Reserve
   h_total : rsv.len = layout.totalSpan
 
