@@ -27,6 +27,7 @@ Used by `Materialize.buildSegmentSafe` (one call per segment).
 
 import LeanLoad.Plan.Layout
 import LeanLoad.Materialize.LoadOps
+import LeanLoad.Materialize.Safety
 import LeanLoad.Elaborate.Reloc
 
 namespace LeanLoad.Materialize

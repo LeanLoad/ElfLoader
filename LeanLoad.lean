@@ -70,6 +70,7 @@ import LeanLoad.Plan.Init
 import LeanLoad.Plan.Aggregate
 
 import LeanLoad.Materialize.LoadOps
+import LeanLoad.Materialize.Safety
 import LeanLoad.Materialize.Reloc
 import LeanLoad.Materialize.BoundPlan
 import LeanLoad.Materialize.Build

@@ -41,6 +41,7 @@ push-extension proof obligations live in `buildSafeArrayAux` only.
 -/
 
 import LeanLoad.Materialize.LoadOps
+import LeanLoad.Materialize.Safety
 import LeanLoad.Materialize.Reloc
 import LeanLoad.Materialize.BoundPlan
 
