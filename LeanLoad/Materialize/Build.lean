@@ -5,7 +5,7 @@ fallback, no `.error` branch for safety.
 
 Two top-level entry points:
   • `build`     — pure: `BoundPlan → safety-witnessed LoadOps`.
-                  Returns `{ lo : LoadOps bp.n // LoadSafe … lo }`.
+                  Returns `{ lo : LoadOps bp.objCount // LoadSafe … lo }`.
                   The `LoadSafe` witness is built structurally:
                     1. `buildSegment` per segment — combines
                        `setupSegment_*_eq` (closed form of (addr, len))
@@ -133,23 +133,23 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
     to chain to `within_elf_mmapRange_disjoint`). The only `Except`
     failure source is `bakeSegmentRelocs`'s 32-bit overflow check —
     safety itself is established structurally. -/
-def buildSegment (bp : BoundPlan) (i : Fin bp.n)
+def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
     (j : Fin (bp.elfAt i).segments.size) :
-    Except String { so : SegmentOps bp.n //
+    Except String { so : SegmentOps bp.objCount //
       SegmentSafe bp.rsv.addr bp.rsv.len so ∧
       so.mmap =
         (setupSegment (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap } := do
   let elfs := bp.objectElfs
-  let n := bp.n
-  have h_elfs : elfs.size = n := bp.objectElfs_size
-  have h_bases : bp.bases.size = n := bp.bases_size
+  let objCount := bp.objCount
+  have h_elfs : elfs.size = objCount := bp.objectElfs_size
+  have h_bases : bp.bases.size = objCount := bp.bases_size
   let sp := bp.segAt i j
   let handle := bp.handleAt i
   let base := bp.baseAt i
   -- Don't destructure `setupSegment` — keep the projection form so the
   -- characterisation lemmas (`setupSegment_*_eq`) align on the goal.
   let setup := setupSegment sp handle base
-  -- Use the sized variant so `sp.relocs : Array (Entry n sp.segment)`
+  -- Use the sized variant so `sp.relocs : Array (Entry objCount sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
   match h_bake : bakeSegmentRelocs bp.formula elfs h_elfs bp.bases
                    h_bases base sp.segment sp.relocs with
@@ -158,7 +158,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
     -- `SegmentOps extends SegmentSetup`, so `{ setup with layout, stores }`
     -- inherits mmap/zero/mprotect from `setup` and adds the layout
     -- and baked stores.
-    let so : SegmentOps n := { setup with layout := sp, stores }
+    let so : SegmentOps objCount := { setup with layout := sp, stores }
     let h_safe : SegmentSafe bp.rsv.addr bp.rsv.len so := by
       refine ⟨?_, ?_, ?_, ?_⟩
       · -- mmapInRange
@@ -204,8 +204,8 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.n)
 /-- Build an elf's segments array with per-index `SegmentSafe` and
     `mmap_eq` invariants. The `mmap_eq` invariant lets
     `buildElf` chain to `within_elf_mmapRange_disjoint`. -/
-def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
-    Except String { result : Array (SegmentOps bp.n) //
+def buildElfSegments (bp : BoundPlan) (i : Fin bp.objCount) :
+    Except String { result : Array (SegmentOps bp.objCount) //
       result.size = (bp.elfAt i).segments.size ∧
       (∀ k (h_k : k < result.size),
         SegmentSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
@@ -243,8 +243,8 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.n) :
     `mmap` matches what `setupSegment` produced on the source segment.
     The cross-elf disjointness proof in `buildSafe` rewrites along
     these to land in `cross_elf_mmapRange_disjoint`. -/
-private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
-    (eo : ElfOps bp.n) : Prop :=
+private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.objCount)
+    (eo : ElfOps bp.objCount) : Prop :=
   eo.segments.size = (bp.elfAt i).segments.size ∧
   (∀ k (h_k : k < eo.segments.size)
     (h_src : k < (bp.elfAt i).segments.size),
@@ -252,12 +252,12 @@ private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.n)
       (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
 
 /-- Build one `ElfOps` + its `ElfSafe` witness + `ElfBuildInvariant`. -/
-def buildElf (bp : BoundPlan) (i : Fin bp.n) :
-    Except String { eo : ElfOps bp.n //
+def buildElf (bp : BoundPlan) (i : Fin bp.objCount) :
+    Except String { eo : ElfOps bp.objCount //
       ElfSafe bp.rsv.addr bp.rsv.len eo ∧
       ElfBuildInvariant bp i eo } := do
   let ⟨segments, h_size, h_safe, h_mmap⟩ ← buildElfSegments bp i
-  let eo : ElfOps bp.n := { segments }
+  let eo : ElfOps bp.objCount := { segments }
   let h_elfSafe : ElfSafe bp.rsv.addr bp.rsv.len eo := by
     refine ⟨?_, ?_⟩
     · intro k h_k; exact h_safe k h_k
@@ -294,17 +294,17 @@ def buildElf (bp : BoundPlan) (i : Fin bp.n) :
 
 /-- Build all elves with `ElfSafe` + `ElfBuildInvariant` witnesses. -/
 def buildLoadElves (bp : BoundPlan) :
-    Except String { result : Array (ElfOps bp.n) //
-      result.size = bp.n ∧
+    Except String { result : Array (ElfOps bp.objCount) //
+      result.size = bp.objCount ∧
       (∀ k (h_k : k < result.size),
         ElfSafe bp.rsv.addr bp.rsv.len (result[k]'h_k)) ∧
-      (∀ k (h_k : k < result.size) (h_src : k < bp.n),
+      (∀ k (h_k : k < result.size) (h_src : k < bp.objCount),
         ElfBuildInvariant bp ⟨k, h_src⟩ (result[k]'h_k)) } := do
   -- Combined predicate: ElfSafe ∧ (bound-discharged) ElfBuildInvariant.
-  let ⟨arr, h_size, h_p⟩ ← buildSafeArray bp.n
+  let ⟨arr, h_size, h_p⟩ ← buildSafeArray bp.objCount
     (fun k eo =>
       ElfSafe bp.rsv.addr bp.rsv.len eo ∧
-      ∀ (h_src : k < bp.n), ElfBuildInvariant bp ⟨k, h_src⟩ eo)
+      ∀ (h_src : k < bp.objCount), ElfBuildInvariant bp ⟨k, h_src⟩ eo)
     (fun k h_k => do
       let ⟨eo, h_safe, h_inv⟩ ← buildElf bp ⟨k, h_k⟩
       return ⟨eo, h_safe, fun _ => h_inv⟩)
@@ -329,18 +329,18 @@ def buildLoadElves (bp : BoundPlan) :
     no decidable fallback. Callers consume the result via
     `LoadOps.runSafe`. -/
 def build (bp : BoundPlan) :
-    Except String { lo : LoadOps bp.n // LoadSafe bp.rsv.addr bp.rsv.len lo } := do
+    Except String { lo : LoadOps bp.objCount // LoadSafe bp.rsv.addr bp.rsv.len lo } := do
   let ⟨elves, h_size, h_safe, h_inv⟩ ← buildLoadElves bp
-  let lo : LoadOps bp.n := elves
+  let lo : LoadOps bp.objCount := elves
   let h_loadSafe : LoadSafe bp.rsv.addr bp.rsv.len lo := by
     refine ⟨?_, ?_⟩
     · intro k h_k; exact h_safe k h_k
     · -- Cross-elf mmap disjointness.
       intro i₁ i₂ h_i₁ h_i₂ h_lt k_i₁ k_i₂ h_k_i₁ h_k_i₂ m₁ m₂ h_m₁ h_m₂
-      have h_i₁_n : i₁ < bp.n := by rw [h_size] at h_i₁; exact h_i₁
-      have h_i₂_n : i₂ < bp.n := by rw [h_size] at h_i₂; exact h_i₂
-      let fi₁ : Fin bp.n := ⟨i₁, h_i₁_n⟩
-      let fi₂ : Fin bp.n := ⟨i₂, h_i₂_n⟩
+      have h_i₁_n : i₁ < bp.objCount := by rw [h_size] at h_i₁; exact h_i₁
+      have h_i₂_n : i₂ < bp.objCount := by rw [h_size] at h_i₂; exact h_i₂
+      let fi₁ : Fin bp.objCount := ⟨i₁, h_i₁_n⟩
+      let fi₂ : Fin bp.objCount := ⟨i₂, h_i₂_n⟩
       have h_inv₁ := h_inv i₁ h_i₁ h_i₁_n
       have h_inv₂ := h_inv i₂ h_i₂ h_i₂_n
       obtain ⟨h_size_eq₁, h_mmap_eq₁⟩ := h_inv₁
@@ -379,10 +379,10 @@ def build (bp : BoundPlan) :
     practice (where zero-terminators are common) treats them as
     no-ops.
 
-    `order : Array (Fin n)` carries the bound at the type level; both
+    `order : Array (Fin objCount)` carries the bound at the type level; both
     `lp.elfs[…]` and `bases[…]` are total — no `[]?` needed. -/
-def collectAddrs (lp : Layout n) (bases : Array UInt64)
-    (h_bases : bases.size = n) (order : Array (Fin n))
+def collectAddrs (lp : Layout objCount) (bases : Array UInt64)
+    (h_bases : bases.size = objCount) (order : Array (Fin objCount))
     (arrOf : Elaborate.Elf → Array UInt64) : Array UInt64 :=
   Id.run do
     let mut addrs : Array UInt64 := #[]

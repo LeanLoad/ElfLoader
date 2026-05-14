@@ -25,7 +25,7 @@ open LeanLoad
 -- ============================================================================
 
 /-- Per-segment safety: every emitted slot fits inside the reservation. -/
-structure SegmentSafe (rsvAddr rsvLen : UInt64) (so : SegmentOps n) : Prop where
+structure SegmentSafe (rsvAddr rsvLen : UInt64) (so : SegmentOps objCount) : Prop where
   mmapInRange     : ∀ m, so.mmap = some m → Runtime.InRange m.addr m.len rsvAddr rsvLen
   zeroInRange     : ∀ z, so.zero = some z → Runtime.InRange z.addr z.len rsvAddr rsvLen
   storesInRange   : ∀ s ∈ so.stores, Runtime.InRange s.addr s.byteLen rsvAddr rsvLen
@@ -33,7 +33,7 @@ structure SegmentSafe (rsvAddr rsvLen : UInt64) (so : SegmentOps n) : Prop where
 
 /-- Per-elf safety: every segment is SegmentSafe, plus within-elf mmap
     disjointness. -/
-structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps n) : Prop where
+structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps objCount) : Prop where
   segments : ∀ k, ∀ h : k < eo.segments.size,
     SegmentSafe rsvAddr rsvLen (eo.segments[k]'h)
   mmapsDisjoint : ∀ i j, ∀ hi : i < eo.segments.size, ∀ hj : j < eo.segments.size,
@@ -46,7 +46,7 @@ structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps n) : Prop where
     mmap disjointness. The natural target of the build's safety
     proof: `BoundPlan`'s per-slot and disjointness theorems map
     directly onto its fields. -/
-structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps n) : Prop where
+structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps objCount) : Prop where
   elfs : ∀ k, ∀ h : k < lo.size, ElfSafe rsvAddr rsvLen (lo[k]'h)
   mmapsDisjoint : ∀ i j, ∀ hi : i < lo.size, ∀ hj : j < lo.size, i < j →
     ∀ k_i k_j (h_ki : k_i < (lo[i]'hi).segments.size)
@@ -59,20 +59,20 @@ structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps n) : Prop where
 -- IO interpreter — dispatches each slot in protocol order.
 -- ============================================================================
 
-private def SegmentOps.runUnsafe (so : SegmentOps n) : IO Unit := do
+private def SegmentOps.runUnsafe (so : SegmentOps objCount) : IO Unit := do
   if let some m := so.mmap then m.run
   if let some z := so.zero then z.run
   for s in so.stores do s.run
   so.mprotect.run
 
-private def LoadOps.runUnsafe (lo : LoadOps n) : IO Unit :=
+private def LoadOps.runUnsafe (lo : LoadOps objCount) : IO Unit :=
   lo.forM fun eo => eo.segments.forM SegmentOps.runUnsafe
 
 /-- Interpret a `LoadSafe`-witnessed layout tree. The witness fields
     are erased; IO behaviour is identical to a plain per-slot
     dispatch. -/
 def LoadOps.runSafe (rsvAddr rsvLen : UInt64)
-    (lo : { lo : LoadOps n // LoadSafe rsvAddr rsvLen lo }) : IO Unit :=
+    (lo : { lo : LoadOps objCount // LoadSafe rsvAddr rsvLen lo }) : IO Unit :=
   LoadOps.runUnsafe lo.val
 
 end LeanLoad.Materialize

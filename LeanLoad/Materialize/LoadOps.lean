@@ -1,10 +1,10 @@
 /-
-Materialized op tree: `SegmentOps n` / `ElfOps n` / `LoadOps n` over
+Materialized op tree: `SegmentOps objCount` / `ElfOps objCount` / `LoadOps objCount` over
 the typed slot records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
 defined in `Runtime`.
 
 Stage boundary:
-  • `Plan/` produces base-free facts: `Layout n` (page math,
+  • `Plan/` produces base-free facts: `Layout objCount` (page math,
     `objectSpan`, `totalSpan`, per-segment relocs), `Resolve.Table`,
     `Init.order`. None of those know an mmap base.
   • `Materialize/` consumes those plus the IO-supplied reservation
@@ -12,8 +12,8 @@ Stage boundary:
     (`runSafe`) consumes the witnessed tree directly — there is no
     flat `Array` intermediate.
 
-The natural number parameter `n` is the elf count, threaded through
-from `SegmentLayout n` (for the per-segment `Entry n`s).
+The natural number parameter `objCount` is the elf count, threaded through
+from `SegmentLayout objCount` (for the per-segment `Entry objCount`s).
 
 Per-segment shape (the "realize protocol"):
   1. *MmapOp* — `Option MmapOp` — `mmapFile` for the file-backed prefix,
@@ -26,9 +26,9 @@ Per-segment shape (the "realize protocol"):
      segment range.
 
 Hierarchy:
-  • `SegmentOps n` — one segment's plan + its 4 typed slots.
-  • `ElfOps n`     — one elf's chosen base + its `SegmentOps`.
-  • `LoadOps n`    — list of `ElfOps` for every loaded object.
+  • `SegmentOps objCount` — one segment's plan + its 4 typed slots.
+  • `ElfOps objCount`     — one elf's chosen base + its `SegmentOps`.
+  • `LoadOps objCount`    — list of `ElfOps` for every loaded object.
 
 Safety witness: `LoadSafe` mirrors the tree structure
 (`SegmentSafe` per slot, `ElfSafe` per elf, `LoadSafe` across the
@@ -47,7 +47,7 @@ open LeanLoad
 open LeanLoad.Plan (SegmentLayout)
 
 -- ============================================================================
--- Hierarchy: SegmentSetup + (layout, stores) → SegmentOps n → ElfOps n → LoadOps n.
+-- Hierarchy: SegmentSetup + (layout, stores) → SegmentOps objCount → ElfOps objCount → LoadOps objCount.
 -- ============================================================================
 
 /-- The three setup ops for one segment: file overlay (`mmap`),
@@ -67,8 +67,8 @@ structure SegmentSetup where
     `setupSegment` produces the parent `SegmentSetup`; `bakeSegmentRelocs`
     produces `stores`; `Materialize.buildSegment` combines them via
     `{ setup with layout, stores }`. -/
-structure SegmentOps (n : Nat) extends SegmentSetup where
-  layout   : SegmentLayout n
+structure SegmentOps (objCount : Nat) extends SegmentSetup where
+  layout   : SegmentLayout objCount
   stores   : Array StoreOp
 
 /-- Per-elf ops: just the per-segment ops bundles. The per-elf base
@@ -77,11 +77,11 @@ structure SegmentOps (n : Nat) extends SegmentSetup where
     via `setupSegment` with the base mixed in. The source-of-truth
     base lives on `BoundPlan.bases[i]` for callers that need it
     (e.g. `Materialize.ctorAddrs`, `Main.debug`). -/
-structure ElfOps (n : Nat) where
-  segments : Array (SegmentOps n)
+structure ElfOps (objCount : Nat) where
+  segments : Array (SegmentOps objCount)
 
 /-- Top-level: array of per-elf bundles, in elf order (main is at index 0). -/
-abbrev LoadOps (n : Nat) := Array (ElfOps n)
+abbrev LoadOps (objCount : Nat) := Array (ElfOps objCount)
 
 -- ============================================================================
 -- Construction helper — compute the setup ops from a SegmentLayout.
@@ -91,7 +91,7 @@ abbrev LoadOps (n : Nat) := Array (ElfOps n)
 /-- Compute the setup slots for one segment at the chosen base. The
     mmap is widened with `PROT_WRITE` so reloc stores can land before
     `mprotect` flips to final perms. -/
-def setupSegment (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+def setupSegment (sp : SegmentLayout objCount) (handle : Runtime.FileHandle)
     (base : UInt64) : SegmentSetup :=
   let absVaddr := base + sp.pageVaddr
   { mmap :=
@@ -116,7 +116,7 @@ def setupSegment (sp : SegmentLayout n) (handle : Runtime.FileHandle)
 
 /-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
     length `sp.fileOverlayLen`. -/
-theorem setupSegment_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+theorem setupSegment_mmap_eq (sp : SegmentLayout objCount) (handle : Runtime.FileHandle)
     (base : UInt64) (m : MmapOp) (h : (setupSegment sp handle base).mmap = some m) :
     m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
   unfold setupSegment at h
@@ -130,7 +130,7 @@ theorem setupSegment_mmap_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle
 /-- The zero slot, when present, sits at
     `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz` of length
     `sp.partialBssLen`. -/
-theorem setupSegment_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+theorem setupSegment_zero_eq (sp : SegmentLayout objCount) (handle : Runtime.FileHandle)
     (base : UInt64) (z : ZeroOp) (h : (setupSegment sp handle base).zero = some z) :
     z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz ∧
     z.len = sp.partialBssLen := by
@@ -144,7 +144,7 @@ theorem setupSegment_zero_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle
 
 /-- The mprotect slot always sits at `base + sp.pageVaddr` of length
     `sp.pageLength`. -/
-theorem setupSegment_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHandle)
+theorem setupSegment_mprotect_eq (sp : SegmentLayout objCount) (handle : Runtime.FileHandle)
     (base : UInt64) :
     (setupSegment sp handle base).mprotect.addr = base + sp.pageVaddr ∧
     (setupSegment sp handle base).mprotect.len = sp.pageLength := by
@@ -159,19 +159,19 @@ theorem setupSegment_mprotect_eq (sp : SegmentLayout n) (handle : Runtime.FileHa
 namespace LoadOps
 
 /-- Every mmap across every elf and segment, in tree-walk order. -/
-def mmaps (lo : LoadOps n) : Array MmapOp :=
+def mmaps (lo : LoadOps objCount) : Array MmapOp :=
   lo.flatMap fun eo => eo.segments.filterMap (·.mmap)
 
 /-- Every zero across every elf and segment. -/
-def zeros (lo : LoadOps n) : Array ZeroOp :=
+def zeros (lo : LoadOps objCount) : Array ZeroOp :=
   lo.flatMap fun eo => eo.segments.filterMap (·.zero)
 
 /-- Every store across every elf and segment. -/
-def stores (lo : LoadOps n) : Array StoreOp :=
+def stores (lo : LoadOps objCount) : Array StoreOp :=
   lo.flatMap fun eo => eo.segments.flatMap (·.stores)
 
 /-- Every mprotect across every elf and segment. -/
-def mprotects (lo : LoadOps n) : Array MprotectOp :=
+def mprotects (lo : LoadOps objCount) : Array MprotectOp :=
   lo.flatMap fun eo => eo.segments.map (·.mprotect)
 
 end LoadOps

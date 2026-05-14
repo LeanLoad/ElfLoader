@@ -16,7 +16,7 @@ structure parameterised by the object count `graph.objects.size`:
                  init sequence over the dep DAG.
 
 Every contained index (`SymRef`, `Entry.target`, `initOrder`,
-the per-elf `bases` computed later) is typed at the same `n`, so
+the per-elf `bases` computed later) is typed at the same `objCount`, so
 consumers (`Materialize.build`, `Materialize.ctorAddrs`) thread one
 object instead of parallel arrays + coherence proofs.
 
@@ -56,7 +56,7 @@ structure Aggregate where
   /-- Page math + per-segment relocations, with `elfs_size` tying
       `layout.elfs` to the object count. -/
   layout    : Layout graph.objects.size
-  /-- DFS post-order over the dep DAG; `Fin n` typed so
+  /-- DFS post-order over the dep DAG; `Fin objCount` typed so
       `Materialize.initAddrs` indexes `layout.elfs` and `bases`
       totally. -/
   initOrder : Array (Fin graph.objects.size)

@@ -3,10 +3,10 @@ Relocation **baking** — base-aware.
 
 Phase 2 of 2 in the relocation pipeline:
 
-  1. **Plan** (`Plan/Reloc.lean`) — `RawRela → Entry n seg`. Pure,
+  1. **Plan** (`Plan/Reloc.lean`) — `RawRela → Entry objCount seg`. Pure,
      base-free; resolves the symbol reference and stores the result on
      each `SegmentLayout.relocs`.
-  2. **Bake** (this file) — `Entry n seg + base → Option StoreOp`.
+  2. **Bake** (this file) — `Entry objCount seg + base → Option StoreOp`.
      Looks up the symbol's absolute value `S = base[target] +
      symtab[target].value` (or 0 when `target = noSymbol`/
      `weakUnresolved`), feeds `(S, A, base, place)` into the per-arch
@@ -126,25 +126,25 @@ private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
     | some w  => pure (acc.push w)
 
 /-- Public entry point for baking a whole segment's relocations. The
-    explicit `h_elfs : elfs.size = n` retypes `relocs` at any
+    explicit `h_elfs : elfs.size = objCount` retypes `relocs` at any
     provably-equal size — used by `Materialize.buildSegment` to
-    accept `sp.relocs : Array (Entry bp.n seg)` directly without an
+    accept `sp.relocs : Array (Entry bp.objCount seg)` directly without an
     outer `▸` cast. The `subst h_elfs; exact bakeSegmentRelocsImpl …`
     body absorbs the rewrite. -/
-def bakeSegmentRelocs (formula : Formula) {n : Nat}
-    (elfs : Array Elf) (h_elfs : elfs.size = n)
-    (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg)) :
+def bakeSegmentRelocs (formula : Formula) {objCount : Nat}
+    (elfs : Array Elf) (h_elfs : elfs.size = objCount)
+    (bases : Array UInt64) (h_bases : bases.size = objCount)
+    (base : UInt64) (seg : Segment) (relocs : Array (Entry objCount seg)) :
     Except String (Array StoreOp) := by
   subst h_elfs
   exact bakeSegmentRelocsImpl formula elfs bases h_bases base seg relocs
 
 /-- Public entry point for baking a single relocation. Same shape as
-    `bakeSegmentRelocs` — explicit `h_elfs` retypes `entry`'s `n`. -/
-def bakeReloc (formula : Formula) {n : Nat}
-    (elfs : Array Elf) (h_elfs : elfs.size = n)
-    (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : Entry n seg) :
+    `bakeSegmentRelocs` — explicit `h_elfs` retypes `entry`'s `objCount`. -/
+def bakeReloc (formula : Formula) {objCount : Nat}
+    (elfs : Array Elf) (h_elfs : elfs.size = objCount)
+    (bases : Array UInt64) (h_bases : bases.size = objCount)
+    (base : UInt64) (seg : Segment) (entry : Entry objCount seg) :
     Except String (Option StoreOp) := by
   subst h_elfs
   exact bakeRelocImpl formula elfs bases h_bases base seg entry
@@ -307,36 +307,36 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
 
 -- ============================================================================
 -- Public characterisation lemmas. Each is one `subst h_elfs; exact
--- impl` line — after substituting `n := elfs.size`, they reduce to
+-- impl` line — after substituting `objCount := elfs.size`, they reduce to
 -- the private `*Impl` versions above. Callers
 -- (`Materialize.buildSegment`) chain through the public surface
--- so the relocs array's `n` parameter doesn't need an outer `▸` cast.
+-- so the relocs array's `objCount` parameter doesn't need an outer `▸` cast.
 -- ============================================================================
 
-theorem bakeReloc_ok_some (formula : Formula) {n : Nat} (elfs : Array Elf)
-    (h_elfs : elfs.size = n)
-    (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreOp)
+theorem bakeReloc_ok_some (formula : Formula) {objCount : Nat} (elfs : Array Elf)
+    (h_elfs : elfs.size = objCount)
+    (bases : Array UInt64) (h_bases : bases.size = objCount)
+    (base : UInt64) (seg : Segment) (entry : Entry objCount seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
   subst h_elfs
   exact bakeReloc_ok_someImpl formula elfs bases h_bases base seg entry s h
 
-theorem bakeReloc_byteLen_le_8 (formula : Formula) {n : Nat} (elfs : Array Elf)
-    (h_elfs : elfs.size = n)
-    (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (entry : Entry n seg) (s : StoreOp)
+theorem bakeReloc_byteLen_le_8 (formula : Formula) {objCount : Nat} (elfs : Array Elf)
+    (h_elfs : elfs.size = objCount)
+    (bases : Array UInt64) (h_bases : bases.size = objCount)
+    (base : UInt64) (seg : Segment) (entry : Entry objCount seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
   subst h_elfs
   exact bakeReloc_byteLen_le_8Impl formula elfs bases h_bases base seg entry s h
 
-theorem bakeSegmentRelocs_storesInvariant (formula : Formula) {n : Nat}
-    (elfs : Array Elf) (h_elfs : elfs.size = n)
-    (bases : Array UInt64) (h_bases : bases.size = n)
-    (base : UInt64) (seg : Segment) (relocs : Array (Entry n seg))
+theorem bakeSegmentRelocs_storesInvariant (formula : Formula) {objCount : Nat}
+    (elfs : Array Elf) (h_elfs : elfs.size = objCount)
+    (bases : Array UInt64) (h_bases : bases.size = objCount)
+    (base : UInt64) (seg : Segment) (relocs : Array (Entry objCount seg))
     (P : StoreOp → Prop)
     (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs h_elfs bases h_bases base
                                 seg entry = .ok (some s) → P s)

@@ -27,7 +27,7 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
     allocate the kernel-style stack, and `execAndJump` to entry.
     **Does not return.** -/
 private def realize (bp : Materialize.BoundPlan)
-    (witnessed : { lo : Materialize.LoadOps bp.n //
+    (witnessed : { lo : Materialize.LoadOps bp.objCount //
       Materialize.LoadSafe bp.rsv.addr bp.rsv.len lo })
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   Materialize.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
@@ -43,22 +43,22 @@ private def realize (bp : Materialize.BoundPlan)
   let phent  := Parse.RawPhdrSize.toUInt64
   Runtime.execAndJump entry phdrVa phent phnum 0 stack.val.addr stack.val.len path
 
-/-- Right-pad a string to `n` chars with `c`. -/
-private def padR (s : String) (n : Nat) (c : Char := ' ') : String :=
-  s ++ String.ofList (List.replicate (n - s.length) c)
+/-- Right-pad a string to `objCount` chars with `c`. -/
+private def padR (s : String) (objCount : Nat) (c : Char := ' ') : String :=
+  s ++ String.ofList (List.replicate (objCount - s.length) c)
 
-/-- Left-pad a string to `n` chars with `c`. -/
-private def padL (s : String) (n : Nat) (c : Char := ' ') : String :=
-  String.ofList (List.replicate (n - s.length) c) ++ s
+/-- Left-pad a string to `objCount` chars with `c`. -/
+private def padL (s : String) (objCount : Nat) (c : Char := ' ') : String :=
+  String.ofList (List.replicate (objCount - s.length) c) ++ s
 
 /-- Lower-case hex string of a `Nat`, no `0x` prefix. -/
-private def Nat.hex (n : Nat) : String :=
-  String.ofList (Nat.toDigits 16 n)
+private def Nat.hex (objCount : Nat) : String :=
+  String.ofList (Nat.toDigits 16 objCount)
 
 /-- Lower-case hex, zero-padded to 12 digits (covers x86-64
     user-space addresses, which fit in 48 bits / 12 nibbles). -/
-private def Nat.hex12 (n : Nat) : String :=
-  padL (Nat.hex n) 12 '0'
+private def Nat.hex12 (objCount : Nat) : String :=
+  padL (Nat.hex objCount) 12 '0'
 
 #guard Nat.hex 0 = "0"
 #guard Nat.hex 0x4000b0 = "4000b0"
@@ -152,8 +152,8 @@ def debug (path : String) : IO Unit := do
     { plan with rsv := rsvW.val, h_total := rsvW.property }
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := bp.bases
-  have h_bases : bases.size = bp.n := bp.bases_size
-  for h : i in [:bp.n] do
+  have h_bases : bases.size = bp.objCount := bp.bases_size
+  for h : i in [:bp.objCount] do
     let base := bases[i]'(by rw [h_bases]; exact h.upper)
     let obj := plan.graph.objects[i]
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
@@ -169,7 +169,7 @@ def debug (path : String) : IO Unit := do
   let formula := plan.formula
   let elfs := plan.objectElfs
   let labelW := 16
-  for h : i in [:bp.n] do
+  for h : i in [:bp.objCount] do
     let obj  := plan.graph.objects[i]
     let some base := bases[i]? | continue
     let label := padR s!"[{i}] {obj.name}" labelW

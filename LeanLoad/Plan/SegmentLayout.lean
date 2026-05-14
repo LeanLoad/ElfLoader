@@ -1,7 +1,7 @@
 /-
 Per-segment plan — base-free.
 
-A `SegmentLayout n` lifts one PT_LOAD `Segment` into the loader's view:
+A `SegmentLayout objCount` lifts one PT_LOAD `Segment` into the loader's view:
 page math precomputed once, stored as fields, plus the five
 per-segment invariants the materialize-stage safety proofs read by
 direct projection (`sp.pageEnd_lt`, `sp.fileOverlay_le_pageLength`, …):
@@ -15,7 +15,7 @@ direct projection (`sp.pageEnd_lt`, `sp.fileOverlay_le_pageLength`, …):
   • `pageInset_eq_vaddr` — `pageVaddr + pageInset = vaddr` (lets
                            per-slot proofs rewrite to canonical form).
 
-Also carries `relocs : Array (Entry n segment)` — the per-segment
+Also carries `relocs : Array (Entry objCount segment)` — the per-segment
 planned relocations; every offset is base-free (relative to base = 0)
 and the materializer adds the chosen base when emitting structured slots.
 
@@ -297,7 +297,7 @@ private theorem raw_zero_end_le_pageLength (s : Segment) :
 end SegmentLayout
 
 -- ============================================================================
--- SegmentLayout n — one PT_LOAD with page math + per-segment invariants
+-- SegmentLayout objCount — one PT_LOAD with page math + per-segment invariants
 -- + per-segment relocs. Base-free: every offset is relative to base = 0.
 -- ============================================================================
 
@@ -309,7 +309,7 @@ end SegmentLayout
 
     `relocs` is the per-segment planned-relocation array (built parallel
     to construction in `Plan.Layout.ofElf`). -/
-structure SegmentLayout (n : Nat) where
+structure SegmentLayout (objCount : Nat) where
   /-- Underlying gabi segment. Carries `rela`/`jmprel` for reloc
       planning and the `addrBound` invariant for proofs. -/
   segment        : Segment
@@ -354,15 +354,15 @@ structure SegmentLayout (n : Nat) where
       keyed to `segment` so `SegmentSafe.storesInRange` is
       structurally provable. `Materialize.bakeSegmentRelocs` reads
       this directly. -/
-  relocs         : Array (Entry n segment)
+  relocs         : Array (Entry objCount segment)
 
 namespace SegmentLayout
 
 /-- Compute the page-math view of a `Segment` and discharge each
     per-segment invariant. Callers supply `relocs` separately
     (typically via `Reloc.planSegment`). -/
-def ofSegmentCore (n : Nat) (s : Segment) (relocs : Array (Entry n s)) :
-    SegmentLayout n :=
+def ofSegmentCore (objCount : Nat) (s : Segment) (relocs : Array (Entry objCount s)) :
+    SegmentLayout objCount :=
   let ea             := effectiveAlign s.align
   let pageVaddr      := alignDown s.vaddr ea
   let pageEnd        := alignUp (s.vaddr + s.memsz) ea
@@ -391,22 +391,22 @@ def ofSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
   ofSegmentCore elfs.size s (Reloc.planSegment elfs rt objectIdx s)
 
 /-- One past the last byte of the mmap'd range, base-relative. -/
-def pageEndAddr (sp : SegmentLayout n) : UInt64 := sp.pageVaddr + sp.pageLength
+def pageEndAddr (sp : SegmentLayout objCount) : UInt64 := sp.pageVaddr + sp.pageLength
 
 /-- `pageEndAddr.toNat = pageVaddr.toNat + pageLength.toNat` — the
     `pageEnd_lt` invariant rules out wrap. Saves the inline
     `UInt64.toNat_add` + `mod_eq_of_lt` ritual every per-slot
     `Materialize` proof would otherwise duplicate. -/
-theorem pageEndAddr_toNat (sp : SegmentLayout n) :
+theorem pageEndAddr_toNat (sp : SegmentLayout objCount) :
     sp.pageEndAddr.toNat = sp.pageVaddr.toNat + sp.pageLength.toNat := by
   show (sp.pageVaddr + sp.pageLength).toNat = _
   rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt sp.pageEnd_lt
 
 /-- True when the segment has any file-backed bytes. -/
-def hasFileBacked (sp : SegmentLayout n) : Bool := sp.fileOverlayLen > 0
+def hasFileBacked (sp : SegmentLayout objCount) : Bool := sp.fileOverlayLen > 0
 
 /-- True when there are partial-page BSS bytes to zero. -/
-def hasPartialBss (sp : SegmentLayout n) : Bool := sp.partialBssLen > 0
+def hasPartialBss (sp : SegmentLayout objCount) : Bool := sp.partialBssLen > 0
 
 -- ============================================================================
 -- Closed-form projections — `rfl` because each field's stored value is
@@ -414,37 +414,37 @@ def hasPartialBss (sp : SegmentLayout n) : Bool := sp.partialBssLen > 0
 -- downstream `simp`-based reasoning.
 -- ============================================================================
 
-@[simp] theorem ofSegmentCore_pageVaddr (n : Nat) (s : Segment)
-    (relocs : Array (Entry n s)) :
-    (ofSegmentCore n s relocs).pageVaddr =
+@[simp] theorem ofSegmentCore_pageVaddr (objCount : Nat) (s : Segment)
+    (relocs : Array (Entry objCount s)) :
+    (ofSegmentCore objCount s relocs).pageVaddr =
       alignDown s.vaddr (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_pageLength (n : Nat) (s : Segment)
-    (relocs : Array (Entry n s)) :
-    (ofSegmentCore n s relocs).pageLength =
+@[simp] theorem ofSegmentCore_pageLength (objCount : Nat) (s : Segment)
+    (relocs : Array (Entry objCount s)) :
+    (ofSegmentCore objCount s relocs).pageLength =
       alignUp (s.vaddr + s.memsz) (effectiveAlign s.align) -
       alignDown s.vaddr (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_pageInset (n : Nat) (s : Segment)
-    (relocs : Array (Entry n s)) :
-    (ofSegmentCore n s relocs).pageInset =
+@[simp] theorem ofSegmentCore_pageInset (objCount : Nat) (s : Segment)
+    (relocs : Array (Entry objCount s)) :
+    (ofSegmentCore objCount s relocs).pageInset =
       s.vaddr - alignDown s.vaddr (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_fileOverlayLen (n : Nat) (s : Segment)
-    (relocs : Array (Entry n s)) :
-    (ofSegmentCore n s relocs).fileOverlayLen =
+@[simp] theorem ofSegmentCore_fileOverlayLen (objCount : Nat) (s : Segment)
+    (relocs : Array (Entry objCount s)) :
+    (ofSegmentCore objCount s relocs).fileOverlayLen =
       alignUp ((s.vaddr - alignDown s.vaddr (effectiveAlign s.align)) +
                s.filesz) (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_partialBssLen (n : Nat) (s : Segment)
-    (relocs : Array (Entry n s)) :
-    (ofSegmentCore n s relocs).partialBssLen =
-      (ofSegmentCore n s relocs).fileOverlayLen -
-      ((ofSegmentCore n s relocs).pageInset + s.filesz) := rfl
+@[simp] theorem ofSegmentCore_partialBssLen (objCount : Nat) (s : Segment)
+    (relocs : Array (Entry objCount s)) :
+    (ofSegmentCore objCount s relocs).partialBssLen =
+      (ofSegmentCore objCount s relocs).fileOverlayLen -
+      ((ofSegmentCore objCount s relocs).pageInset + s.filesz) := rfl
 
-@[simp] theorem ofSegmentCore_segment (n : Nat) (s : Segment)
-    (relocs : Array (Entry n s)) :
-    (ofSegmentCore n s relocs).segment = s := rfl
+@[simp] theorem ofSegmentCore_segment (objCount : Nat) (s : Segment)
+    (relocs : Array (Entry objCount s)) :
+    (ofSegmentCore objCount s relocs).segment = s := rfl
 
 end SegmentLayout
 

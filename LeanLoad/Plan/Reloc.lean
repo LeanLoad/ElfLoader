@@ -3,13 +3,13 @@ Relocation **planning** — base-free.
 
 Phase 1 of 2 in the relocation pipeline:
 
-  1. **Plan** (this file) — `RawRela → Entry n seg`. Resolves the
+  1. **Plan** (this file) — `RawRela → Entry objCount seg`. Resolves the
      symbol reference into a `Target` (three explicit cases:
      `noSymbol`, `weakUnresolved`, `resolved ref`) and bundles it with
      the rela's `type` / `r_offset` / `addend` and the inherited
      `coversRela` witness. *Base-free*: no field knows about an mmap
      base. Result lives on each `SegmentLayout.relocs`.
-  2. **Bake** (`Materialize/Reloc.lean`) — `Entry n seg + base →
+  2. **Bake** (`Materialize/Reloc.lean`) — `Entry objCount seg + base →
      Option StoreOp`. Computes the absolute place and symbol value once
      a reservation base is chosen, then turns each entry into a
      4-or-8-byte `StoreOp` slot. Used by `Materialize.buildSegment`.
@@ -18,11 +18,11 @@ The split exists because the kernel picks the per-elf base (`Reserve.run`)
 between phases 1 and 2; phase 1 is pure and runs ahead of any IO.
 
 Key types:
-  • `Target n` — 3-case inductive replacing the old
-    `Option (SymRef n)`. Lets `Main.debug` distinguish "no symbol"
+  • `Target objCount` — 3-case inductive replacing the old
+    `Option (SymRef objCount)`. Lets `Main.debug` distinguish "no symbol"
     from "weak-unresolved" diagnostically; `Materialize.bakeReloc`
     collapses both unresolved cases via `Target.symRef?`.
-  • `Entry n seg` — parameterised by the owning `Segment` so
+  • `Entry objCount seg` — parameterised by the owning `Segment` so
     the `coversRela seg.vaddr seg.memsz r_offset` witness from
     `Segment.rela` / `Segment.jmprel` propagates forward into the
     planned tree. `SegmentSafe.storesInRange` reads this witness
@@ -53,31 +53,31 @@ open LeanLoad.Elaborate (Elf Segment coversRela)
 -- ============================================================================
 
 /-- Resolution outcome for one rela's symbol reference. Three
-    explicit cases collapse the old `Option (SymRef n)` to a richer
+    explicit cases collapse the old `Option (SymRef objCount)` to a richer
     discriminator so `Main.debug` can distinguish "no symbol slot"
     from "weak-undefined" diagnostically, and so `Materialize.bakeReloc`
     pattern-matches without an outer `Option`. All three cases drive
     `S = 0` in the formula except `resolved`. -/
-inductive Target (n : Nat) where
+inductive Target (objCount : Nat) where
   /-- `r.sym = 0` (`R_*_NONE` and similar). No symbol referenced. -/
   | noSymbol
   /-- Symbol is undef-weak and BFS returned no provider. gabi 05
       binds `S = 0`. -/
   | weakUnresolved
   /-- Symbol resolved: either locally defined or via `Resolve.Table`. -/
-  | resolved (ref : Resolve.SymRef n)
+  | resolved (ref : Resolve.SymRef objCount)
   deriving Repr
 
 namespace Target
 
 /-- Extract the resolved provider, if any. Used by the bake step
     where both `noSymbol` and `weakUnresolved` collapse to `S = 0`. -/
-def symRef? : Target n → Option (Resolve.SymRef n)
+def symRef? : Target objCount → Option (Resolve.SymRef objCount)
   | .resolved ref => some ref
   | _             => none
 
 /-- Human-readable tag for diagnostics. -/
-def tag : Target n → String
+def tag : Target objCount → String
   | .noSymbol       => "none"
   | .weakUnresolved => "weak"
   | .resolved _     => "ok"
@@ -89,7 +89,7 @@ end Target
     provider). `Materialize.bakeReloc` collapses the two unresolved
     cases to `S = 0`. The `covered` witness carries the 8-byte-window
     containment from the parent segment forward into the planned tree. -/
-structure Entry (n : Nat) (seg : Segment) where
+structure Entry (objCount : Nat) (seg : Segment) where
   /-- Per-arch relocation type (`R_*`); the low 32 bits of `r_info`. -/
   type     : UInt32
   /-- Segment-relative byte offset for the patch. The absolute address
@@ -98,7 +98,7 @@ structure Entry (n : Nat) (seg : Segment) where
   /-- Addend `A` (gabi `r_addend`; bit pattern of a signed sxword). -/
   addend   : UInt64
   /-- Resolution outcome — see `Target`. -/
-  target   : Target n
+  target   : Target objCount
   /-- 8-byte write window fits in `[seg.vaddr, seg.vaddr + seg.memsz)`.
       Inherited from the `coversRela` subtype on `Segment.rela` /
       `Segment.jmprel`; preserved through `planOne` so the

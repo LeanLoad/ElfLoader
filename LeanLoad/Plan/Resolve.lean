@@ -35,13 +35,13 @@ open LeanLoad
 open LeanLoad.Parse
 open LeanLoad.Elaborate
 
-/-- A resolved global symbol, parameterised by the elf-array size `n`.
-    The `Fin n` carries the bounds proof at the type level — every
+/-- A resolved global symbol, parameterised by the elf-array size `objCount`.
+    The `Fin objCount` carries the bounds proof at the type level — every
     consumer indexes the elf array totally, no `?`. The `symIdx : Nat`
     stays unbounded because its valid range depends on the specific
     object referenced; consumers still `[]?` it. -/
-structure SymRef (n : Nat) where
-  objectIdx : Fin n
+structure SymRef (objCount : Nat) where
+  objectIdx : Fin objCount
   symIdx    : Nat
   deriving Repr
 
@@ -60,10 +60,10 @@ def resolveByName (elfs : Array Elf) (name : String) : Option (SymRef elfs.size)
   return none
 
 /-- A failed-to-resolve undefined symbol; useful for diagnostics.
-    Same `Fin n` parameterisation as `SymRef` so `Table.missing[i].objectIdx`
+    Same `Fin objCount` parameterisation as `SymRef` so `Table.missing[i].objectIdx`
     is total. -/
-structure Unresolved (n : Nat) where
-  objectIdx : Fin n
+structure Unresolved (objCount : Nat) where
+  objectIdx : Fin objCount
   symIdx    : Nat
   name      : String
   deriving Repr
@@ -71,9 +71,9 @@ structure Unresolved (n : Nat) where
 /-- Result of resolving one undef reference. Three explicit cases:
     found, weak-undefined (S = 0 by spec), and strong-undefined (load
     failure). -/
-inductive Resolution (n : Nat) where
+inductive Resolution (objCount : Nat) where
   /-- The BFS found a providing `(object, symbol)`. -/
-  | found (ref : SymRef n)
+  | found (ref : SymRef objCount)
   /-- Undef reference is `STB_WEAK`; gabi 05 binds it to 0. -/
   | weakUndef
   /-- Undef reference is strong and unresolved — load failure. -/
@@ -85,7 +85,7 @@ namespace Resolution
 /-- Extract the resolved provider, dropping the weak/strong-undef
     distinction. Used by `Reloc.planOne` where both undef branches
     collapse to `S = 0`. -/
-def target? : Resolution n → Option (SymRef n)
+def target? : Resolution objCount → Option (SymRef objCount)
   | .found ref => some ref
   | .weakUndef => none
   | .strongUndef => none
@@ -102,16 +102,16 @@ end Resolution
     returns a defined `Resolution`. `entries` is the diagnostic /
     iteration array and skips noName entries (they have no useful
     diagnostic name to surface). -/
-structure Table (n : Nat) where
+structure Table (objCount : Nat) where
   /-- One entry per *named* undefined reference, in iteration order.
       Used for diagnostics (`missing` / `weakMissing` projections);
       noName / empty-name undefs are not included. -/
-  entries : Array (Unresolved n × Resolution n)
-  /-- O(1) `(objectIdx, symIdx) → Resolution n` lookup, total over all
+  entries : Array (Unresolved objCount × Resolution objCount)
+  /-- O(1) `(objectIdx, symIdx) → Resolution objCount` lookup, total over all
       undefined symbols (named or not). Consumers go through
       `Table.lookup` so the type's totality guarantee shows up at the
       call site. -/
-  index : Std.HashMap (Nat × Nat) (Resolution n)
+  index : Std.HashMap (Nat × Nat) (Resolution objCount)
 
 namespace Table
 
@@ -122,19 +122,19 @@ namespace Table
     `Plan.Reloc.resolveTarget` pattern-match three constructors
     (`.found` / `.weakUndef` / `.strongUndef`) instead of four (those
     + `none`). -/
-def lookup (t : Table n) (objectIdx symIdx : Nat) : Resolution n :=
+def lookup (t : Table objCount) (objectIdx symIdx : Nat) : Resolution objCount :=
   t.index.getD (objectIdx, symIdx) .weakUndef
 
 /-- Strong (non-weak) undef references that did not resolve. A
     non-empty `missing` means the program would fail at load. -/
-def missing (t : Table n) : Array (Unresolved n) :=
+def missing (t : Table objCount) : Array (Unresolved objCount) :=
   t.entries.filterMap fun (u, r) => match r with
     | .strongUndef => some u
     | _            => none
 
 /-- Weak undef references that did not resolve. Allowed by gabi 05;
     surfaced for diagnostics only. -/
-def weakMissing (t : Table n) : Array (Unresolved n) :=
+def weakMissing (t : Table objCount) : Array (Unresolved objCount) :=
   t.entries.filterMap fun (u, r) => match r with
     | .weakUndef => some u
     | _          => none
@@ -176,15 +176,15 @@ private def buildTableImpl (elfs : Array Elf) : Table elfs.size := Id.run do
       symIdx := symIdx + 1
   return { entries, index }
 
-/-- Public entry point. The implicit `n` defaults to `elfs.size`
-    via the `h_size : elfs.size = n := by rfl` argument; callers can
+/-- Public entry point. The implicit `objCount` defaults to `elfs.size`
+    via the `h_size : elfs.size = objCount := by rfl` argument; callers can
     pass an explicit `h_size` to retype the result at any provably-
     equal size (used by `Plan.Aggregate.ofGraph` to land at
     `Table objs.objects.size` without an outer `▸` cast). The
     `subst h_size; exact buildTableImpl elfs` body absorbs the
     rewrite at the wrapper. -/
-def buildTable {n : Nat} (elfs : Array Elf)
-    (h_size : elfs.size = n := by rfl) : Table n := by
+def buildTable {objCount : Nat} (elfs : Array Elf)
+    (h_size : elfs.size = objCount := by rfl) : Table objCount := by
   subst h_size; exact buildTableImpl elfs
 
 end LeanLoad.Plan.Resolve
