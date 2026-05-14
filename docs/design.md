@@ -12,8 +12,8 @@ Pipeline (one row per `--debug` section):
 | --------------- | ---- | ------------------------------------------------------------------------------------ |
 | **Parse**       | IO   | `FileHandle` → `RawElf` (per-section `pread`s; bytes only, no semantic checks)       |
 | **Elaborate**   | pure | `RawElf` → `Except String Elf` (gabi-07 invariants discharged as `Segment`/`Elf` fields) |
-| **Discover**    | IO   | `path → ObjectList` (BFS over `DT_NEEDED`; calls Parse + Elaborate per file; deps recorded inline) |
-| **Plan**        | pure | `ObjectList → Plan` (resolve table + per-elf `Layout` + `initOrder`)               |
+| **Discover**    | IO   | `path → LoadGraph` (BFS over `DT_NEEDED`; calls Parse + Elaborate per file; deps recorded inline) |
+| **Plan**        | pure | `LoadGraph → Plan` (resolve table + per-elf `Layout` + `initOrder`)               |
 | **Materialize** | pure | `BoundPlan → { lo : LoadOps n // Safe rsv.addr rsv.len lo }` (typed slot tree + structural safety) |
 | **Runtime**     | IO   | witnessed `LoadOps` → `IO Unit` (mmap + zeroout + mprotect + reloc stores + ctor calls + stack + jump; no return) |
 
@@ -27,7 +27,7 @@ indirection. The reservation bounds every safety predicate in
 
 ### Plan stage — three internal sub-phases
 
-`Plan.ofObjects : ObjectList → Except String Plan` runs three sub-phases
+`Plan.ofObjects : LoadGraph → Except String Plan` runs three sub-phases
 in sequence. They could in principle be top-level stages, but bundling
 them keeps the stage count manageable; the `Plan/` directory makes the
 breakdown discoverable:
@@ -51,7 +51,7 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Parse.RawElf`                | `Parse.RawElf`               | Per-file byte decode (header, phdrs, strtab, symtab, needed, soname, runpath, rela, jmprel, init/fini arrays). |
 | `Elaborate.Segment`           | `Elaborate.Segment`          | One PT_LOAD with gabi-07 invariants (`fileszLeMemsz`, `alignPow2`, `alignCong`, `addrBound`) + per-segment relocs in `coversRela` subtype. |
 | `Elaborate.Elf`               | `Elaborate.Elf`              | Per-elf bundle with `Sorted` / `NonOverlap` / `PhdrCovered` / `CtorsInExecSeg` witnesses. |
-| `Discover.ObjectList`         | `Discover.Step`              | Loaded objects in BFS order + `sizePos` / `namesNodup` / `deps` (recorded during BFS).    |
+| `Discover.LoadGraph`         | `Discover.Step`              | Loaded objects in BFS order + `sizePos` / `namesNodup` / `deps` (recorded during BFS).    |
 | `Resolve.SymRef n`            | `Plan.Resolve`               | Resolved symbol `(objectIdx : Fin n, symIdx : Nat)`.                                      |
 | `Plan.SegmentLayout n`          | `Plan.Layout`                | One `Segment` lifted with page math + 5 per-segment Prop fields (`pageEnd_lt`, …) + per-segment relocs. |
 | `Plan.ElfLayout n`              | `Plan.Layout`                | One elf's `SegmentLayout`s + `advance` + cross-segment proofs (`segmentsSorted`, `pageEndAddr_le_advance`). |
@@ -77,8 +77,8 @@ Elaborate:   RawElf → Elf       + Segment.{fileszLeMemsz, alignPow2,
                                  + Elf.{segmentsSorted, segmentsNonOverlap,
                                          phdrCovered, initArrInExecSeg,
                                          finiArrInExecSeg}
-Discover:    path → ObjectList  + sizePos, namesNodup, depsSize, depsBounds
-Plan:        ObjectList → Plan  + per-SegmentLayout (pageEnd_lt /
+Discover:    path → LoadGraph  + sizePos, namesNodup, depsSize, depsBounds
+Plan:        LoadGraph → Plan  + per-SegmentLayout (pageEnd_lt /
                                   fileOverlay_le_pageLength /
                                   vaddr_memsz_le_pageEnd /
                                   zero_end_le_pageLength /

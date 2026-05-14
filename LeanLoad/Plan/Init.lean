@@ -8,12 +8,12 @@ glibc / musl); any valid topological sort would be conformant.
 Reverse-BFS is *not* a valid topological sort on non-tree DAGs and
 would violate the spec.
 
-The dep edges live on `ObjectList.deps` — recorded by Discover BFS at
+The dep edges live on `LoadGraph.deps` — recorded by Discover BFS at
 edge-creation time, so the canonical-name dedup that converts
 `DT_NEEDED libfoo.so` → loaded `libfoo.so.1` cannot drop edges
 silently. `Init.order` just projects them and runs DFS post-order.
 
-`order : (g : ObjectList) → Array (Fin g.val.size)` returns
+`order : (g : LoadGraph) → Array (Fin g.val.size)` returns
 Fin-indexed object indices so downstream consumers
 (`Materialize.initAddrs`) can index `lp.elfs` and `bases` totally,
 without `[]?`. The `Fin n` bound is preserved structurally through
@@ -89,11 +89,11 @@ def computeOrder (deps : Array (Array Nat)) (n : Nat) : Array (Fin n) :=
         order := Array.mkEmpty n }
     (dfs n deps 0 s).order
 
-/-- Init order over an `ObjectList`: project the BFS-recorded
+/-- Init order over an `LoadGraph`: project the BFS-recorded
     `g.deps` and run DFS post-order. The returned indices are typed
     `Fin g.val.size` so downstream consumers can index `lp.elfs` /
     `bases` totally. -/
-def order (g : ObjectList) : Array (Fin g.val.size) :=
+def order (g : LoadGraph) : Array (Fin g.val.size) :=
   computeOrder g.deps g.val.size
 
 section Example

@@ -58,7 +58,7 @@ def resolveSoname (soname : String) (ctx : SearchContext) : IO (Option String) :
 
 -- ============================================================================
 -- Edge accumulation. Pure helpers — kept private to this file since
--- `discover` is the only producer of `ObjectList.deps`.
+-- `discover` is the only producer of `LoadGraph.deps`.
 -- ============================================================================
 
 /-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
@@ -137,7 +137,7 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
     (h_deps_bounds : ∀ (i : Nat) (h : i < deps.size),
       ∀ t ∈ deps[i], t < objs.size)
     (work : List WorkItem) :
-    IO ObjectList := do
+    IO LoadGraph := do
   match fuel with
   | 0 => pure ⟨objs, deps, h_pos, h_nodup, h_deps_size, h_deps_bounds⟩
   | fuel + 1 =>
@@ -242,10 +242,10 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
             (rest ++ workOfElf newIdx elf)
 
 /-- Walk `DT_NEEDED` from `mainPath` transitively. Returns an
-    `ObjectList` containing main and all reachable dependencies in
+    `LoadGraph` containing main and all reachable dependencies in
     BFS order — non-emptiness, name-`Nodup`, and `deps`-coherence
     witnessed at the type level. -/
-def discover (mainPath : String) : IO ObjectList := do
+def discover (mainPath : String) : IO LoadGraph := do
   let (mainHandle, mainElf) ← readAndParse mainPath
   let envPath ← IO.getEnv "LD_LIBRARY_PATH"
   let mainName := canonicalName mainPath mainElf

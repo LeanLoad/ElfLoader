@@ -113,7 +113,7 @@ structure LoadedObject where
     Access pattern: callers peel via `g.val` to use Array methods
     (`g.val.size`, `g.val[i]?`, `for obj in g.val do`). Use `g.main`
     whenever main is what you want, not `g.val[0]?`. -/
-structure ObjectList where
+structure LoadGraph where
   /-- The loaded objects, in BFS discovery order. Main at index 0. -/
   val        : Array LoadedObject
   /-- Per-object dependency indices, recorded during BFS. -/
@@ -129,13 +129,13 @@ structure ObjectList where
   /-- Every recorded edge target is a valid index. -/
   depsBounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < val.size
 
-namespace ObjectList
+namespace LoadGraph
 
-/-- The main executable — total because `ObjectList` carries the
+/-- The main executable — total because `LoadGraph` carries the
     non-emptiness witness. -/
-def main (g : ObjectList) : LoadedObject := g.val[0]'g.sizePos
+def main (g : LoadGraph) : LoadedObject := g.val[0]'g.sizePos
 
-end ObjectList
+end LoadGraph
 
 -- ============================================================================
 -- Pure helpers

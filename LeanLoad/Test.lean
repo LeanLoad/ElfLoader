@@ -59,7 +59,7 @@ private def parseTest (elf : Elaborate.Elf) : Except String Unit := do
   -- ET_DYN main has at least one fini entry.
   check (elf.finiArr.size > 0) "expected ≥ 1 DT_FINI_ARRAY entry"
 
-private def discoverTest (g : ObjectList) : Except String Unit := do
+private def discoverTest (g : LoadGraph) : Except String Unit := do
   let names := g.val.map (·.name)
   check (g.val.size == expectedNames.size)
     s!"expected {expectedNames.size} objects, got {g.val.size}: {names}"
@@ -70,7 +70,7 @@ private def discoverTest (g : ObjectList) : Except String Unit := do
     let occurrences := names.filter (· == nm) |>.size
     check (occurrences ≤ 1) s!"{nm} appears {occurrences} times — dedup failed"
 
-private def resolveTest (g : ObjectList) : Except String Unit := do
+private def resolveTest (g : LoadGraph) : Except String Unit := do
   let elfs := g.val.map (·.elf)
   let table := Resolve.buildTable elfs
   let firstMissing := (table.missing[0]?.map (·.name)).getD ""
@@ -91,7 +91,7 @@ private def resolveTest (g : ObjectList) : Except String Unit := do
     real base from `Runtime.mmapAnon`. -/
 private def testAnchor : UInt64 := 0x80000000
 
-private def layoutTest (g : ObjectList) : Except String Unit := do
+private def layoutTest (g : LoadGraph) : Except String Unit := do
   -- `Layout.ofElfs` succeeds → returns a `Layout elfs.size` with
   -- per-elf `segmentsSorted` and per-segment relocs woven in.
   let elfs := g.val.map (·.elf)
@@ -99,14 +99,14 @@ private def layoutTest (g : ObjectList) : Except String Unit := do
   let _ ← Layout.ofElfs elfs rt
   .ok ()
 
-private def orderTest (g : ObjectList) : Except String Unit := do
+private def orderTest (g : LoadGraph) : Except String Unit := do
   let order := (Init.order g).map (·.val)
   check (order.size == g.val.size)
     s!"order size {order.size} ≠ object count {g.val.size}"
   check (order.back? == some 0)
     s!"main (idx 0) should be last in order; got {order}"
 
-private def relocTest (g : ObjectList) (formula : Elaborate.Formula) : Except String Unit := do
+private def relocTest (g : LoadGraph) (formula : Elaborate.Formula) : Except String Unit := do
   let elfs := g.val.map (·.elf)
   let rt := Resolve.buildTable elfs
   let lp ← Layout.ofElfs elfs rt

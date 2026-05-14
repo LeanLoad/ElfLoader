@@ -4,7 +4,7 @@ Top-level pure-pipeline aggregate.
 An `Aggregate` bundles the four base-free planner outputs under one
 structure parameterised by the object count `objects.val.size`:
 
-  · `objects   : ObjectList` — main + transitive deps in BFS order.
+  · `objects   : LoadGraph` — main + transitive deps in BFS order.
                  Carries non-emptiness + name-Nodup invariants.
   · `resolve   : Resolve.Table objects.val.size` — per-undef-ref
                  resolution outcome. `ofObjects` rejects when a
@@ -40,7 +40,7 @@ import LeanLoad.Plan.Init
 namespace LeanLoad.Plan
 
 open LeanLoad
-open LeanLoad.Discover (ObjectList)
+open LeanLoad.Discover (LoadGraph)
 open LeanLoad.Elaborate (Elf)
 
 /-- The unified pure-pipeline aggregate. Every sub-output is indexed
@@ -49,7 +49,7 @@ open LeanLoad.Elaborate (Elf)
     coherence proofs at every call site. -/
 structure Aggregate where
   /-- Discovered objects (main + transitive deps), in BFS order. -/
-  objects   : ObjectList
+  objects   : LoadGraph
   /-- Per-undef-reference resolution outcome. `Aggregate.ofObjects`
       rejects when any entry is `strongUndef`. -/
   resolve   : Resolve.Table objects.val.size
@@ -84,7 +84,7 @@ def formula (p : Aggregate) : Elaborate.Formula :=
       • any strong undef remains unresolved, or
       • `Layout.ofElfs` rejects the layout (page-aligned overlap or
         UInt64 cumulative-span overflow). -/
-def ofObjects (objs : ObjectList) : Except String Aggregate := do
+def ofObjects (objs : LoadGraph) : Except String Aggregate := do
   let elfs := objs.val.map (·.elf)
   have h_size : elfs.size = objs.val.size := by simp [elfs]
   -- Sized variants thread `h_size` through their construction so the

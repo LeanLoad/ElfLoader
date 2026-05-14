@@ -22,10 +22,10 @@ stage re-checks it — the witness travels in the type.
       · `initArrInExecSeg` / `finiArrInExecSeg` — every ctor /
         dtor entry lives in an executable PT_LOAD.
 
-  • Discover — `Path → IO ObjectList`. BFS over `DT_NEEDED`. The
+  • Discover — `Path → IO LoadGraph`. BFS over `DT_NEEDED`. The
     output type witnesses non-emptiness and name `Nodup`.
 
-  • Plan — pure, base-free. Takes `ObjectList`, produces:
+  • Plan — pure, base-free. Takes `LoadGraph`, produces:
       · `Resolve.Table` — symbol BFS results (no strong-undef).
       · `Layout` — per-elf `SegmentLayout`s with page math +
         per-segment relocs, plus the cumulative span (`totalSpan`).
