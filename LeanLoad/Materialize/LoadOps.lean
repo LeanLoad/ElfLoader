@@ -71,9 +71,13 @@ structure SegmentOps (n : Nat) extends SegmentSetup where
   layout   : SegmentLayout n
   stores   : Array StoreOp
 
-/-- Per-elf ops: chosen base + per-segment ops bundles. -/
+/-- Per-elf ops: just the per-segment ops bundles. The per-elf base
+    address is implicit in each segment's slot ops (`MmapOp.addr`,
+    `StoreOp.addr`, etc.) — those carry absolute addresses computed
+    via `setupSegment` with the base mixed in. The source-of-truth
+    base lives on `BoundPlan.bases[i]` for callers that need it
+    (e.g. `Materialize.ctorAddrs`, `Main.debug`). -/
 structure ElfOps (n : Nat) where
-  base     : UInt64
   segments : Array (SegmentOps n)
 
 /-- Top-level: array of per-elf bundles, in elf order (main is at index 0). -/

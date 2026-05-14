@@ -164,11 +164,11 @@ private def buildTableImpl (elfs : Array Elf) : Table elfs.size := Id.run do
           index := index.insert (objectIdx, symIdx) .weakUndef
         | some "" =>
           index := index.insert (objectIdx, symIdx) .weakUndef
-        | some n =>
+        | some symName =>
           let entry : Unresolved elfs.size :=
-            { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := n }
+            { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := symName }
           let resolution : Resolution elfs.size :=
-            match resolveByName elfs n with
+            match resolveByName elfs symName with
             | some ref => .found ref
             | none     => if symEntry.isWeak then .weakUndef else .strongUndef
           entries := entries.push (entry, resolution)

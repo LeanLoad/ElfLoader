@@ -257,7 +257,7 @@ def buildElf (bp : BoundPlan) (i : Fin bp.n) :
       ElfSafe bp.rsv.addr bp.rsv.len eo ∧
       ElfBuildInvariant bp i eo } := do
   let ⟨segments, h_size, h_safe, h_mmap⟩ ← buildElfSegments bp i
-  let eo : ElfOps bp.n := { base := bp.baseAt i, segments }
+  let eo : ElfOps bp.n := { segments }
   let h_elfSafe : ElfSafe bp.rsv.addr bp.rsv.len eo := by
     refine ⟨?_, ?_⟩
     · intro k h_k; exact h_safe k h_k
