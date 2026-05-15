@@ -531,13 +531,193 @@ theorem LoadOps.apply_preserves_outside_reservation
   exact h_full
 
 -- ============================================================================
--- The three target soundness theorems.
+-- Perm-level analogues for `permissions_correct`. Same structural
+-- shape as the byte-level family, but everything is about `.perm`
+-- instead of `.byte`. Stores and zeros are perm-identity (by
+-- `ZeroOp.apply_perm` / `StoreOp.apply_perm` from ApplyLemmas), so
+-- only mmaps and mprotects move perm.
+-- ============================================================================
+
+/-- Stores fold preserves perm at every address: stores are
+    perm-identity by `StoreOp.apply_perm`. -/
+private theorem stores_foldl_perm (stores : Array StoreOp) (mem : Memory) (a : UInt64) :
+    (stores.foldl (init := mem) fun m s => s.apply m).perm a = mem.perm a := by
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.perm a = mem.perm a
+  have h_full : motive stores.size (stores.foldl (init := mem) fun m s => s.apply m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · rfl
+    · intro idx acc ih
+      show (stores[idx].apply acc).perm a = mem.perm a
+      rw [LeanLoad.StoreOp.apply_perm]
+      exact ih
+  exact h_full
+
+/-- Within a segment, perm at `a` reaches `so.mprotect.prot` if `a` is
+    in `so.mprotect`'s range. mmap → zero → stores all bypass: the
+    final mprotect step sets perm definitively. -/
+theorem SegmentOps.apply_perm_inside_mprotect
+    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
+    {a : UInt64}
+    (h_a_lo : so.mprotect.addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat < so.mprotect.addr.toNat + so.mprotect.len.toNat) :
+    (Materialize.SegmentOps.apply fs so mem).perm a = so.mprotect.prot := by
+  unfold Materialize.SegmentOps.apply
+  exact LeanLoad.MprotectOp.apply_perm_inside h_a_lo h_a_hi
+
+/-- Within a segment, perm at `a` is preserved if neither the mmap
+    nor the mprotect of this segment touches `a`. Zero and store are
+    perm-identity so they need no hypothesis. -/
+theorem SegmentOps.apply_perm_no_touch
+    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
+    {a : UInt64}
+    (h_no_mmap : ∀ m, so.mmap = some m →
+      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_mprotect : ¬ (so.mprotect.addr.toNat ≤ a.toNat ∧
+                        a.toNat < so.mprotect.addr.toNat + so.mprotect.len.toNat)) :
+    (Materialize.SegmentOps.apply fs so mem).perm a = mem.perm a := by
+  unfold Materialize.SegmentOps.apply
+  rw [LeanLoad.MprotectOp.apply_perm_outside h_no_mprotect]
+  rw [stores_foldl_perm so.stores _ a]
+  cases h_zero : so.zero with
+  | none =>
+    dsimp only
+    cases h_mmap : so.mmap with
+    | none => dsimp only
+    | some m => exact LeanLoad.MmapOp.apply_perm_outside (h_no_mmap m h_mmap)
+  | some z =>
+    dsimp only
+    rw [LeanLoad.ZeroOp.apply_perm]
+    cases h_mmap : so.mmap with
+    | none => dsimp only
+    | some m => exact LeanLoad.MmapOp.apply_perm_outside (h_no_mmap m h_mmap)
+
+/-- Per-elf perm preservation: if no segment of this elf perm-touches
+    a, the elf's apply leaves perm at a unchanged. -/
+theorem ElfOps.apply_perm_no_touch
+    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
+    {a : UInt64}
+    (h_no_mmap : ∀ (k : Nat) (h_k : k < eo.segments.size) (m : MmapOp),
+      (eo.segments[k]'h_k).mmap = some m →
+      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_mprotect : ∀ (k : Nat) (h_k : k < eo.segments.size),
+      ¬ ((eo.segments[k]'h_k).mprotect.addr.toNat ≤ a.toNat ∧
+         a.toNat < (eo.segments[k]'h_k).mprotect.addr.toNat +
+                   (eo.segments[k]'h_k).mprotect.len.toNat)) :
+    (Materialize.ElfOps.apply fs eo mem).perm a = mem.perm a := by
+  unfold Materialize.ElfOps.apply
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.perm a = mem.perm a
+  have h_full : motive eo.segments.size
+      (eo.segments.foldl (init := mem) fun m so => Materialize.SegmentOps.apply fs so m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · rfl
+    · intro idx acc ih
+      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc).perm a = mem.perm a
+      rw [SegmentOps.apply_perm_no_touch
+            (fun m h => h_no_mmap idx.val idx.isLt m h)
+            (h_no_mprotect idx.val idx.isLt)]
+      exact ih
+  exact h_full
+
+/-- Top-level perm preservation: if no segment of any elf
+    perm-touches a, the materialize pipeline leaves perm at a
+    unchanged. -/
+theorem LoadOps.apply_perm_no_touch
+    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
+    {a : UInt64}
+    (h_no_mmap : ∀ (i : Nat) (h_i : i < lo.size)
+                  (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (m : MmapOp),
+      ((lo[i]'h_i).segments[k]'h_k).mmap = some m →
+      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_mprotect : ∀ (i : Nat) (h_i : i < lo.size)
+                      (k : Nat) (h_k : k < (lo[i]'h_i).segments.size),
+      ¬ (((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat ≤ a.toNat ∧
+         a.toNat < ((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat +
+                   ((lo[i]'h_i).segments[k]'h_k).mprotect.len.toNat)) :
+    (Materialize.LoadOps.apply fs lo mem).perm a = mem.perm a := by
+  unfold Materialize.LoadOps.apply
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.perm a = mem.perm a
+  have h_full : motive lo.size
+      (lo.foldl (init := mem) fun m eo => Materialize.ElfOps.apply fs eo m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · rfl
+    · intro idx acc ih
+      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).perm a = mem.perm a
+      rw [ElfOps.apply_perm_no_touch
+            (fun k h_k m h => h_no_mmap idx.val idx.isLt k h_k m h)
+            (fun k h_k => h_no_mprotect idx.val idx.isLt k h_k)]
+      exact ih
+  exact h_full
+
+/-- Top-level positional preservation for perm: same shape as
+    `apply_at_target` but on the `.perm` field. Used by
+    `permissions_correct`. -/
+theorem LoadOps.apply_perm_at_target
+    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
+    {i : Nat} (h_i : i < lo.size)
+    {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
+    {a : UInt64} {target : Perm}
+    (h_within : ∀ (acc : Memory),
+      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k]'h_k) acc).perm a = target)
+    (h_other_segs : ∀ (k' : Nat) (h_k' : k' < (lo[i]'h_i).segments.size), k' ≠ k →
+      ∀ (acc : Memory),
+      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k']'h_k') acc).perm a = acc.perm a)
+    (h_other_elves : ∀ (i' : Nat) (h_i' : i' < lo.size), i' ≠ i →
+      ∀ (acc : Memory),
+      (Materialize.ElfOps.apply fs (lo[i']'h_i') acc).perm a = acc.perm a) :
+    (Materialize.LoadOps.apply fs lo mem).perm a = target := by
+  have h_elf_i_apply : ∀ (acc : Memory),
+      (Materialize.ElfOps.apply fs (lo[i]'h_i) acc).perm a = target := by
+    intro acc
+    unfold Materialize.ElfOps.apply
+    let inner_motive : Nat → Memory → Prop := fun j_idx mem' =>
+      k < j_idx → mem'.perm a = target
+    have h_inner : inner_motive (lo[i]'h_i).segments.size
+        ((lo[i]'h_i).segments.foldl (init := acc)
+          fun acc' so => Materialize.SegmentOps.apply fs so acc') := by
+      refine Array.foldl_induction inner_motive ?_ ?_
+      · intro h_lt; omega
+      · intro jdx acc' ih h_lt
+        by_cases h_eq : k = jdx.val
+        · subst h_eq
+          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc').perm a = target
+          exact h_within acc'
+        · have h_post_k : k < jdx.val := by
+            have : k < jdx.val + 1 := h_lt
+            omega
+          have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
+          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc').perm a = target
+          rw [h_other_segs jdx.val jdx.isLt h_jdx_ne_k acc']
+          exact ih h_post_k
+    exact h_inner h_k
+  unfold Materialize.LoadOps.apply
+  let outer_motive : Nat → Memory → Prop := fun idx mem' =>
+    i < idx → mem'.perm a = target
+  have h_outer : outer_motive lo.size
+      (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
+    refine Array.foldl_induction outer_motive ?_ ?_
+    · intro h_lt; omega
+    · intro idx acc ih h_lt
+      by_cases h_eq : i = idx.val
+      · subst h_eq
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).perm a = target
+        exact h_elf_i_apply acc
+      · have h_post_i : i < idx.val := by
+          have : i < idx.val + 1 := h_lt
+          omega
+        have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).perm a = target
+        rw [h_other_elves idx.val idx.isLt h_idx_ne_i acc]
+        exact ih h_post_i
+  exact h_outer h_i
+
+-- ============================================================================
+-- The four target soundness theorems.
 --
 -- Stated about `LoadOps.apply` over `Memory.zero`. To lift to a
 -- statement about the real loaded image, replace
---   `(LoadOps.apply fs lo Memory.zero) a`
+--   `(LoadOps.apply fs lo Memory.zero).byte a`  (or `.perm a`)
 -- with
---   `(runSafe_image rsv lo safe fs) a`
+--   `(runSafe_image rsv lo safe fs).byte a`  (or `.perm a`)
 -- via `runSafe_image_eq`.
 -- ============================================================================
 
@@ -762,5 +942,62 @@ theorem relocs_applied
       exact h_other_zeros i' h_i' k' h_k' z h_z (fun ⟨h, _⟩ => h_i'_ne h)
     · intro k' h_k' s h_s
       exact h_other_stores i' h_i' k' h_k' s h_s (fun ⟨h, _⟩ => h_i'_ne h)
+
+/-- **permissions_correct** — every byte in segments[k].mprotect's
+    range ends up with `perm = segments[k].mprotect.prot`. The
+    natural soundness statement enabled by the perm model: the
+    loaded program, immediately before the trampoline jumps, sees
+    R/W/X permissions matching what each segment's PT_LOAD `p_flags`
+    requested (via the `Plan.SegmentLayout.prot` field that flows
+    into `MprotectOp.prot`).
+
+    The two explicit hypotheses (`h_other_mmaps`, `h_other_mprotects`)
+    say "no mmap or mprotect from outside segment k of elf i touches
+    a." Mmaps would re-widen perm to PROT_WRITE; later mprotects
+    would overwrite our final perm. Zeros and stores are perm-
+    identity and need no hypothesis.
+
+    A future `LoadSafe` extension witnessing that all segment
+    `[mprotect.addr, mprotect.addr + mprotect.len)` ranges are
+    pairwise disjoint would discharge both hypotheses from the safety
+    proof alone. -/
+theorem permissions_correct
+    {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
+    (i : Nat) (h_i : i < lo.size)
+    (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
+    (a : UInt64)
+    (h_a_lo : ((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat < ((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat +
+                        ((lo[i]'h_i).segments[k]'h_k).mprotect.len.toNat)
+    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
+      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
+    (h_other_mprotects : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                          (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size),
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (((lo[i']'h_i').segments[k']'h_k').mprotect.addr.toNat ≤ a.toNat ∧
+         a.toNat < ((lo[i']'h_i').segments[k']'h_k').mprotect.addr.toNat +
+                   ((lo[i']'h_i').segments[k']'h_k').mprotect.len.toNat)) :
+    (Materialize.LoadOps.apply fs lo Memory.zero).perm a
+      = ((lo[i]'h_i).segments[k]'h_k).mprotect.prot := by
+  apply LoadOps.apply_perm_at_target h_i h_k
+  · -- Responsible segment k of elf i: any acc → mprotect.prot at a.
+    intro acc
+    exact SegmentOps.apply_perm_inside_mprotect h_a_lo h_a_hi
+  · -- Other segments of elf i: perm at a preserved (no mmap, no mprotect touches).
+    intro k' h_k' h_k'_ne acc
+    apply SegmentOps.apply_perm_no_touch
+    · intro m' h_m'
+      exact h_other_mmaps i h_i k' h_k' m' h_m' (fun ⟨_, h⟩ => h_k'_ne h)
+    · exact h_other_mprotects i h_i k' h_k' (fun ⟨_, h⟩ => h_k'_ne h)
+  · -- Other elves: perm at a preserved.
+    intro i' h_i' h_i'_ne acc
+    apply ElfOps.apply_perm_no_touch
+    · intro k' h_k' m' h_m'
+      exact h_other_mmaps i' h_i' k' h_k' m' h_m' (fun ⟨h, _⟩ => h_i'_ne h)
+    · intro k' h_k'
+      exact h_other_mprotects i' h_i' k' h_k' (fun ⟨h, _⟩ => h_i'_ne h)
 
 end LeanLoad.Spec
