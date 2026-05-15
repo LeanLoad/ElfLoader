@@ -396,203 +396,6 @@ theorem ElfOps.apply_no_touch
       exact ih
   exact h_full
 
-/-- Within-elf positive preservation: m at segment k of eo, no other
-    op in eo touches `a`, ⇒ the elf's apply leaves byte `a` at m's
-    file byte. Proof uses `Array.foldl_induction` with a motive that
-    encodes "if past k, byte at a is fs.byte; otherwise don't care".
-    The case `k = jdx.val` discharges via
-    `SegmentOps.apply_inside_mmap_no_overwrite`; the case `k < jdx.val`
-    propagates via `SegmentOps.apply_no_touch`. -/
-theorem ElfOps.apply_at_responsible_mmap
-    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
-    {k : Nat} (h_k : k < eo.segments.size)
-    {m : MmapOp}
-    (h_mmap : (eo.segments[k]'h_k).mmap = some m)
-    {a : UInt64}
-    (h_a_lo : m.addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
-    (h_other_mmaps : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (m' : MmapOp),
-      (eo.segments[k']'h_k').mmap = some m' → k' ≠ k →
-      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
-    (h_no_zero : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (z : ZeroOp),
-      (eo.segments[k']'h_k').zero = some z →
-      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
-    (h_no_store : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (s : StoreOp),
-      s ∈ (eo.segments[k']'h_k').stores →
-      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.ElfOps.apply fs eo mem) a
-      = fs.byte m.handle (m.offset + (a - m.addr)) := by
-  unfold Materialize.ElfOps.apply
-  let motive : Nat → Memory → Prop := fun j_idx mem' =>
-    k < j_idx → mem' a = fs.byte m.handle (m.offset + (a - m.addr))
-  have h_full : motive eo.segments.size
-      (eo.segments.foldl (init := mem) fun m' so => Materialize.SegmentOps.apply fs so m') := by
-    refine Array.foldl_induction motive ?_ ?_
-    · intro h_lt; omega
-    · intro jdx acc ih h_lt
-      by_cases h_eq : k = jdx.val
-      · -- Responsible segment: jdx.val = k.
-        -- Substitute k := jdx.val so the goal aligns with apply_inside_mmap_no_overwrite.
-        subst h_eq
-        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
-        exact SegmentOps.apply_inside_mmap_no_overwrite h_mmap h_a_lo h_a_hi
-          (fun z h => h_no_zero jdx.val jdx.isLt z h)
-          (fun s h => h_no_store jdx.val jdx.isLt s h)
-      · -- Different segment, must be post-k since `k < jdx.val + 1` and `k ≠ jdx.val`.
-        have h_post_k : k < jdx.val := by
-          have h_lt' : k < jdx.val + 1 := h_lt
-          omega
-        have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
-        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
-        rw [SegmentOps.apply_no_touch
-              (fun m' h_m' => h_other_mmaps jdx.val jdx.isLt m' h_m' h_jdx_ne_k)
-              (fun z h => h_no_zero jdx.val jdx.isLt z h)
-              (fun s h => h_no_store jdx.val jdx.isLt s h)]
-        exact ih h_post_k
-  exact h_full h_k
-
-/-- Within-elf positive preservation for a store: same shape as
-    `ElfOps.apply_at_responsible_mmap` but with a `StoreOp` at index
-    `store_idx` of segments[k] as the responsible op. -/
-theorem ElfOps.apply_at_responsible_store
-    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
-    {k : Nat} (h_k : k < eo.segments.size)
-    {store_idx : Nat} (h_si : store_idx < (eo.segments[k]'h_k).stores.size)
-    {a : UInt64}
-    (h_a_lo : ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat <
-              ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat +
-                ((eo.segments[k]'h_k).stores[store_idx]'h_si).byteLen.toNat)
-    -- No later store in the responsible segment overlaps a.
-    (h_no_later_in_seg : ∀ (idx' : Nat)
-                          (h_idx' : idx' < (eo.segments[k]'h_k).stores.size),
-      store_idx < idx' →
-      ¬ (((eo.segments[k]'h_k).stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
-         a.toNat < ((eo.segments[k]'h_k).stores[idx']'h_idx').addr.toNat +
-                   ((eo.segments[k]'h_k).stores[idx']'h_idx').byteLen.toNat))
-    -- No mmap/zero/store in any other segment of this elf touches a.
-    (h_other_mmaps : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (m' : MmapOp),
-      (eo.segments[k']'h_k').mmap = some m' → k' ≠ k →
-      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
-    (h_other_zeros : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (z : ZeroOp),
-      (eo.segments[k']'h_k').zero = some z → k' ≠ k →
-      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
-    (h_other_stores : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (s : StoreOp),
-      s ∈ (eo.segments[k']'h_k').stores → k' ≠ k →
-      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.ElfOps.apply fs eo mem) a
-      = (((eo.segments[k]'h_k).stores[store_idx]'h_si).value >>>
-         UInt64.ofNat (8 * (a.toNat -
-                            ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
-  unfold Materialize.ElfOps.apply
-  let motive : Nat → Memory → Prop := fun j_idx mem' =>
-    k < j_idx → mem' a =
-      (((eo.segments[k]'h_k).stores[store_idx]'h_si).value >>>
-       UInt64.ofNat (8 * (a.toNat -
-                          ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8
-  have h_full : motive eo.segments.size
-      (eo.segments.foldl (init := mem) fun m' so => Materialize.SegmentOps.apply fs so m') := by
-    refine Array.foldl_induction motive ?_ ?_
-    · intro h_lt; omega
-    · intro jdx acc ih h_lt
-      by_cases h_eq : k = jdx.val
-      · subst h_eq
-        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
-        exact SegmentOps.apply_at_responsible_store h_si h_a_lo h_a_hi h_no_later_in_seg
-      · have h_post_k : k < jdx.val := by
-          have h_lt' : k < jdx.val + 1 := h_lt
-          omega
-        have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
-        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
-        rw [SegmentOps.apply_no_touch
-              (fun m' h => h_other_mmaps jdx.val jdx.isLt m' h h_jdx_ne_k)
-              (fun z h => h_other_zeros jdx.val jdx.isLt z h h_jdx_ne_k)
-              (fun s h => h_other_stores jdx.val jdx.isLt s h h_jdx_ne_k)]
-        exact ih h_post_k
-  exact h_full h_k
-
-/-- Top-level positive preservation for a store: m at segments[k] of
-    elf i has a store at `store_idx` that writes value v, no other op
-    in the tree touches a (except mmaps/zeros/stores in the
-    responsible segment, which get overwritten or run earlier), ⇒ the
-    materialize pipeline leaves byte `a` at the store's LE byte. -/
-theorem LoadOps.apply_at_responsible_store
-    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
-    {i : Nat} (h_i : i < lo.size)
-    {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
-    {store_idx : Nat} (h_si : store_idx < ((lo[i]'h_i).segments[k]'h_k).stores.size)
-    {a : UInt64}
-    (h_a_lo : (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat <
-              (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat +
-                (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).byteLen.toNat)
-    (h_no_later_in_seg : ∀ (idx' : Nat)
-                          (h_idx' : idx' < ((lo[i]'h_i).segments[k]'h_k).stores.size),
-      store_idx < idx' →
-      ¬ ((((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
-         a.toNat < (((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').addr.toNat +
-                   (((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').byteLen.toNat))
-    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
-      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
-      ¬ (i' = i ∧ k' = k) →
-      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
-    (h_other_zeros : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (z : ZeroOp),
-      ((lo[i']'h_i').segments[k']'h_k').zero = some z →
-      ¬ (i' = i ∧ k' = k) →
-      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
-    (h_other_stores : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                        (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (s : StoreOp),
-      s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
-      ¬ (i' = i ∧ k' = k) →
-      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.LoadOps.apply fs lo mem) a
-      = ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
-         UInt64.ofNat (8 * (a.toNat -
-                            (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
-  unfold Materialize.LoadOps.apply
-  let motive : Nat → Memory → Prop := fun idx mem' =>
-    i < idx → mem' a =
-      ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
-       UInt64.ofNat (8 * (a.toNat -
-                          (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8
-  have h_full : motive lo.size
-      (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
-    refine Array.foldl_induction motive ?_ ?_
-    · intro h_lt; omega
-    · intro idx acc ih h_lt
-      by_cases h_eq : i = idx.val
-      · subst h_eq
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
-        exact ElfOps.apply_at_responsible_store h_k h_si h_a_lo h_a_hi h_no_later_in_seg
-          (fun k' h_k' m' h_m' h_k'_ne =>
-            h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
-              (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq))
-          (fun k' h_k' z h_z h_k'_ne =>
-            h_other_zeros idx.val idx.isLt k' h_k' z h_z
-              (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq))
-          (fun k' h_k' s h_s h_k'_ne =>
-            h_other_stores idx.val idx.isLt k' h_k' s h_s
-              (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq))
-      · have h_post_i : i < idx.val := by
-          have : i < idx.val + 1 := h_lt
-          omega
-        have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
-        rw [ElfOps.apply_no_touch
-              (fun k' h_k' m' h_m' =>
-                h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
-                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))
-              (fun k' h_k' z h_z =>
-                h_other_zeros idx.val idx.isLt k' h_k' z h_z
-                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))
-              (fun k' h_k' s h_s =>
-                h_other_stores idx.val idx.isLt k' h_k' s h_s
-                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))]
-        exact ih h_post_i
-  exact h_full h_i
-
 /-- Top-level no-touch preservation: if no op in the entire tree
     touches `a`, the materialize pipeline preserves the byte at `a`.
     This is the structural workhorse for `bss_zeroed` and for the
@@ -628,73 +431,80 @@ theorem LoadOps.apply_no_touch
       exact ih
   exact h_full
 
-/-- Top-level positive preservation: m at segment k of elf i, no
-    other op in the tree touches `a`, ⇒ the materialize pipeline
-    leaves byte `a` at m's file byte. Same shape as
-    `ElfOps.apply_at_responsible_mmap` but lifted one level: the
-    nested induction navigates `(i, k)` instead of just `k`. -/
-theorem LoadOps.apply_at_responsible_mmap
+/-- Top-level positive preservation, parameterised by the target
+    byte. If applying segments[k] of elf i produces `target` at `a`
+    from *any* input memory, and every other segment (of elf i) and
+    every other elf preserves byte `a`, then the materialize
+    pipeline leaves byte `a` at `target`.
+
+    Subsumes both the mmap and store positional structures: callers
+    supply the within-segment theorem for their target (mmap →
+    `SegmentOps.apply_inside_mmap_no_overwrite`; store →
+    `SegmentOps.apply_at_responsible_store`) and the "outside
+    segment-pair preserves a" lemmas via `SegmentOps.apply_no_touch`
+    and `ElfOps.apply_no_touch`. The nested fold induction (over
+    elves, then over segments of the responsible elf) lives here
+    once. -/
+theorem LoadOps.apply_at_target
     {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
     {i : Nat} (h_i : i < lo.size)
     {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
-    {m : MmapOp}
-    (h_mmap : ((lo[i]'h_i).segments[k]'h_k).mmap = some m)
-    {a : UInt64}
-    (h_a_lo : m.addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
-    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
-      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
-      ¬ (i' = i ∧ k' = k) →
-      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
-    (h_no_zero : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                   (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (z : ZeroOp),
-      ((lo[i']'h_i').segments[k']'h_k').zero = some z →
-      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
-    (h_no_store : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                    (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (s : StoreOp),
-      s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
-      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.LoadOps.apply fs lo mem) a
-      = fs.byte m.handle (m.offset + (a - m.addr)) := by
+    {a : UInt64} {target : UInt8}
+    (h_within : ∀ (acc : Memory),
+      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k]'h_k) acc) a = target)
+    (h_other_segs : ∀ (k' : Nat) (h_k' : k' < (lo[i]'h_i).segments.size), k' ≠ k →
+      ∀ (acc : Memory),
+      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k']'h_k') acc) a = acc a)
+    (h_other_elves : ∀ (i' : Nat) (h_i' : i' < lo.size), i' ≠ i →
+      ∀ (acc : Memory),
+      (Materialize.ElfOps.apply fs (lo[i']'h_i') acc) a = acc a) :
+    (Materialize.LoadOps.apply fs lo mem) a = target := by
+  -- Inner: applying the responsible elf produces `target` at `a`.
+  have h_elf_i_apply : ∀ (acc : Memory),
+      (Materialize.ElfOps.apply fs (lo[i]'h_i) acc) a = target := by
+    intro acc
+    unfold Materialize.ElfOps.apply
+    let inner_motive : Nat → Memory → Prop := fun j_idx mem' =>
+      k < j_idx → mem' a = target
+    have h_inner : inner_motive (lo[i]'h_i).segments.size
+        ((lo[i]'h_i).segments.foldl (init := acc)
+          fun acc' so => Materialize.SegmentOps.apply fs so acc') := by
+      refine Array.foldl_induction inner_motive ?_ ?_
+      · intro h_lt; omega
+      · intro jdx acc' ih h_lt
+        by_cases h_eq : k = jdx.val
+        · subst h_eq
+          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc') a = target
+          exact h_within acc'
+        · have h_post_k : k < jdx.val := by
+            have : k < jdx.val + 1 := h_lt
+            omega
+          have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
+          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc') a = target
+          rw [h_other_segs jdx.val jdx.isLt h_jdx_ne_k acc']
+          exact ih h_post_k
+    exact h_inner h_k
+  -- Outer: fold over elves.
   unfold Materialize.LoadOps.apply
-  let motive : Nat → Memory → Prop := fun idx mem' =>
-    i < idx → mem' a = fs.byte m.handle (m.offset + (a - m.addr))
-  have h_full : motive lo.size
+  let outer_motive : Nat → Memory → Prop := fun idx mem' =>
+    i < idx → mem' a = target
+  have h_outer : outer_motive lo.size
       (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
-    refine Array.foldl_induction motive ?_ ?_
+    refine Array.foldl_induction outer_motive ?_ ?_
     · intro h_lt; omega
     · intro idx acc ih h_lt
       by_cases h_eq : i = idx.val
-      · -- Responsible elf: idx.val = i. Apply within-elf via ElfOps.apply_at_responsible_mmap.
-        subst h_eq
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
-        -- Within this elf, segment k contains m. Other segments don't touch a
-        -- (mmaps via `h_other_mmaps` with i' = i (= idx.val); zeros/stores via the
-        -- explicit hypotheses).
-        exact ElfOps.apply_at_responsible_mmap h_k h_mmap h_a_lo h_a_hi
-          (fun k' h_k' m' h_m' h_k'_ne_k =>
-            h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
-              (fun ⟨_, h_k_eq⟩ => h_k'_ne_k h_k_eq))
-          (fun k' h_k' z h => h_no_zero idx.val idx.isLt k' h_k' z h)
-          (fun k' h_k' s h => h_no_store idx.val idx.isLt k' h_k' s h)
-      · -- Different elf, post-i (since i < idx.val + 1 and i ≠ idx.val).
-        have h_post_i : i < idx.val := by
-          have h_lt' : i < idx.val + 1 := h_lt
+      · subst h_eq
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = target
+        exact h_elf_i_apply acc
+      · have h_post_i : i < idx.val := by
+          have : i < idx.val + 1 := h_lt
           omega
         have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
-        -- Different elf: every op in lo[idx.val] doesn't touch a.
-        --   Mmaps: ¬(idx.val = i ∧ _) holds since idx.val ≠ i.
-        --   Zeros/stores: direct from hypotheses.
-        rw [ElfOps.apply_no_touch
-              (fun k' h_k' m' h_m' =>
-                h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
-                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))
-              (fun k' h_k' z h => h_no_zero idx.val idx.isLt k' h_k' z h)
-              (fun k' h_k' s h => h_no_store idx.val idx.isLt k' h_k' s h)]
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = target
+        rw [h_other_elves idx.val idx.isLt h_idx_ne_i acc]
         exact ih h_post_i
-  exact h_full h_i
+  exact h_outer h_i
 
 /-- Top-level tree preservation: bytes outside the reservation are
     untouched by the entire materialize pipeline. The structural
@@ -810,13 +620,29 @@ theorem bytes_preserved
                     ¬ (s.addr.toNat ≤ a.toNat ∧
                        a.toNat < s.addr.toNat + s.byteLen.toNat)) :
     (Materialize.LoadOps.apply fs lo Memory.zero) a
-      = fs.byte m.handle (m.offset + (a - m.addr)) :=
-  LoadOps.apply_at_responsible_mmap h_i h_k h_mmap h_a_lo h_a_hi
-    (fun _ h_i' _ h_k' _ h_mmap' h_diff =>
-      other_mmap_not_touches safe h_i h_k h_mmap h_a_lo h_a_hi
-        h_i' h_k' h_mmap' h_diff)
-    h_no_zero
-    h_no_store
+      = fs.byte m.handle (m.offset + (a - m.addr)) := by
+  apply LoadOps.apply_at_target h_i h_k
+  · -- Responsible segment k of elf i: any acc → file byte at a.
+    intro acc
+    exact SegmentOps.apply_inside_mmap_no_overwrite h_mmap h_a_lo h_a_hi
+      (fun z h => h_no_zero i h_i k h_k z h)
+      (fun s h => h_no_store i h_i k h_k s h)
+  · -- Other segments of elf i preserve a.
+    intro k' h_k' h_k'_ne acc
+    apply SegmentOps.apply_no_touch
+    · intro m' h_m'
+      exact other_mmap_not_touches safe h_i h_k h_mmap h_a_lo h_a_hi
+        h_i h_k' h_m' (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq)
+    · intro z h_z; exact h_no_zero i h_i k' h_k' z h_z
+    · intro s h_s; exact h_no_store i h_i k' h_k' s h_s
+  · -- Other elves preserve a.
+    intro i' h_i' h_i'_ne acc
+    apply ElfOps.apply_no_touch
+    · intro k' h_k' m' h_m'
+      exact other_mmap_not_touches safe h_i h_k h_mmap h_a_lo h_a_hi
+        h_i' h_k' h_m' (fun ⟨h_i_eq, _⟩ => h_i'_ne h_i_eq)
+    · intro k' h_k' z h_z; exact h_no_zero i' h_i' k' h_k' z h_z
+    · intro k' h_k' s h_s; exact h_no_store i' h_i' k' h_k' s h_s
 
 /-- **bss_zeroed** — every byte in a PT_LOAD's
     `[vaddr + filesz, vaddr + memsz)` range reads `0`, outside
@@ -913,8 +739,28 @@ theorem relocs_applied
     (Materialize.LoadOps.apply fs lo Memory.zero) a
       = ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
          UInt64.ofNat (8 * (a.toNat -
-                            (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 :=
-  LoadOps.apply_at_responsible_store h_i h_k h_si h_a_lo h_a_hi
-    h_no_later_in_seg h_other_mmaps h_other_zeros h_other_stores
+                            (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
+  apply LoadOps.apply_at_target h_i h_k
+  · -- Responsible segment: any acc → LE byte of s.value at a.
+    intro acc
+    exact SegmentOps.apply_at_responsible_store h_si h_a_lo h_a_hi h_no_later_in_seg
+  · -- Other segments of elf i preserve a.
+    intro k' h_k' h_k'_ne acc
+    apply SegmentOps.apply_no_touch
+    · intro m' h_m'
+      exact h_other_mmaps i h_i k' h_k' m' h_m' (fun ⟨_, h⟩ => h_k'_ne h)
+    · intro z h_z
+      exact h_other_zeros i h_i k' h_k' z h_z (fun ⟨_, h⟩ => h_k'_ne h)
+    · intro s h_s
+      exact h_other_stores i h_i k' h_k' s h_s (fun ⟨_, h⟩ => h_k'_ne h)
+  · -- Other elves preserve a.
+    intro i' h_i' h_i'_ne acc
+    apply ElfOps.apply_no_touch
+    · intro k' h_k' m' h_m'
+      exact h_other_mmaps i' h_i' k' h_k' m' h_m' (fun ⟨h, _⟩ => h_i'_ne h)
+    · intro k' h_k' z h_z
+      exact h_other_zeros i' h_i' k' h_k' z h_z (fun ⟨h, _⟩ => h_i'_ne h)
+    · intro k' h_k' s h_s
+      exact h_other_stores i' h_i' k' h_k' s h_s (fun ⟨h, _⟩ => h_i'_ne h)
 
 end LeanLoad.Spec
