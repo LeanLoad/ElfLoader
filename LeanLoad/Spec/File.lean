@@ -1,7 +1,7 @@
 /-
 File-bytes snapshot.
 
-A `FileSnap` freezes the on-disk contents of every open file at a
+A `File` freezes the on-disk contents of every open file at a
 single conceptual moment — the moment `Discover` parsed each ELF.
 Indexed by `(FileHandle, fileOffset)` so per-file overlays in
 `MmapOp.apply` can look up the source byte at `(m.handle, m.offset
@@ -42,7 +42,7 @@ namespace LeanLoad.Spec
 /-- Frozen view of every open file's bytes. Per-handle, per-offset.
     Bytes past EOF read as `0` (matches both `pread` short-read and
     `mmapFile` zero-tail). -/
-structure FileSnap where
+structure File where
   byte : Runtime.FileHandle → UInt64 → UInt8
 
 end LeanLoad.Spec

@@ -36,7 +36,7 @@ Spec layering:
 -/
 
 import LeanLoad.Spec.Memory
-import LeanLoad.Spec.FileSnap
+import LeanLoad.Spec.File
 import LeanLoad.Materialize.LoadOps
 
 namespace LeanLoad
@@ -54,7 +54,7 @@ namespace MmapOp
     `k = a - m.addr`. Mirrors Linux `mmap(2)` MAP_PRIVATE | MAP_FIXED
     semantics on a `MAP_ANONYMOUS` reservation: file bytes overlay
     the reserved zero-page tiles within the requested span. -/
-def apply (fs : FileSnap) (m : MmapOp) (mem : Memory) : Memory :=
+def apply (fs : File) (m : MmapOp) (mem : Memory) : Memory :=
   fun a =>
     if m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat then
       fs.byte m.handle (m.offset + (a - m.addr))
@@ -118,7 +118,7 @@ open LeanLoad.Spec
     `SegmentOps.runUnsafe`:
       mmap?  → zero?  → stores (in array order)  → mprotect
     The two `Option` slots default to identity when `none`. -/
-def apply (fs : FileSnap) (so : SegmentOps n) (mem : Memory) : Memory :=
+def apply (fs : File) (so : SegmentOps n) (mem : Memory) : Memory :=
   let m₁ := match so.mmap with
             | some m => m.apply fs mem
             | none   => mem
@@ -136,7 +136,7 @@ open LeanLoad.Spec
 
 /-- Per-elf denotation. Folds the segment denotations in declared
     order. -/
-def apply (fs : FileSnap) (eo : ElfOps n) (mem : Memory) : Memory :=
+def apply (fs : File) (eo : ElfOps n) (mem : Memory) : Memory :=
   eo.segments.foldl (init := mem) fun m so => so.apply fs m
 
 end Materialize.ElfOps
@@ -149,7 +149,7 @@ open LeanLoad.Spec
     order (main at index 0). The result is the abstract memory state
     that `LoadOps.runSafe` is axiomatized to realize (see
     `Spec/FFI.lean`). -/
-def apply (fs : FileSnap) (lo : LoadOps n) (mem : Memory) : Memory :=
+def apply (fs : File) (lo : LoadOps n) (mem : Memory) : Memory :=
   lo.foldl (init := mem) fun m eo => eo.apply fs m
 
 end Materialize.LoadOps

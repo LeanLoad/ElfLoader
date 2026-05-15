@@ -83,7 +83,7 @@ import LeanLoad.Materialize.BoundPlan
 import LeanLoad.Materialize.Build
 
 import LeanLoad.Spec.Memory
-import LeanLoad.Spec.FileSnap
+import LeanLoad.Spec.File
 import LeanLoad.Spec.Apply
 import LeanLoad.Spec.ApplyLemmas
 import LeanLoad.Spec.FFI

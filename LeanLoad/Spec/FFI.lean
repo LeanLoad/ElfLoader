@@ -77,7 +77,7 @@ open LeanLoad.Spec
 opaque runSafe_image
     {n : Nat} (rsv : Reserve)
     (lo : LoadOps n) (safe : LoadSafe rsv.addr rsv.len lo)
-    (fs : FileSnap) : Memory
+    (fs : File) : Memory
 
 -- ============================================================================
 -- The one axiom — the entire FFI trust statement for the materialize
@@ -95,7 +95,7 @@ opaque runSafe_image
 axiom runSafe_image_eq
     {n : Nat} (rsv : Reserve)
     (lo : LoadOps n) (safe : LoadSafe rsv.addr rsv.len lo)
-    (fs : FileSnap) :
+    (fs : File) :
     runSafe_image rsv lo safe fs = apply fs lo Memory.zero
 
 end LeanLoad.Materialize.LoadOps

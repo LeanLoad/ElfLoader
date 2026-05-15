@@ -39,14 +39,14 @@ open LeanLoad.Spec
 namespace MmapOp
 
 /-- A byte outside the mmap's range is preserved. -/
-theorem apply_outside {fs : FileSnap} {m : MmapOp} {mem : Memory} {a : UInt64}
+theorem apply_outside {fs : File} {m : MmapOp} {mem : Memory} {a : UInt64}
     (h : ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat)) :
     (m.apply fs mem) a = mem a := by
   unfold apply
   simp [h]
 
 /-- A byte inside the mmap's range reads the corresponding file byte. -/
-theorem apply_inside {fs : FileSnap} {m : MmapOp} {mem : Memory} {a : UInt64}
+theorem apply_inside {fs : File} {m : MmapOp} {mem : Memory} {a : UInt64}
     (h_lo : m.addr.toNat ≤ a.toNat)
     (h_hi : a.toNat < m.addr.toNat + m.len.toNat) :
     (m.apply fs mem) a = fs.byte m.handle (m.offset + (a - m.addr)) := by

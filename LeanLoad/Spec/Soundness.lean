@@ -63,7 +63,7 @@ private def InReservation (rsvAddr rsvLen : UInt64) (a : UInt64) : Prop :=
 /-- `MmapOp.apply` does not touch `a` if `a` is outside the
     reservation and the op is `InRange`. -/
 private theorem MmapOp.apply_preserves_outside
-    {fs : FileSnap} {m : MmapOp} {mem : Memory}
+    {fs : File} {m : MmapOp} {mem : Memory}
     {rsvAddr rsvLen : UInt64} {a : UInt64}
     (h_inRsv : Runtime.InRange m.addr m.len rsvAddr rsvLen)
     (h_outside : ¬ InReservation rsvAddr rsvLen a) :
@@ -208,7 +208,7 @@ private theorem stores_foldl_at_responsible_store
     order, so the responsible store overwrites their effect at `a`
     regardless of value — no mmap/zero hypotheses needed. -/
 theorem SegmentOps.apply_at_responsible_store
-    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
     {store_idx : Nat} (h_si : store_idx < so.stores.size)
     {a : UInt64}
     (h_a_lo : (so.stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
@@ -235,7 +235,7 @@ theorem SegmentOps.apply_at_responsible_store
     then the full per-segment apply chain reads back the file byte at
     `a`. This is the within-segment workhorse for `bytes_preserved`. -/
 theorem SegmentOps.apply_inside_mmap_no_overwrite
-    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
     {m : MmapOp}
     (h_mmap : so.mmap = some m)
     {a : UInt64}
@@ -271,7 +271,7 @@ theorem SegmentOps.apply_inside_mmap_no_overwrite
     by `stores_foldl_outside_rsv`; the final `mprotect` is the byte-
     level identity. -/
 theorem SegmentOps.apply_preserves_outside_reservation
-    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
     {rsvAddr rsvLen a : UInt64}
     (safe : Materialize.SegmentSafe rsvAddr rsvLen so)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
@@ -303,7 +303,7 @@ theorem SegmentOps.apply_preserves_outside_reservation
 /-- Per-elf tree preservation: every segment's apply preserves bytes
     outside the reservation, so the fold does too. -/
 theorem ElfOps.apply_preserves_outside_reservation
-    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
     {rsvAddr rsvLen a : UInt64}
     (safe : Materialize.ElfSafe rsvAddr rsvLen eo)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
@@ -333,7 +333,7 @@ theorem ElfOps.apply_preserves_outside_reservation
 /-- Per-segment no-touch preservation: if no op in this segment
     touches `a`, the segment's apply preserves the byte at `a`. -/
 theorem SegmentOps.apply_no_touch
-    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
     {a : UInt64}
     (h_no_mmap : ∀ m, so.mmap = some m →
       ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
@@ -369,7 +369,7 @@ theorem SegmentOps.apply_no_touch
 /-- Per-elf no-touch preservation: if no op in any segment of this
     elf touches `a`, the elf's apply preserves the byte at `a`. -/
 theorem ElfOps.apply_no_touch
-    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
     {a : UInt64}
     (h_no_mmap : ∀ (k : Nat) (h_k : k < eo.segments.size) (m : MmapOp),
       (eo.segments[k]'h_k).mmap = some m →
@@ -404,7 +404,7 @@ theorem ElfOps.apply_no_touch
     `SegmentOps.apply_inside_mmap_no_overwrite`; the case `k < jdx.val`
     propagates via `SegmentOps.apply_no_touch`. -/
 theorem ElfOps.apply_at_responsible_mmap
-    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
     {k : Nat} (h_k : k < eo.segments.size)
     {m : MmapOp}
     (h_mmap : (eo.segments[k]'h_k).mmap = some m)
@@ -455,7 +455,7 @@ theorem ElfOps.apply_at_responsible_mmap
     `ElfOps.apply_at_responsible_mmap` but with a `StoreOp` at index
     `store_idx` of segments[k] as the responsible op. -/
 theorem ElfOps.apply_at_responsible_store
-    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
     {k : Nat} (h_k : k < eo.segments.size)
     {store_idx : Nat} (h_si : store_idx < (eo.segments[k]'h_k).stores.size)
     {a : UInt64}
@@ -517,7 +517,7 @@ theorem ElfOps.apply_at_responsible_store
     responsible segment, which get overwritten or run earlier), ⇒ the
     materialize pipeline leaves byte `a` at the store's LE byte. -/
 theorem LoadOps.apply_at_responsible_store
-    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
     {i : Nat} (h_i : i < lo.size)
     {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
     {store_idx : Nat} (h_si : store_idx < ((lo[i]'h_i).segments[k]'h_k).stores.size)
@@ -598,7 +598,7 @@ theorem LoadOps.apply_at_responsible_store
     This is the structural workhorse for `bss_zeroed` and for the
     "post-m" half of `bytes_preserved`. -/
 theorem LoadOps.apply_no_touch
-    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
     {a : UInt64}
     (h_no_mmap : ∀ (i : Nat) (h_i : i < lo.size)
                   (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (m : MmapOp),
@@ -634,7 +634,7 @@ theorem LoadOps.apply_no_touch
     `ElfOps.apply_at_responsible_mmap` but lifted one level: the
     nested induction navigates `(i, k)` instead of just `k`. -/
 theorem LoadOps.apply_at_responsible_mmap
-    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
     {i : Nat} (h_i : i < lo.size)
     {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
     {m : MmapOp}
@@ -702,7 +702,7 @@ theorem LoadOps.apply_at_responsible_mmap
     elf effects drop through when the byte of interest is in an
     earlier elf's range. -/
 theorem LoadOps.apply_preserves_outside_reservation
-    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
     {rsvAddr rsvLen a : UInt64}
     (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
@@ -788,7 +788,7 @@ private theorem other_mmap_not_touches
     `docs/plan.md`) would derive both internally from the
     `Plan/Layout.lean` segment-geometry invariants. -/
 theorem bytes_preserved
-    {n : Nat} (lo : Materialize.LoadOps n) (fs : FileSnap)
+    {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
     {rsvAddr rsvLen : UInt64} (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
     (i : Nat) (h_i : i < lo.size)
     (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
@@ -832,7 +832,7 @@ theorem bytes_preserved
     in the BSS range; the proof case-splits on which sub-range it
     falls into. -/
 theorem bss_zeroed
-    {n : Nat} (lo : Materialize.LoadOps n) (fs : FileSnap)
+    {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
     (a : UInt64)
     -- Preconditions phrased structurally; full BoundPlan-aware form
     -- will refine these to "a in [vaddr+filesz, vaddr+memsz) of some
@@ -880,7 +880,7 @@ theorem bss_zeroed
     The within-segment-but-after hypothesis `h_no_later_in_seg`
     captures "no later store in the same segment overlaps a". -/
 theorem relocs_applied
-    {n : Nat} (lo : Materialize.LoadOps n) (fs : FileSnap)
+    {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
     (i : Nat) (h_i : i < lo.size)
     (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
     (store_idx : Nat) (h_si : store_idx < ((lo[i]'h_i).segments[k]'h_k).stores.size)
