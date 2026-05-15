@@ -17,6 +17,17 @@ Search rules:
   2. Otherwise search in order: `LD_LIBRARY_PATH`, owning object's
      `DT_RUNPATH`, caller-supplied defaults.
   `DT_RPATH` is deprecated and intentionally not honoured.
+
+File layout (top-to-bottom dependency order):
+  · Search-path resolution (parsePathList, SearchContext, searchCandidates)
+  · LoadedObject (one entry of the graph)
+  · Pure dedup primitives + soundness (canonicalName, alreadyLoaded,
+    findLoadedIdx, nodup_names_push_of_alreadyLoaded_false)
+  · Edge accumulation (recordEdge + size/bounds preservation)
+  · LoadGraph (the BFS state = output bundle) + LoadGraph.{main,
+    recordDep, appendChild} — the methods bundle invariant maintenance
+    so `discoverLoop` only calls them.
+  · WorkItem, StepResult, step (BFS state machine + per-item decision)
 -/
 
 import LeanLoad.Parse.RawElf
@@ -67,6 +78,10 @@ def searchCandidates (soname : String) (ctx : SearchContext) : Array String :=
 #guard searchCandidates "/abs/path" {} = #["/abs/path"]
 #guard searchCandidates "libfoo.so" { runpath := some "/a:/b" } = #["/a/libfoo.so", "/b/libfoo.so"]
 
+-- ============================================================================
+-- LoadedObject — one entry of the graph.
+-- ============================================================================
+
 /-- One loaded object. Identified by its `DT_SONAME` if present (else
     by the `DT_NEEDED` string we resolved through). -/
 structure LoadedObject where
@@ -84,6 +99,127 @@ structure LoadedObject where
       well-formedness held and every dynamic relocation was located
       against a covering segment. -/
   elf  : Elaborate.Elf
+
+-- ============================================================================
+-- Pure dedup primitives.
+--
+-- The BFS uses `alreadyLoaded` (Bool dedup check) before pushing, and
+-- `findLoadedIdx` (returns the matching index for edge recording).
+-- `canonicalName` assigns the dedup key from a path + parsed elf.
+-- ============================================================================
+
+/-- The canonical name we use to deduplicate an elaborated ELF.
+    Prefer `DT_SONAME`; fall back to the path's basename. The path
+    fallback gives a *file-canonical* dedup key — two `DT_NEEDED`
+    strings that resolve to the same file get the same key even
+    when `DT_SONAME` is absent. Basename (rather than full path)
+    keeps the name short for diagnostics; collisions only occur
+    when loading two different files with the same filename, which
+    is unusual. -/
+def canonicalName (path : String) (elf : Elaborate.Elf) : String :=
+  elf.soname.getD ((path.splitOn "/").getLast?.getD path)
+
+/-- The dedup primitive: is some object already loaded under this name?
+    Pure; the BFS loop calls it before resolving / parsing each
+    `DT_NEEDED` entry, and a second time after canonicalisation. -/
+def alreadyLoaded (objs : Array LoadedObject) (name : String) : Bool :=
+  objs.any (·.name == name)
+
+/-- Linear search for an object by name. Defined via `Array.findIdx?`
+    so the size bound (`findLoadedIdx_lt` below) drops out of the core
+    `Array.of_findIdx?_eq_some` characterisation. Used by the BFS to
+    record dep edges to already-loaded objects. -/
+def findLoadedIdx (objs : Array LoadedObject) (name : String) : Option Nat :=
+  objs.findIdx? (·.name == name)
+
+/-- The index returned by `findLoadedIdx` is `< objs.size`. -/
+theorem findLoadedIdx_lt (objs : Array LoadedObject) (name : String) {idx : Nat}
+    (h : findLoadedIdx objs name = some idx) : idx < objs.size := by
+  have h_match := Array.of_findIdx?_eq_some (xs := objs) (p := (·.name == name)) h
+  -- The match yields `objs[idx]? = some _` (else `false = true`).
+  match h_get : objs[idx]? with
+  | some _ =>
+    obtain ⟨h_lt, _⟩ := Array.getElem?_eq_some_iff.mp h_get
+    exact h_lt
+  | none =>
+    rw [h_get] at h_match
+    exact absurd h_match (by simp)
+
+/-- The BFS dedup primitive returns `true` iff some loaded object
+    already carries the given name. -/
+theorem alreadyLoaded_iff
+    (objs : Array LoadedObject) (name : String) :
+    alreadyLoaded objs name = true ↔ ∃ obj ∈ objs, obj.name = name := by
+  unfold alreadyLoaded
+  rw [Array.any_eq_true']
+  simp
+
+/-- Dedup primitive's correctness: if the loop's invariant
+    `objs.names` is `Nodup` holds and the next candidate's name passes
+    the `alreadyLoaded` check (returns `false`), pushing it preserves
+    the invariant. Consumed by `LoadGraph.appendChild`. -/
+theorem nodup_names_push_of_alreadyLoaded_false
+    (objs : Array LoadedObject) (obj : LoadedObject)
+    (h_nodup : (objs.map (·.name)).toList.Nodup)
+    (h_fresh : alreadyLoaded objs obj.name = false) :
+    ((objs.push obj).map (·.name)).toList.Nodup := by
+  rw [Array.map_push, Array.toList_push, List.nodup_append]
+  refine ⟨h_nodup, by simp, ?_⟩
+  intro a ha b hb hab
+  rw [List.mem_singleton] at hb
+  subst hb
+  have h_in : ∃ o ∈ objs, o.name = obj.name := by
+    obtain ⟨o, ho_mem, ho_name⟩ := Array.mem_map.mp (Array.mem_toList_iff.mp ha)
+    exact ⟨o, ho_mem, ho_name.trans hab⟩
+  exact (Bool.eq_false_iff.mp h_fresh) ((alreadyLoaded_iff objs obj.name).mpr h_in)
+
+-- ============================================================================
+-- Edge accumulation. The push primitive over `deps`'s `Array (Array Nat)`
+-- shape, plus its size + bounds preservation lemmas. Both LoadGraph
+-- methods (`recordDep`, `appendChild`) consume these to maintain the
+-- per-LoadGraph invariants in one place.
+-- ============================================================================
+
+/-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
+    array unchanged when `src` is out of range, but in practice every
+    `src` we pass came from a `WorkItem` we emitted, so the in-range
+    case is the only one ever exercised. -/
+def recordEdge (deps : Array (Array Nat)) (src tgt : Nat) :
+    Array (Array Nat) :=
+  deps.modify src (·.push tgt)
+
+theorem recordEdge_size (deps : Array (Array Nat)) (src tgt : Nat) :
+    (recordEdge deps src tgt).size = deps.size := by
+  unfold recordEdge; exact Array.size_modify
+
+/-- If every existing target was `< N` and the new target is `< N`,
+    then every target after `recordEdge` is `< N`. -/
+theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
+    {N : Nat}
+    (h_bounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < N)
+    (h_tgt : tgt < N) :
+    ∀ (i : Nat) (h : i < (recordEdge deps src tgt).size),
+      ∀ t ∈ (recordEdge deps src tgt)[i], t < N := by
+  intro i h_lt t h_mem
+  have h_lt_orig : i < deps.size := by rw [recordEdge_size] at h_lt; exact h_lt
+  -- Unfold the modify via Array.getElem_modify (returns `if`-form).
+  have h_get :
+      (recordEdge deps src tgt)[i]'h_lt =
+        (if src = i then (·.push tgt) deps[i] else deps[i]) := by
+    unfold recordEdge
+    exact Array.getElem_modify h_lt
+  rw [h_get] at h_mem
+  by_cases h_eq : src = i
+  · rw [if_pos h_eq] at h_mem
+    rcases Array.mem_push.mp h_mem with h_old | h_eq_t
+    · exact h_bounds i h_lt_orig t h_old
+    · subst h_eq_t; exact h_tgt
+  · rw [if_neg h_eq] at h_mem
+    exact h_bounds i h_lt_orig t h_mem
+
+-- ============================================================================
+-- LoadGraph — the BFS state carrier and final discovery output.
+-- ============================================================================
 
 /-- Output of `Discover` — the loaded objects in BFS discovery order
     with `main` at index 0. Carries the structural invariants needed
@@ -135,51 +271,85 @@ namespace LoadGraph
     non-emptiness witness. -/
 def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
 
+/-- Record a dep edge `src → tgt` to an already-loaded object. The
+    target's bound is the caller's obligation — `discoverLoop` discharges
+    it from `step_skip_tgt_lt` (BFS dedup hit) or `findLoadedIdx_lt`
+    (post-canonicalisation dedup hit). All four `LoadGraph` invariants
+    are preserved by `recordEdge_size` + `recordEdge_bounds`; objects
+    and namesNodup are untouched. -/
+def recordDep (g : LoadGraph) (src tgt : Nat) (h_tgt : tgt < g.objects.size) :
+    LoadGraph :=
+  { g with
+    deps       := recordEdge g.deps src tgt
+    depsSize   := by rw [recordEdge_size]; exact g.depsSize
+    depsBounds := recordEdge_bounds g.deps src tgt g.depsBounds h_tgt }
+
+/-- Append a freshly-discovered object as `g.objects.size`'s entry,
+    plus the dep edge `src → newIdx` from the requesting object. The
+    fresh row in `deps` starts empty; subsequent BFS steps fill it as
+    the new object's NEEDED items resolve. The `h_fresh` precondition
+    (no existing object carries this name) is what
+    `nodup_names_push_of_alreadyLoaded_false` needs to preserve
+    `namesNodup`. -/
+def appendChild (g : LoadGraph) (src : Nat) (obj : LoadedObject)
+    (h_fresh : alreadyLoaded g.objects obj.name = false) :
+    LoadGraph :=
+  let newIdx       := g.objects.size
+  let objs'        := g.objects.push obj
+  let depsWithEdge := recordEdge g.deps src newIdx
+  let deps'        := depsWithEdge.push #[]
+  have h_pos' : 0 < objs'.size := by rw [Array.size_push]; omega
+  have h_size_re : depsWithEdge.size = g.objects.size := by
+    rw [recordEdge_size]; exact g.depsSize
+  have h_size' : deps'.size = objs'.size := by
+    show (depsWithEdge.push #[]).size = (g.objects.push obj).size
+    rw [Array.size_push, Array.size_push, h_size_re]
+  -- Lift the old-deps bound to the new (larger) objects array, then
+  -- chain through `recordEdge_bounds` and the trailing `push #[]`.
+  have h_old_bounds_lifted : ∀ (i : Nat) (h : i < g.deps.size),
+      ∀ t ∈ g.deps[i], t < objs'.size := by
+    intro i h_lt_i t h_mem
+    have h_t := g.depsBounds i h_lt_i t h_mem
+    show t < (g.objects.push obj).size
+    rw [Array.size_push]; omega
+  have h_newIdx_lt : newIdx < objs'.size := by
+    show g.objects.size < (g.objects.push obj).size
+    rw [Array.size_push]; omega
+  have h_bounds_re : ∀ (i : Nat) (h : i < depsWithEdge.size),
+      ∀ t ∈ depsWithEdge[i], t < objs'.size :=
+    recordEdge_bounds g.deps src newIdx h_old_bounds_lifted h_newIdx_lt
+  have h_bounds' : ∀ (i : Nat) (h : i < deps'.size),
+      ∀ t ∈ deps'[i], t < objs'.size := by
+    intro i h_lt t h_mem
+    have h_split : i < depsWithEdge.size ∨ i = depsWithEdge.size := by
+      have h_lt' : i < (depsWithEdge.push #[]).size := h_lt
+      rw [Array.size_push] at h_lt'; omega
+    rcases h_split with h_lt_old | h_eq
+    · have h_get : deps'[i]'h_lt = depsWithEdge[i]'h_lt_old := by
+        show (depsWithEdge.push #[])[i]'h_lt = _
+        rw [Array.getElem_push, dif_pos h_lt_old]
+      rw [h_get] at h_mem
+      exact h_bounds_re i h_lt_old t h_mem
+    · subst h_eq
+      have h_get : deps'[depsWithEdge.size]'h_lt = (#[] : Array Nat) := by
+        show (depsWithEdge.push #[])[depsWithEdge.size]'h_lt = _
+        rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
+      rw [h_get] at h_mem
+      exact absurd h_mem (by simp)
+  { objects    := objs'
+    deps       := deps'
+    sizePos    := h_pos'
+    namesNodup :=
+      nodup_names_push_of_alreadyLoaded_false g.objects obj g.namesNodup h_fresh
+    depsSize   := h_size'
+    depsBounds := h_bounds' }
+
 end LoadGraph
 
 -- ============================================================================
--- Pure helpers
--- ============================================================================
-
-/-- The canonical name we use to deduplicate an elaborated ELF.
-    Prefer `DT_SONAME`; fall back to the path's basename. The path
-    fallback gives a *file-canonical* dedup key — two `DT_NEEDED`
-    strings that resolve to the same file get the same key even
-    when `DT_SONAME` is absent. Basename (rather than full path)
-    keeps the name short for diagnostics; collisions only occur
-    when loading two different files with the same filename, which
-    is unusual. -/
-def canonicalName (path : String) (elf : Elaborate.Elf) : String :=
-  elf.soname.getD ((path.splitOn "/").getLast?.getD path)
-
-/-- The dedup primitive: is some object already loaded under this name?
-    Pure; the BFS loop calls it before resolving / parsing each
-    `DT_NEEDED` entry, and a second time after canonicalisation. -/
-def alreadyLoaded (objs : Array LoadedObject) (name : String) : Bool :=
-  objs.any (·.name == name)
-
-/-- Linear search for an object by name. Defined via `Array.findIdx?`
-    so the size bound (`findLoadedIdx_lt` below) drops out of the core
-    `Array.of_findIdx?_eq_some` characterisation. Used by the BFS to
-    record dep edges to already-loaded objects. -/
-def findLoadedIdx (objs : Array LoadedObject) (name : String) : Option Nat :=
-  objs.findIdx? (·.name == name)
-
-/-- The index returned by `findLoadedIdx` is `< objs.size`. -/
-theorem findLoadedIdx_lt (objs : Array LoadedObject) (name : String) {idx : Nat}
-    (h : findLoadedIdx objs name = some idx) : idx < objs.size := by
-  have h_match := Array.of_findIdx?_eq_some (xs := objs) (p := (·.name == name)) h
-  -- The match yields `objs[idx]? = some _` (else `false = true`).
-  match h_get : objs[idx]? with
-  | some _ =>
-    obtain ⟨h_lt, _⟩ := Array.getElem?_eq_some_iff.mp h_get
-    exact h_lt
-  | none =>
-    rw [h_get] at h_match
-    exact absurd h_match (by simp)
-
--- ============================================================================
--- Plan: per-step decision + state integration
+-- BFS state machine: WorkItem queue + per-item decision (`step`).
+-- The queue is managed by `discoverLoop`; `step` is called only on a
+-- concrete head element.
 -- ============================================================================
 
 /-- One BFS work item: a `DT_NEEDED` soname, with its source-object
@@ -215,36 +385,19 @@ def workOfElf (sourceIdx : Nat) (elf : Elaborate.Elf) : List WorkItem :=
   elf.needed.toList.map fun n =>
     { sourceIdx, runpath := elf.runpath, soname := n }
 
--- ============================================================================
--- Soundness theorems for the BFS dedup primitive.
--- ============================================================================
-
-/-- The BFS dedup primitive returns `true` iff some loaded object
-    already carries the given name. -/
-theorem alreadyLoaded_iff
-    (objs : Array LoadedObject) (name : String) :
-    alreadyLoaded objs name = true ↔ ∃ obj ∈ objs, obj.name = name := by
-  unfold alreadyLoaded
-  rw [Array.any_eq_true']
-  simp
-
-/-- Dedup primitive's correctness: if the loop's invariant
-    `objs.names` is `Nodup` holds and the next candidate's name passes
-    the `alreadyLoaded` check (returns `false`), pushing it preserves
-    the invariant. -/
-theorem nodup_names_push_of_alreadyLoaded_false
-    (objs : Array LoadedObject) (obj : LoadedObject)
-    (h_nodup : (objs.map (·.name)).toList.Nodup)
-    (h_fresh : alreadyLoaded objs obj.name = false) :
-    ((objs.push obj).map (·.name)).toList.Nodup := by
-  rw [Array.map_push, Array.toList_push, List.nodup_append]
-  refine ⟨h_nodup, by simp, ?_⟩
-  intro a ha b hb hab
-  rw [List.mem_singleton] at hb
-  subst hb
-  have h_in : ∃ o ∈ objs, o.name = obj.name := by
-    obtain ⟨o, ho_mem, ho_name⟩ := Array.mem_map.mp (Array.mem_toList_iff.mp ha)
-    exact ⟨o, ho_mem, ho_name.trans hab⟩
-  exact (Bool.eq_false_iff.mp h_fresh) ((alreadyLoaded_iff objs obj.name).mpr h_in)
+/-- The `.skip` arm of `step` carries `tgt < objs.size`, because
+    `step` produces `.skip` only when `findLoadedIdx` returned the
+    matching index — which is bounded by `findLoadedIdx_lt`. -/
+theorem step_skip_tgt_lt {objs : Array LoadedObject}
+    {item : WorkItem} {tgt : Nat}
+    (h : step objs item = .skip tgt) :
+    tgt < objs.size := by
+  unfold step at h
+  split at h
+  · rename_i tgt' h_find
+    have h_eq : tgt = tgt' := by injection h with h_tgt; exact h_tgt.symm
+    rw [h_eq]
+    exact findLoadedIdx_lt objs item.soname h_find
+  · cases h
 
 end LeanLoad.Discover
