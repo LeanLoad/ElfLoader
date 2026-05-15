@@ -318,6 +318,61 @@ theorem ElfOps.apply_no_touch
       exact ih
   exact h_full
 
+/-- Within-elf positive preservation: m at segment k of eo, no other
+    op in eo touches `a`, ⇒ the elf's apply leaves byte `a` at m's
+    file byte. Proof uses `Array.foldl_induction` with a motive that
+    encodes "if past k, byte at a is fs.byte; otherwise don't care".
+    The case `k = jdx.val` discharges via
+    `SegmentOps.apply_inside_mmap_no_overwrite`; the case `k < jdx.val`
+    propagates via `SegmentOps.apply_no_touch`. -/
+theorem ElfOps.apply_at_responsible_mmap
+    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {k : Nat} (h_k : k < eo.segments.size)
+    {m : MmapOp}
+    (h_mmap : (eo.segments[k]'h_k).mmap = some m)
+    {a : UInt64}
+    (h_a_lo : m.addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
+    (h_other_mmaps : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (m' : MmapOp),
+      (eo.segments[k']'h_k').mmap = some m' → k' ≠ k →
+      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
+    (h_no_zero : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (z : ZeroOp),
+      (eo.segments[k']'h_k').zero = some z →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_no_store : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (s : StoreOp),
+      s ∈ (eo.segments[k']'h_k').stores →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.ElfOps.apply fs eo mem) a
+      = fs.byte m.handle (m.offset + (a - m.addr)) := by
+  unfold Materialize.ElfOps.apply
+  let motive : Nat → Memory → Prop := fun j_idx mem' =>
+    k < j_idx → mem' a = fs.byte m.handle (m.offset + (a - m.addr))
+  have h_full : motive eo.segments.size
+      (eo.segments.foldl (init := mem) fun m' so => Materialize.SegmentOps.apply fs so m') := by
+    refine Array.foldl_induction motive ?_ ?_
+    · intro h_lt; omega
+    · intro jdx acc ih h_lt
+      by_cases h_eq : k = jdx.val
+      · -- Responsible segment: jdx.val = k.
+        -- Substitute k := jdx.val so the goal aligns with apply_inside_mmap_no_overwrite.
+        subst h_eq
+        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
+        exact SegmentOps.apply_inside_mmap_no_overwrite h_mmap h_a_lo h_a_hi
+          (fun z h => h_no_zero jdx.val jdx.isLt z h)
+          (fun s h => h_no_store jdx.val jdx.isLt s h)
+      · -- Different segment, must be post-k since `k < jdx.val + 1` and `k ≠ jdx.val`.
+        have h_post_k : k < jdx.val := by
+          have h_lt' : k < jdx.val + 1 := h_lt
+          omega
+        have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
+        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
+        rw [SegmentOps.apply_no_touch
+              (fun m' h_m' => h_other_mmaps jdx.val jdx.isLt m' h_m' h_jdx_ne_k)
+              (fun z h => h_no_zero jdx.val jdx.isLt z h)
+              (fun s h => h_no_store jdx.val jdx.isLt s h)]
+        exact ih h_post_k
+  exact h_full h_k
+
 /-- Top-level no-touch preservation: if no op in the entire tree
     touches `a`, the materialize pipeline preserves the byte at `a`.
     This is the structural workhorse for `bss_zeroed` and for the
@@ -352,6 +407,74 @@ theorem LoadOps.apply_no_touch
             (fun k h_k s h => h_no_store idx.val idx.isLt k h_k s h)]
       exact ih
   exact h_full
+
+/-- Top-level positive preservation: m at segment k of elf i, no
+    other op in the tree touches `a`, ⇒ the materialize pipeline
+    leaves byte `a` at m's file byte. Same shape as
+    `ElfOps.apply_at_responsible_mmap` but lifted one level: the
+    nested induction navigates `(i, k)` instead of just `k`. -/
+theorem LoadOps.apply_at_responsible_mmap
+    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {i : Nat} (h_i : i < lo.size)
+    {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
+    {m : MmapOp}
+    (h_mmap : ((lo[i]'h_i).segments[k]'h_k).mmap = some m)
+    {a : UInt64}
+    (h_a_lo : m.addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
+    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
+      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
+    (h_no_zero : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                   (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (z : ZeroOp),
+      ((lo[i']'h_i').segments[k']'h_k').zero = some z →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_no_store : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                    (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (s : StoreOp),
+      s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.LoadOps.apply fs lo mem) a
+      = fs.byte m.handle (m.offset + (a - m.addr)) := by
+  unfold Materialize.LoadOps.apply
+  let motive : Nat → Memory → Prop := fun idx mem' =>
+    i < idx → mem' a = fs.byte m.handle (m.offset + (a - m.addr))
+  have h_full : motive lo.size
+      (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · intro h_lt; omega
+    · intro idx acc ih h_lt
+      by_cases h_eq : i = idx.val
+      · -- Responsible elf: idx.val = i. Apply within-elf via ElfOps.apply_at_responsible_mmap.
+        subst h_eq
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
+        -- Within this elf, segment k contains m. Other segments don't touch a
+        -- (mmaps via `h_other_mmaps` with i' = i (= idx.val); zeros/stores via the
+        -- explicit hypotheses).
+        exact ElfOps.apply_at_responsible_mmap h_k h_mmap h_a_lo h_a_hi
+          (fun k' h_k' m' h_m' h_k'_ne_k =>
+            h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
+              (fun ⟨_, h_k_eq⟩ => h_k'_ne_k h_k_eq))
+          (fun k' h_k' z h => h_no_zero idx.val idx.isLt k' h_k' z h)
+          (fun k' h_k' s h => h_no_store idx.val idx.isLt k' h_k' s h)
+      · -- Different elf, post-i (since i < idx.val + 1 and i ≠ idx.val).
+        have h_post_i : i < idx.val := by
+          have h_lt' : i < idx.val + 1 := h_lt
+          omega
+        have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
+        -- Different elf: every op in lo[idx.val] doesn't touch a.
+        --   Mmaps: ¬(idx.val = i ∧ _) holds since idx.val ≠ i.
+        --   Zeros/stores: direct from hypotheses.
+        rw [ElfOps.apply_no_touch
+              (fun k' h_k' m' h_m' =>
+                h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
+                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))
+              (fun k' h_k' z h => h_no_zero idx.val idx.isLt k' h_k' z h)
+              (fun k' h_k' s h => h_no_store idx.val idx.isLt k' h_k' s h)]
+        exact ih h_post_i
+  exact h_full h_i
 
 /-- Top-level tree preservation: bytes outside the reservation are
     untouched by the entire materialize pipeline. The structural
@@ -388,14 +511,62 @@ theorem LoadOps.apply_preserves_outside_reservation
 -- via `runSafe_image_eq`.
 -- ============================================================================
 
-/-- **bytes_preserved (pre-relocation)** — every byte in every mmap's
-    file-backed range equals the corresponding source-file byte,
-    *outside* any later `StoreOp`'s patch window.
+/-- Helper: derive "no other mmap in the tree touches `a`" from
+    `LoadSafe` plus `a ∈ m`'s range. Three cases:
+      · Different elf (i ≠ i') — `LoadSafe.mmapsDisjoint`.
+      · Same elf, different segment — `ElfSafe.mmapsDisjoint` from
+        `safe.elfs i h_i`.
+      · Same elf, same segment (excluded by `h_diff`). -/
+private theorem other_mmap_not_touches
+    {n : Nat} {lo : Materialize.LoadOps n}
+    {rsvAddr rsvLen : UInt64} (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
+    {i : Nat} (h_i : i < lo.size)
+    {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
+    {m : MmapOp}
+    (h_mmap : ((lo[i]'h_i).segments[k]'h_k).mmap = some m)
+    {a : UInt64}
+    (h_a_lo : m.addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
+    {i' : Nat} (h_i' : i' < lo.size)
+    {k' : Nat} (h_k' : k' < (lo[i']'h_i').segments.size)
+    {m' : MmapOp}
+    (h_mmap' : ((lo[i']'h_i').segments[k']'h_k').mmap = some m')
+    (h_diff : ¬ (i' = i ∧ k' = k)) :
+    ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat) := by
+  rcases Nat.lt_trichotomy i i' with h_lt | h_eq | h_gt
+  · have h_disj := safe.mmapsDisjoint i i' h_i h_i' h_lt k k' h_k h_k' m m' h_mmap h_mmap'
+    intro ⟨h_lo', h_hi'⟩
+    rcases h_disj with h₁ | h₂ <;> omega
+  · subst h_eq
+    -- Different segments in the same elf — extract k' ≠ k from h_diff.
+    have h_k_ne : k' ≠ k := fun h => h_diff ⟨rfl, h⟩
+    have h_safe_elf := safe.elfs i h_i
+    rcases Nat.lt_or_gt_of_ne h_k_ne with h_k_lt | h_k_gt
+    · have h_disj := h_safe_elf.mmapsDisjoint k' k h_k' h_k h_k_lt m' m h_mmap' h_mmap
+      intro ⟨h_lo', h_hi'⟩
+      rcases h_disj with h₁ | h₂ <;> omega
+    · have h_disj := h_safe_elf.mmapsDisjoint k k' h_k h_k' h_k_gt m m' h_mmap h_mmap'
+      intro ⟨h_lo', h_hi'⟩
+      rcases h_disj with h₁ | h₂ <;> omega
+  · have h_disj := safe.mmapsDisjoint i' i h_i' h_i h_gt k' k h_k' h_k m' m h_mmap' h_mmap
+    intro ⟨h_lo', h_hi'⟩
+    rcases h_disj with h₁ | h₂ <;> omega
 
-    Recipe (when filling in): take the responsible mmap's
-    `MmapOp.apply_inside`; chain `apply_outside` over every
-    later op in tree order using `LoadSafe`'s disjointness +
-    the explicit "outside-stores" hypothesis. -/
+/-- **bytes_preserved** — every byte in every mmap's file-backed
+    range equals the corresponding source-file byte, *outside* any
+    `ZeroOp` or `StoreOp` patch window across the whole tree.
+
+    Recipe: derive "no other mmap touches `a`" from
+    `LoadSafe.mmapsDisjoint` (cross-elf) + `ElfSafe.mmapsDisjoint`
+    (within-elf) via `other_mmap_not_touches`, then apply
+    `LoadOps.apply_at_responsible_mmap`.
+
+    The two explicit hypotheses `h_no_zero` and `h_no_store` carry
+    the disjointness witnesses that `LoadSafe` does not currently
+    provide. A future `LoadSafe.zeroDisjointFromMmap` /
+    `LoadSafe.storesPairwiseDisjoint` extension (recommended in
+    `docs/plan.md`) would derive both internally from the
+    `Plan/Layout.lean` segment-geometry invariants. -/
 theorem bytes_preserved
     {n : Nat} (lo : Materialize.LoadOps n) (fs : FileSnap)
     {rsvAddr rsvLen : UInt64} (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
@@ -406,7 +577,12 @@ theorem bytes_preserved
     (a : UInt64)
     (h_a_lo : m.addr.toNat ≤ a.toNat)
     (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
-    -- "a is not in any store's patch window across the whole tree"
+    (h_no_zero : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                   (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size)
+                   (z : ZeroOp),
+                   ((lo[i']'h_i').segments[k']'h_k').zero = some z →
+                   ¬ (z.addr.toNat ≤ a.toNat ∧
+                      a.toNat < z.addr.toNat + z.len.toNat))
     (h_no_store : ∀ (i' : Nat) (h_i' : i' < lo.size)
                     (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size)
                     (s : StoreOp),
@@ -414,53 +590,13 @@ theorem bytes_preserved
                     ¬ (s.addr.toNat ≤ a.toNat ∧
                        a.toNat < s.addr.toNat + s.byteLen.toNat)) :
     (Materialize.LoadOps.apply fs lo Memory.zero) a
-      = fs.byte m.handle (m.offset + (a - m.addr)) := by
-  -- Proof skeleton (to fill in once build stabilises and the
-  -- BoundPlan interface settles):
-  --
-  -- 1. `LoadOps.apply` is a left-fold over `lo`, each step folding
-  --    over `eo.segments`, each step applying mmap → zero → stores
-  --    → mprotect. Express the fold as
-  --       [pre-op ops] ++ [the mmap m at position (i,k)] ++ [post-op ops]
-  --    via `Array.foldl_eq_foldl_split` (existing in Mathlib) on
-  --    both the elf array and the segment array.
-  --
-  -- 2. After "the mmap m" step, the byte at `a` equals
-  --    `fs.byte m.handle (m.offset + (a - m.addr))` by
-  --    `MmapOp.apply_inside h_a_lo h_a_hi`.
-  --
-  -- 3. For every post-op op in the chain:
-  --     · The same segment's zero/stores/mprotect:
-  --         - zero  — disjoint from mmap by segment geometry
-  --                   (zero covers [seg.vaddr+filesz, +partialBssLen),
-  --                    mmap covers [pageVaddr, +fileOverlayLen) — the
-  --                    SegmentLayout's `vaddr_memsz_le_pageEnd` +
-  --                    `fileOverlay_le_pageLength` give disjointness).
-  --                   Not currently witnessed by `LoadSafe`; will
-  --                   need a `SegmentSafe.zeroVsMmapDisjoint` field.
-  --         - stores — explicit hypothesis `h_no_store`.
-  --         - mprotect — byte-level no-op (`MprotectOp.apply_at`).
-  --     · Later segments in the same elf:
-  --         - mmaps disjoint by `ElfSafe.mmapsDisjoint`.
-  --         - zeros disjoint from earlier mmap — needs a similar
-  --           cross-segment zero/mmap disjointness witness or
-  --           reasoning via mmap disjointness + geometry.
-  --         - stores — explicit hypothesis.
-  --     · Later elves:
-  --         - mmaps disjoint by `LoadSafe.mmapsDisjoint`.
-  --         - zeros / stores — explicit hypothesis (or future
-  --           LoadSafe extensions).
-  --
-  -- 4. Compose the per-op `apply_outside` lemmas through the
-  --    post-op chain via the same `Array.foldl_induction` pattern
-  --    used in `LoadOps.apply_preserves_outside_reservation`.
-  --
-  -- Notes: `apply_preserves_outside_reservation` is a *related*
-  -- structural fact (preserves bytes outside the *reservation*),
-  -- but `bytes_preserved` needs preservation along a *single
-  -- byte's worldline* across ops that touch the reservation but
-  -- not `a`. Different shape; both rely on per-op `apply_outside`.
-  sorry
+      = fs.byte m.handle (m.offset + (a - m.addr)) :=
+  LoadOps.apply_at_responsible_mmap h_i h_k h_mmap h_a_lo h_a_hi
+    (fun _ h_i' _ h_k' _ h_mmap' h_diff =>
+      other_mmap_not_touches safe h_i h_k h_mmap h_a_lo h_a_hi
+        h_i' h_k' h_mmap' h_diff)
+    h_no_zero
+    h_no_store
 
 /-- **bss_zeroed** — every byte in a PT_LOAD's
     `[vaddr + filesz, vaddr + memsz)` range reads `0`, outside
