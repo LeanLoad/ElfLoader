@@ -67,7 +67,7 @@ private theorem MmapOp.apply_preserves_outside
     {rsvAddr rsvLen : UInt64} {a : UInt64}
     (h_inRsv : Runtime.InRange m.addr m.len rsvAddr rsvLen)
     (h_outside : ¬ InReservation rsvAddr rsvLen a) :
-    (m.apply fs mem) a = mem a := by
+    (m.apply fs mem).byte a = mem.byte a := by
   apply LeanLoad.MmapOp.apply_outside
   -- Need: ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat)
   obtain ⟨h_lo, h_hi⟩ := h_inRsv
@@ -84,7 +84,7 @@ private theorem ZeroOp.apply_preserves_outside
     {rsvAddr rsvLen : UInt64} {a : UInt64}
     (h_inRsv : Runtime.InRange z.addr z.len rsvAddr rsvLen)
     (h_outside : ¬ InReservation rsvAddr rsvLen a) :
-    (z.apply mem) a = mem a := by
+    (z.apply mem).byte a = mem.byte a := by
   apply LeanLoad.ZeroOp.apply_outside
   obtain ⟨h_lo, h_hi⟩ := h_inRsv
   intro ⟨h_a_lo, h_a_hi⟩
@@ -98,7 +98,7 @@ private theorem StoreOp.apply_preserves_outside
     {rsvAddr rsvLen : UInt64} {a : UInt64}
     (h_inRsv : Runtime.InRange s.addr s.byteLen rsvAddr rsvLen)
     (h_outside : ¬ InReservation rsvAddr rsvLen a) :
-    (s.apply mem) a = mem a := by
+    (s.apply mem).byte a = mem.byte a := by
   apply LeanLoad.StoreOp.apply_outside
   obtain ⟨h_lo, h_hi⟩ := h_inRsv
   intro ⟨h_a_lo, h_a_hi⟩
@@ -119,13 +119,13 @@ private theorem stores_foldl_outside_rsv
     {rsvAddr rsvLen a : UInt64}
     (h_each : ∀ s ∈ stores, Runtime.InRange s.addr s.byteLen rsvAddr rsvLen)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
-    (stores.foldl (init := mem) fun m s => s.apply m) a = mem a := by
-  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+    (stores.foldl (init := mem) fun m s => s.apply m).byte a = mem.byte a := by
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.byte a = mem.byte a
   have h_full : motive stores.size (stores.foldl (init := mem) fun m s => s.apply m) := by
     refine Array.foldl_induction motive ?_ ?_
-    · show mem a = mem a; rfl
+    · show mem.byte a = mem.byte a; rfl
     · intro idx acc ih
-      show (stores[idx].apply acc) a = mem a
+      show (stores[idx].apply acc).byte a = mem.byte a
       have h_mem : stores[idx] ∈ stores := stores.getElem_mem idx.isLt
       rw [StoreOp.apply_preserves_outside (h_each _ h_mem) h_out]
       exact ih
@@ -140,13 +140,13 @@ private theorem stores_foldl_no_touch
     (stores : Array StoreOp) (mem : Memory) {a : UInt64}
     (h_each : ∀ s ∈ stores,
       ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (stores.foldl (init := mem) fun m s => s.apply m) a = mem a := by
-  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+    (stores.foldl (init := mem) fun m s => s.apply m).byte a = mem.byte a := by
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.byte a = mem.byte a
   have h_full : motive stores.size (stores.foldl (init := mem) fun m s => s.apply m) := by
     refine Array.foldl_induction motive ?_ ?_
-    · show mem a = mem a; rfl
+    · show mem.byte a = mem.byte a; rfl
     · intro idx acc ih
-      show (stores[idx].apply acc) a = mem a
+      show (stores[idx].apply acc).byte a = mem.byte a
       have h_mem : stores[idx] ∈ stores := stores.getElem_mem idx.isLt
       rw [LeanLoad.StoreOp.apply_outside (h_each _ h_mem)]
       exact ih
@@ -172,13 +172,13 @@ private theorem stores_foldl_at_responsible_store
       ¬ ((stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
          a.toNat < (stores[idx']'h_idx').addr.toNat +
                    (stores[idx']'h_idx').byteLen.toNat)) :
-    (stores.foldl (init := mem) fun m s => s.apply m) a
+    (stores.foldl (init := mem) fun m s => s.apply m).byte a
       = ((stores[store_idx]'h_idx).value >>>
          UInt64.ofNat (8 * (a.toNat -
                             (stores[store_idx]'h_idx).addr.toNat))).toUInt8 := by
   let motive : Nat → Memory → Prop := fun n mem' =>
     store_idx < n →
-      mem' a = ((stores[store_idx]'h_idx).value >>>
+      mem'.byte a = ((stores[store_idx]'h_idx).value >>>
                 UInt64.ofNat (8 * (a.toNat -
                                    (stores[store_idx]'h_idx).addr.toNat))).toUInt8
   have h_full : motive stores.size
@@ -189,14 +189,14 @@ private theorem stores_foldl_at_responsible_store
       by_cases h_eq : store_idx = idx.val
       · -- Responsible store: subst flips store_idx ↦ idx.val.
         subst h_eq
-        show (stores[idx.val].apply acc) a = _
+        show (stores[idx.val].apply acc).byte a = _
         exact LeanLoad.StoreOp.apply_inside h_a_lo h_a_hi
       · -- Different store, must be post-store_idx.
         have h_post : store_idx < idx.val := by
           have : store_idx < idx.val + 1 := h_lt
           omega
         have h_no_touch := h_no_later idx.val idx.isLt h_post
-        show (stores[idx.val].apply acc) a = _
+        show (stores[idx.val].apply acc).byte a = _
         rw [LeanLoad.StoreOp.apply_outside h_no_touch]
         exact ih h_post
   exact h_full h_idx
@@ -220,7 +220,7 @@ theorem SegmentOps.apply_at_responsible_store
       ¬ ((so.stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
          a.toNat < (so.stores[idx']'h_idx').addr.toNat +
                    (so.stores[idx']'h_idx').byteLen.toNat)) :
-    (Materialize.SegmentOps.apply fs so mem) a
+    (Materialize.SegmentOps.apply fs so mem).byte a
       = ((so.stores[store_idx]'h_si).value >>>
          UInt64.ofNat (8 * (a.toNat -
                             (so.stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
@@ -245,7 +245,7 @@ theorem SegmentOps.apply_inside_mmap_no_overwrite
       ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
     (h_no_store : ∀ s ∈ so.stores,
       ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.SegmentOps.apply fs so mem) a
+    (Materialize.SegmentOps.apply fs so mem).byte a
       = fs.byte m.handle (m.offset + (a - m.addr)) := by
   unfold Materialize.SegmentOps.apply
   simp only [MprotectOp.apply]
@@ -275,7 +275,7 @@ theorem SegmentOps.apply_preserves_outside_reservation
     {rsvAddr rsvLen a : UInt64}
     (safe : Materialize.SegmentSafe rsvAddr rsvLen so)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
-    (Materialize.SegmentOps.apply fs so mem) a = mem a := by
+    (Materialize.SegmentOps.apply fs so mem).byte a = mem.byte a := by
   unfold Materialize.SegmentOps.apply
   simp only [MprotectOp.apply]
   cases h_mmap : so.mmap with
@@ -307,15 +307,15 @@ theorem ElfOps.apply_preserves_outside_reservation
     {rsvAddr rsvLen a : UInt64}
     (safe : Materialize.ElfSafe rsvAddr rsvLen eo)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
-    (Materialize.ElfOps.apply fs eo mem) a = mem a := by
+    (Materialize.ElfOps.apply fs eo mem).byte a = mem.byte a := by
   unfold Materialize.ElfOps.apply
-  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.byte a = mem.byte a
   have h_full : motive eo.segments.size
       (eo.segments.foldl (init := mem) fun m so => Materialize.SegmentOps.apply fs so m) := by
     refine Array.foldl_induction motive ?_ ?_
-    · show mem a = mem a; rfl
+    · show mem.byte a = mem.byte a; rfl
     · intro idx acc ih
-      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc) a = mem a
+      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc).byte a = mem.byte a
       rw [SegmentOps.apply_preserves_outside_reservation
             (safe.segments idx.val idx.isLt) h_out]
       exact ih
@@ -341,7 +341,7 @@ theorem SegmentOps.apply_no_touch
       ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
     (h_no_store : ∀ s ∈ so.stores,
       ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.SegmentOps.apply fs so mem) a = mem a := by
+    (Materialize.SegmentOps.apply fs so mem).byte a = mem.byte a := by
   unfold Materialize.SegmentOps.apply
   simp only [MprotectOp.apply]
   cases h_mmap : so.mmap with
@@ -380,15 +380,15 @@ theorem ElfOps.apply_no_touch
     (h_no_store : ∀ (k : Nat) (h_k : k < eo.segments.size) (s : StoreOp),
       s ∈ (eo.segments[k]'h_k).stores →
       ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.ElfOps.apply fs eo mem) a = mem a := by
+    (Materialize.ElfOps.apply fs eo mem).byte a = mem.byte a := by
   unfold Materialize.ElfOps.apply
-  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.byte a = mem.byte a
   have h_full : motive eo.segments.size
       (eo.segments.foldl (init := mem) fun m so => Materialize.SegmentOps.apply fs so m) := by
     refine Array.foldl_induction motive ?_ ?_
-    · show mem a = mem a; rfl
+    · show mem.byte a = mem.byte a; rfl
     · intro idx acc ih
-      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc) a = mem a
+      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc).byte a = mem.byte a
       rw [SegmentOps.apply_no_touch
             (fun m h => h_no_mmap idx.val idx.isLt m h)
             (fun z h => h_no_zero idx.val idx.isLt z h)
@@ -415,15 +415,15 @@ theorem LoadOps.apply_no_touch
                    (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (s : StoreOp),
       s ∈ ((lo[i]'h_i).segments[k]'h_k).stores →
       ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.LoadOps.apply fs lo mem) a = mem a := by
+    (Materialize.LoadOps.apply fs lo mem).byte a = mem.byte a := by
   unfold Materialize.LoadOps.apply
-  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.byte a = mem.byte a
   have h_full : motive lo.size
       (lo.foldl (init := mem) fun m eo => Materialize.ElfOps.apply fs eo m) := by
     refine Array.foldl_induction motive ?_ ?_
-    · show mem a = mem a; rfl
+    · show mem.byte a = mem.byte a; rfl
     · intro idx acc ih
-      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = mem a
+      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).byte a = mem.byte a
       rw [ElfOps.apply_no_touch
             (fun k h_k m h => h_no_mmap idx.val idx.isLt k h_k m h)
             (fun k h_k z h => h_no_zero idx.val idx.isLt k h_k z h)
@@ -451,21 +451,21 @@ theorem LoadOps.apply_at_target
     {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
     {a : UInt64} {target : UInt8}
     (h_within : ∀ (acc : Memory),
-      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k]'h_k) acc) a = target)
+      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k]'h_k) acc).byte a = target)
     (h_other_segs : ∀ (k' : Nat) (h_k' : k' < (lo[i]'h_i).segments.size), k' ≠ k →
       ∀ (acc : Memory),
-      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k']'h_k') acc) a = acc a)
+      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k']'h_k') acc).byte a = acc.byte a)
     (h_other_elves : ∀ (i' : Nat) (h_i' : i' < lo.size), i' ≠ i →
       ∀ (acc : Memory),
-      (Materialize.ElfOps.apply fs (lo[i']'h_i') acc) a = acc a) :
-    (Materialize.LoadOps.apply fs lo mem) a = target := by
+      (Materialize.ElfOps.apply fs (lo[i']'h_i') acc).byte a = acc.byte a) :
+    (Materialize.LoadOps.apply fs lo mem).byte a = target := by
   -- Inner: applying the responsible elf produces `target` at `a`.
   have h_elf_i_apply : ∀ (acc : Memory),
-      (Materialize.ElfOps.apply fs (lo[i]'h_i) acc) a = target := by
+      (Materialize.ElfOps.apply fs (lo[i]'h_i) acc).byte a = target := by
     intro acc
     unfold Materialize.ElfOps.apply
     let inner_motive : Nat → Memory → Prop := fun j_idx mem' =>
-      k < j_idx → mem' a = target
+      k < j_idx → mem'.byte a = target
     have h_inner : inner_motive (lo[i]'h_i).segments.size
         ((lo[i]'h_i).segments.foldl (init := acc)
           fun acc' so => Materialize.SegmentOps.apply fs so acc') := by
@@ -474,20 +474,20 @@ theorem LoadOps.apply_at_target
       · intro jdx acc' ih h_lt
         by_cases h_eq : k = jdx.val
         · subst h_eq
-          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc') a = target
+          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc').byte a = target
           exact h_within acc'
         · have h_post_k : k < jdx.val := by
             have : k < jdx.val + 1 := h_lt
             omega
           have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
-          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc') a = target
+          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc').byte a = target
           rw [h_other_segs jdx.val jdx.isLt h_jdx_ne_k acc']
           exact ih h_post_k
     exact h_inner h_k
   -- Outer: fold over elves.
   unfold Materialize.LoadOps.apply
   let outer_motive : Nat → Memory → Prop := fun idx mem' =>
-    i < idx → mem' a = target
+    i < idx → mem'.byte a = target
   have h_outer : outer_motive lo.size
       (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
     refine Array.foldl_induction outer_motive ?_ ?_
@@ -495,13 +495,13 @@ theorem LoadOps.apply_at_target
     · intro idx acc ih h_lt
       by_cases h_eq : i = idx.val
       · subst h_eq
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = target
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).byte a = target
         exact h_elf_i_apply acc
       · have h_post_i : i < idx.val := by
           have : i < idx.val + 1 := h_lt
           omega
         have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = target
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).byte a = target
         rw [h_other_elves idx.val idx.isLt h_idx_ne_i acc]
         exact ih h_post_i
   exact h_outer h_i
@@ -516,15 +516,15 @@ theorem LoadOps.apply_preserves_outside_reservation
     {rsvAddr rsvLen a : UInt64}
     (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
     (h_out : ¬ InReservation rsvAddr rsvLen a) :
-    (Materialize.LoadOps.apply fs lo mem) a = mem a := by
+    (Materialize.LoadOps.apply fs lo mem).byte a = mem.byte a := by
   unfold Materialize.LoadOps.apply
-  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  let motive : Nat → Memory → Prop := fun _ mem' => mem'.byte a = mem.byte a
   have h_full : motive lo.size
       (lo.foldl (init := mem) fun m eo => Materialize.ElfOps.apply fs eo m) := by
     refine Array.foldl_induction motive ?_ ?_
-    · show mem a = mem a; rfl
+    · show mem.byte a = mem.byte a; rfl
     · intro idx acc ih
-      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = mem a
+      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).byte a = mem.byte a
       rw [ElfOps.apply_preserves_outside_reservation
             (safe.elfs idx.val idx.isLt) h_out]
       exact ih
@@ -619,7 +619,7 @@ theorem bytes_preserved
                     s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
                     ¬ (s.addr.toNat ≤ a.toNat ∧
                        a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.LoadOps.apply fs lo Memory.zero) a
+    (Materialize.LoadOps.apply fs lo Memory.zero).byte a
       = fs.byte m.handle (m.offset + (a - m.addr)) := by
   apply LoadOps.apply_at_target h_i h_k
   · -- Responsible segment k of elf i: any acc → file byte at a.
@@ -684,7 +684,7 @@ theorem bss_zeroed
                     s ∈ ((lo[i]'h_i).segments[k]'h_k).stores →
                     ¬ (s.addr.toNat ≤ a.toNat ∧
                        a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.LoadOps.apply fs lo Memory.zero) a = 0 := by
+    (Materialize.LoadOps.apply fs lo Memory.zero).byte a = 0 := by
   rw [LoadOps.apply_no_touch h_no_mmap h_no_zero h_no_store]
   rfl
 
@@ -736,7 +736,7 @@ theorem relocs_applied
       s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
       ¬ (i' = i ∧ k' = k) →
       ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
-    (Materialize.LoadOps.apply fs lo Memory.zero) a
+    (Materialize.LoadOps.apply fs lo Memory.zero).byte a
       = ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
          UInt64.ofNat (8 * (a.toNat -
                             (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 := by

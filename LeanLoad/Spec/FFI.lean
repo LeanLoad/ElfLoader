@@ -74,7 +74,7 @@ open LeanLoad.Spec
     returns and before the trampoline jumps, would observe these
     bytes when it reads any address inside `[rsv.addr, rsv.addr +
     rsv.len)`. -/
-opaque runSafe_image
+noncomputable opaque runSafe_image
     {n : Nat} (rsv : Reserve)
     (lo : LoadOps n) (safe : LoadSafe rsv.addr rsv.len lo)
     (fs : File) : Memory

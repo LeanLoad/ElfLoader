@@ -1,38 +1,35 @@
 /-
-Per-op pure denotation.
+Per-op pure denotation over the byte + perm `Memory` model.
 
-Each `Op.apply` is the pure shadow of `Op.run`'s byte-level effect.
-Tree-level `apply` (per-segment, per-elf, top-level) mirrors
-`LoadOps.runUnsafe` exactly: same ops, same order, same fold shape.
+Each `Op.apply` is the pure shadow of `Op.run`'s effect on both
+the byte function and the permission function. Tree-level `apply`
+(per-segment, per-elf, top-level) mirrors `LoadOps.runUnsafe`
+exactly: same ops, same order, same fold shape.
 
 The natural number param `objCount` (the elf count) just threads
 through; the denotation doesn't depend on it.
 
 Layered correspondence:
 
-  · `MmapOp.apply`      — overlay file bytes at `[addr, addr+len)`
-  · `ZeroOp.apply`      — clear bytes at `[addr, addr+len)`
-  · `StoreOp.apply`     — write little-endian bytes at `[addr, addr+byteLen)`
-  · `MprotectOp.apply`  — byte-level no-op (only perm changes; perm
-                          not modelled)
-  · `SegmentOps.apply`  — mmap? → zero? → stores → mprotect
-  · `ElfOps.apply`      — fold over segments in declared order
-  · `LoadOps.apply`     — fold over elves in declared order
+  · `MmapOp.apply`     — overlay file bytes at `[addr, addr+len)`;
+                          set perm to `prot | PROT_WRITE` over that
+                          range (widened so subsequent stores can land).
+  · `ZeroOp.apply`     — clear bytes at `[addr, addr+len)`; perm
+                          unchanged (we're still in the pre-mprotect
+                          PROT_RW window).
+  · `StoreOp.apply`    — write little-endian bytes at
+                          `[addr, addr+byteLen)`; perm unchanged.
+  · `MprotectOp.apply` — bytes unchanged; set perm to `m.prot` over
+                          `[addr, addr+len)`. Final permission for
+                          the segment.
+  · `SegmentOps.apply` — mmap? → zero? → stores → mprotect.
+  · `ElfOps.apply`     — fold over segments in declared order.
+  · `LoadOps.apply`    — fold over elves in declared order.
 
 Address-arithmetic convention: each in-range test is in `Nat` via
 `.toNat` (avoids UInt64 wrap). When the test holds, the file-offset
 or store-byte-index lookup uses ordinary UInt64 arithmetic, safe
 because the in-range bound has already ruled out the wrapping case.
-
-Spec layering:
-
-  Phase 1 (this file): pure denotation. No theorems yet — just the
-    functions. The three soundness theorems (`bytes_preserved`,
-    `bss_zeroed`, `relocs_applied`) consume `LoadOps.apply` and live
-    in a follow-up file.
-
-  Phase 2 (`Spec/FFI.lean`): the FFI axiom relates the IO effect of
-    `LoadOps.runSafe` to `LoadOps.apply` starting from `Memory.zero`.
 -/
 
 import LeanLoad.Spec.Memory
@@ -49,59 +46,72 @@ open LeanLoad.Spec
 
 namespace MmapOp
 
-/-- File-overlay denotation. Bytes in `[m.addr, m.addr + m.len)` read
-    the corresponding file byte `fs.byte m.handle (m.offset + k)` for
-    `k = a - m.addr`. Mirrors Linux `mmap(2)` MAP_PRIVATE | MAP_FIXED
-    semantics on a `MAP_ANONYMOUS` reservation: file bytes overlay
-    the reserved zero-page tiles within the requested span. -/
-def apply (fs : File) (m : MmapOp) (mem : Memory) : Memory :=
-  fun a =>
+/-- File-overlay denotation. In `[m.addr, m.addr + m.len)`:
+      · `byte` reads the corresponding file byte
+        `fs.byte m.handle (m.offset + (a - m.addr))`.
+      · `perm` reads `m.prot ||| PROT_WRITE` (widened so subsequent
+        relocation stores can run before `mprotect` flips to final
+        perm).
+    Outside the range, both fields unchanged. -/
+def apply (fs : File) (m : MmapOp) (mem : Memory) : Memory where
+  byte := fun a =>
     if m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat then
       fs.byte m.handle (m.offset + (a - m.addr))
     else
-      mem a
+      mem.byte a
+  perm := fun a =>
+    if m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat then
+      m.prot ||| Runtime.PROT_WRITE
+    else
+      mem.perm a
 
 end MmapOp
 
 namespace ZeroOp
 
-/-- Zero denotation. Bytes in `[z.addr, z.addr + z.len)` read `0`. Used
-    for the partial-page BSS tail where a file overlay carries non-zero
-    file bytes that the loaded program must see as zero. -/
-def apply (z : ZeroOp) (mem : Memory) : Memory :=
-  fun a =>
+/-- Zero denotation. In `[z.addr, z.addr + z.len)` `byte` reads `0`;
+    `perm` is unchanged (zero runs after mmap, before mprotect — the
+    segment is still in the widened-write window). -/
+def apply (z : ZeroOp) (mem : Memory) : Memory where
+  byte := fun a =>
     if z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat then
       0
     else
-      mem a
+      mem.byte a
+  perm := mem.perm
 
 end ZeroOp
 
 namespace StoreOp
 
-/-- Little-endian write denotation. Byte `i = a - s.addr` of the
-    `[s.addr, s.addr + s.byteLen)` window reads
-    `(s.value >>> (8 * i)).toUInt8`. Matches the
+/-- Little-endian write denotation. In `[s.addr, s.addr + s.byteLen)`,
+    `byte` reads byte `i = a - s.addr` of `s.value`, i.e.,
+    `(s.value >>> (8 * i)).toUInt8`. `perm` unchanged. Matches the
     `memcpy(dst, &value, size)` in `runtime/runtime.c` on
     little-endian hardware (every supported arch). -/
-def apply (s : StoreOp) (mem : Memory) : Memory :=
-  fun a =>
+def apply (s : StoreOp) (mem : Memory) : Memory where
+  byte := fun a =>
     if s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat then
       let i := a.toNat - s.addr.toNat
       (s.value >>> UInt64.ofNat (8 * i)).toUInt8
     else
-      mem a
+      mem.byte a
+  perm := mem.perm
 
 end StoreOp
 
 namespace MprotectOp
 
-/-- `mprotect` only adjusts access rights, not byte contents. Since
-    `Memory` does not model permissions, the denotation is a byte-level
-    identity. If/when a soundness theorem demands perm reasoning, add
-    a parallel `perm : UInt64 → Perm` field on `Memory` and a
-    matching `applyPerm`. -/
-def apply (_ : MprotectOp) (mem : Memory) : Memory := mem
+/-- `mprotect` denotation. `byte` unchanged; in `[m.addr, m.addr +
+    m.len)`, `perm` reads `m.prot` (the segment's final permission).
+    Outside the range, `perm` is unchanged. -/
+def apply (m : MprotectOp) (mem : Memory) : Memory where
+  byte := mem.byte
+  perm := fun a =>
+    if m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat then
+      m.prot
+    else
+      mem.perm a
 
 end MprotectOp
 
