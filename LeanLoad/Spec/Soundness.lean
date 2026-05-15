@@ -106,6 +106,112 @@ private theorem StoreOp.apply_preserves_outside
   exact ⟨Nat.le_trans h_lo h_a_lo, Nat.lt_of_lt_of_le h_a_hi h_hi⟩
 
 -- ============================================================================
+-- Tree-level preservation: bytes outside the reservation are preserved
+-- by `SegmentOps.apply` / `ElfOps.apply` / `LoadOps.apply`. Proved
+-- structurally by composing the per-op `apply_preserves_outside`
+-- lemmas through the apply tree using `LoadSafe`'s InRange fields.
+-- ============================================================================
+
+/-- Fold form for the stores. Reduces to identity outside the
+    reservation, given each store's InRange witness. -/
+private theorem stores_foldl_outside_rsv
+    (stores : Array StoreOp) (mem : Memory)
+    {rsvAddr rsvLen a : UInt64}
+    (h_each : ∀ s ∈ stores, Runtime.InRange s.addr s.byteLen rsvAddr rsvLen)
+    (h_out : ¬ InReservation rsvAddr rsvLen a) :
+    (stores.foldl (init := mem) fun m s => s.apply m) a = mem a := by
+  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  have h_full : motive stores.size (stores.foldl (init := mem) fun m s => s.apply m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · show mem a = mem a; rfl
+    · intro idx acc ih
+      show (stores[idx].apply acc) a = mem a
+      have h_mem : stores[idx] ∈ stores := stores.getElem_mem idx.isLt
+      rw [StoreOp.apply_preserves_outside (h_each _ h_mem) h_out]
+      exact ih
+  exact h_full
+
+/-- Per-segment tree preservation: outside the reservation, the
+    segment's full apply chain (mmap → zero → stores → mprotect) is
+    the identity.
+
+    Proof: case-split on `so.mmap` and `so.zero` (Option) so the
+    inner `match`s reduce to a concrete branch, then chain the per-op
+    `apply_preserves_outside` lemmas. The stores fold is discharged
+    by `stores_foldl_outside_rsv`; the final `mprotect` is the byte-
+    level identity. -/
+theorem SegmentOps.apply_preserves_outside_reservation
+    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {rsvAddr rsvLen a : UInt64}
+    (safe : Materialize.SegmentSafe rsvAddr rsvLen so)
+    (h_out : ¬ InReservation rsvAddr rsvLen a) :
+    (Materialize.SegmentOps.apply fs so mem) a = mem a := by
+  unfold Materialize.SegmentOps.apply
+  simp only [MprotectOp.apply]
+  cases h_mmap : so.mmap with
+  | none =>
+    cases h_zero : so.zero with
+    | none =>
+      exact stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out
+    | some z =>
+      rw [stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out]
+      exact ZeroOp.apply_preserves_outside (safe.zeroInRange z h_zero) h_out
+  | some m =>
+    cases h_zero : so.zero with
+    | none =>
+      rw [stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out]
+      exact MmapOp.apply_preserves_outside (safe.mmapInRange m h_mmap) h_out
+    | some z =>
+      rw [stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out]
+      rw [ZeroOp.apply_preserves_outside (safe.zeroInRange z h_zero) h_out]
+      exact MmapOp.apply_preserves_outside (safe.mmapInRange m h_mmap) h_out
+
+/-- Per-elf tree preservation: every segment's apply preserves bytes
+    outside the reservation, so the fold does too. -/
+theorem ElfOps.apply_preserves_outside_reservation
+    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {rsvAddr rsvLen a : UInt64}
+    (safe : Materialize.ElfSafe rsvAddr rsvLen eo)
+    (h_out : ¬ InReservation rsvAddr rsvLen a) :
+    (Materialize.ElfOps.apply fs eo mem) a = mem a := by
+  unfold Materialize.ElfOps.apply
+  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  have h_full : motive eo.segments.size
+      (eo.segments.foldl (init := mem) fun m so => Materialize.SegmentOps.apply fs so m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · show mem a = mem a; rfl
+    · intro idx acc ih
+      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc) a = mem a
+      rw [SegmentOps.apply_preserves_outside_reservation
+            (safe.segments idx.val idx.isLt) h_out]
+      exact ih
+  exact h_full
+
+/-- Top-level tree preservation: bytes outside the reservation are
+    untouched by the entire materialize pipeline. The structural
+    workhorse for the three soundness theorems below — it lets later-
+    elf effects drop through when the byte of interest is in an
+    earlier elf's range. -/
+theorem LoadOps.apply_preserves_outside_reservation
+    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {rsvAddr rsvLen a : UInt64}
+    (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
+    (h_out : ¬ InReservation rsvAddr rsvLen a) :
+    (Materialize.LoadOps.apply fs lo mem) a = mem a := by
+  unfold Materialize.LoadOps.apply
+  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  have h_full : motive lo.size
+      (lo.foldl (init := mem) fun m eo => Materialize.ElfOps.apply fs eo m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · show mem a = mem a; rfl
+    · intro idx acc ih
+      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = mem a
+      rw [ElfOps.apply_preserves_outside_reservation
+            (safe.elfs idx.val idx.isLt) h_out]
+      exact ih
+  exact h_full
+
+-- ============================================================================
 -- The three target soundness theorems.
 --
 -- Stated about `LoadOps.apply` over `Memory.zero`. To lift to a
