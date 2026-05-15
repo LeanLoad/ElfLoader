@@ -152,6 +152,84 @@ private theorem stores_foldl_no_touch
       exact ih
   exact h_full
 
+/-- Inner-most positional fold: stores at index `store_idx` writes
+    value, no later store in the array overlaps `a`, ⇒ the foldl
+    leaves byte `a` at that store's LE byte. The within-stores
+    workhorse for `relocs_applied`. Same motive shape as
+    `LoadOps.apply_at_responsible_mmap` (past target index ⇒ byte
+    fixed). The `h_eq` case uses `Subsingleton.elim` to unify the
+    two `idx.val < stores.size` proofs. -/
+private theorem stores_foldl_at_responsible_store
+    (stores : Array StoreOp) (mem : Memory)
+    {store_idx : Nat} (h_idx : store_idx < stores.size)
+    {a : UInt64}
+    (h_a_lo : (stores[store_idx]'h_idx).addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat <
+              (stores[store_idx]'h_idx).addr.toNat +
+                (stores[store_idx]'h_idx).byteLen.toNat)
+    (h_no_later : ∀ (idx' : Nat) (h_idx' : idx' < stores.size),
+      store_idx < idx' →
+      ¬ ((stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
+         a.toNat < (stores[idx']'h_idx').addr.toNat +
+                   (stores[idx']'h_idx').byteLen.toNat)) :
+    (stores.foldl (init := mem) fun m s => s.apply m) a
+      = ((stores[store_idx]'h_idx).value >>>
+         UInt64.ofNat (8 * (a.toNat -
+                            (stores[store_idx]'h_idx).addr.toNat))).toUInt8 := by
+  let motive : Nat → Memory → Prop := fun n mem' =>
+    store_idx < n →
+      mem' a = ((stores[store_idx]'h_idx).value >>>
+                UInt64.ofNat (8 * (a.toNat -
+                                   (stores[store_idx]'h_idx).addr.toNat))).toUInt8
+  have h_full : motive stores.size
+      (stores.foldl (init := mem) fun m s => s.apply m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · intro h_lt; omega
+    · intro idx acc ih h_lt
+      by_cases h_eq : store_idx = idx.val
+      · -- Responsible store: subst flips store_idx ↦ idx.val.
+        subst h_eq
+        show (stores[idx.val].apply acc) a = _
+        exact LeanLoad.StoreOp.apply_inside h_a_lo h_a_hi
+      · -- Different store, must be post-store_idx.
+        have h_post : store_idx < idx.val := by
+          have : store_idx < idx.val + 1 := h_lt
+          omega
+        have h_no_touch := h_no_later idx.val idx.isLt h_post
+        show (stores[idx.val].apply acc) a = _
+        rw [LeanLoad.StoreOp.apply_outside h_no_touch]
+        exact ih h_post
+  exact h_full h_idx
+
+/-- Within-segment positive preservation for a `StoreOp` at index
+    `store_idx`: if `a ∈ s`'s range and no later store in `so.stores`
+    overlaps `a`, the segment's full apply chain leaves `a` at the
+    store's LE byte. Mmap/zero run before stores in `runUnsafe`
+    order, so the responsible store overwrites their effect at `a`
+    regardless of value — no mmap/zero hypotheses needed. -/
+theorem SegmentOps.apply_at_responsible_store
+    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {store_idx : Nat} (h_si : store_idx < so.stores.size)
+    {a : UInt64}
+    (h_a_lo : (so.stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat <
+              (so.stores[store_idx]'h_si).addr.toNat +
+                (so.stores[store_idx]'h_si).byteLen.toNat)
+    (h_no_later : ∀ (idx' : Nat) (h_idx' : idx' < so.stores.size),
+      store_idx < idx' →
+      ¬ ((so.stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
+         a.toNat < (so.stores[idx']'h_idx').addr.toNat +
+                   (so.stores[idx']'h_idx').byteLen.toNat)) :
+    (Materialize.SegmentOps.apply fs so mem) a
+      = ((so.stores[store_idx]'h_si).value >>>
+         UInt64.ofNat (8 * (a.toNat -
+                            (so.stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
+  unfold Materialize.SegmentOps.apply
+  simp only [MprotectOp.apply]
+  -- The match-bound init of the stores fold is irrelevant — the
+  -- responsible store overwrites at `a` regardless.
+  exact stores_foldl_at_responsible_store so.stores _ h_si h_a_lo h_a_hi h_no_later
+
 /-- Per-segment positive preservation: if `so.mmap` writes file bytes
     at `a`, and neither `so.zero` nor any of `so.stores` overlaps `a`,
     then the full per-segment apply chain reads back the file byte at
@@ -372,6 +450,148 @@ theorem ElfOps.apply_at_responsible_mmap
               (fun s h => h_no_store jdx.val jdx.isLt s h)]
         exact ih h_post_k
   exact h_full h_k
+
+/-- Within-elf positive preservation for a store: same shape as
+    `ElfOps.apply_at_responsible_mmap` but with a `StoreOp` at index
+    `store_idx` of segments[k] as the responsible op. -/
+theorem ElfOps.apply_at_responsible_store
+    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {k : Nat} (h_k : k < eo.segments.size)
+    {store_idx : Nat} (h_si : store_idx < (eo.segments[k]'h_k).stores.size)
+    {a : UInt64}
+    (h_a_lo : ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat <
+              ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat +
+                ((eo.segments[k]'h_k).stores[store_idx]'h_si).byteLen.toNat)
+    -- No later store in the responsible segment overlaps a.
+    (h_no_later_in_seg : ∀ (idx' : Nat)
+                          (h_idx' : idx' < (eo.segments[k]'h_k).stores.size),
+      store_idx < idx' →
+      ¬ (((eo.segments[k]'h_k).stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
+         a.toNat < ((eo.segments[k]'h_k).stores[idx']'h_idx').addr.toNat +
+                   ((eo.segments[k]'h_k).stores[idx']'h_idx').byteLen.toNat))
+    -- No mmap/zero/store in any other segment of this elf touches a.
+    (h_other_mmaps : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (m' : MmapOp),
+      (eo.segments[k']'h_k').mmap = some m' → k' ≠ k →
+      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
+    (h_other_zeros : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (z : ZeroOp),
+      (eo.segments[k']'h_k').zero = some z → k' ≠ k →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_other_stores : ∀ (k' : Nat) (h_k' : k' < eo.segments.size) (s : StoreOp),
+      s ∈ (eo.segments[k']'h_k').stores → k' ≠ k →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.ElfOps.apply fs eo mem) a
+      = (((eo.segments[k]'h_k).stores[store_idx]'h_si).value >>>
+         UInt64.ofNat (8 * (a.toNat -
+                            ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
+  unfold Materialize.ElfOps.apply
+  let motive : Nat → Memory → Prop := fun j_idx mem' =>
+    k < j_idx → mem' a =
+      (((eo.segments[k]'h_k).stores[store_idx]'h_si).value >>>
+       UInt64.ofNat (8 * (a.toNat -
+                          ((eo.segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8
+  have h_full : motive eo.segments.size
+      (eo.segments.foldl (init := mem) fun m' so => Materialize.SegmentOps.apply fs so m') := by
+    refine Array.foldl_induction motive ?_ ?_
+    · intro h_lt; omega
+    · intro jdx acc ih h_lt
+      by_cases h_eq : k = jdx.val
+      · subst h_eq
+        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
+        exact SegmentOps.apply_at_responsible_store h_si h_a_lo h_a_hi h_no_later_in_seg
+      · have h_post_k : k < jdx.val := by
+          have h_lt' : k < jdx.val + 1 := h_lt
+          omega
+        have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
+        show (Materialize.SegmentOps.apply fs (eo.segments[jdx.val]'jdx.isLt) acc) a = _
+        rw [SegmentOps.apply_no_touch
+              (fun m' h => h_other_mmaps jdx.val jdx.isLt m' h h_jdx_ne_k)
+              (fun z h => h_other_zeros jdx.val jdx.isLt z h h_jdx_ne_k)
+              (fun s h => h_other_stores jdx.val jdx.isLt s h h_jdx_ne_k)]
+        exact ih h_post_k
+  exact h_full h_k
+
+/-- Top-level positive preservation for a store: m at segments[k] of
+    elf i has a store at `store_idx` that writes value v, no other op
+    in the tree touches a (except mmaps/zeros/stores in the
+    responsible segment, which get overwritten or run earlier), ⇒ the
+    materialize pipeline leaves byte `a` at the store's LE byte. -/
+theorem LoadOps.apply_at_responsible_store
+    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {i : Nat} (h_i : i < lo.size)
+    {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
+    {store_idx : Nat} (h_si : store_idx < ((lo[i]'h_i).segments[k]'h_k).stores.size)
+    {a : UInt64}
+    (h_a_lo : (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat <
+              (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat +
+                (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).byteLen.toNat)
+    (h_no_later_in_seg : ∀ (idx' : Nat)
+                          (h_idx' : idx' < ((lo[i]'h_i).segments[k]'h_k).stores.size),
+      store_idx < idx' →
+      ¬ ((((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
+         a.toNat < (((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').addr.toNat +
+                   (((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').byteLen.toNat))
+    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
+      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
+    (h_other_zeros : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (z : ZeroOp),
+      ((lo[i']'h_i').segments[k']'h_k').zero = some z →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_other_stores : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                        (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (s : StoreOp),
+      s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.LoadOps.apply fs lo mem) a
+      = ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
+         UInt64.ofNat (8 * (a.toNat -
+                            (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 := by
+  unfold Materialize.LoadOps.apply
+  let motive : Nat → Memory → Prop := fun idx mem' =>
+    i < idx → mem' a =
+      ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
+       UInt64.ofNat (8 * (a.toNat -
+                          (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8
+  have h_full : motive lo.size
+      (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · intro h_lt; omega
+    · intro idx acc ih h_lt
+      by_cases h_eq : i = idx.val
+      · subst h_eq
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
+        exact ElfOps.apply_at_responsible_store h_k h_si h_a_lo h_a_hi h_no_later_in_seg
+          (fun k' h_k' m' h_m' h_k'_ne =>
+            h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
+              (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq))
+          (fun k' h_k' z h_z h_k'_ne =>
+            h_other_zeros idx.val idx.isLt k' h_k' z h_z
+              (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq))
+          (fun k' h_k' s h_s h_k'_ne =>
+            h_other_stores idx.val idx.isLt k' h_k' s h_s
+              (fun ⟨_, h_k_eq⟩ => h_k'_ne h_k_eq))
+      · have h_post_i : i < idx.val := by
+          have : i < idx.val + 1 := h_lt
+          omega
+        have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
+        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = _
+        rw [ElfOps.apply_no_touch
+              (fun k' h_k' m' h_m' =>
+                h_other_mmaps idx.val idx.isLt k' h_k' m' h_m'
+                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))
+              (fun k' h_k' z h_z =>
+                h_other_zeros idx.val idx.isLt k' h_k' z h_z
+                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))
+              (fun k' h_k' s h_s =>
+                h_other_stores idx.val idx.isLt k' h_k' s h_s
+                  (fun ⟨h_i_eq, _⟩ => h_idx_ne_i h_i_eq))]
+        exact ih h_post_i
+  exact h_full h_i
 
 /-- Top-level no-touch preservation: if no op in the entire tree
     touches `a`, the materialize pipeline preserves the byte at `a`.
@@ -642,40 +862,59 @@ theorem bss_zeroed
   rw [LoadOps.apply_no_touch h_no_mmap h_no_zero h_no_store]
   rfl
 
-/-- **relocs_applied** — every byte covered by a `StoreOp` reads the
-    appropriate little-endian byte of `s.value`, *provided* no
-    *later* store overlaps.
+/-- **relocs_applied** — the store at position `(i, k, store_idx)`
+    of `lo` writes its little-endian bytes at the corresponding
+    addresses. Specifically, byte `a` inside the store's window
+    reads `(s.value >>> 8*(a - s.addr)).toUInt8`.
 
-    Currently `LoadSafe` only guarantees `mmapsDisjoint`, not
-    `storesPairwiseDisjoint`. The "no later store overlaps"
-    hypothesis here is the explicit form of what
-    `LoadSafe.storesPairwiseDisjoint` would discharge. Lifting it
-    into `LoadSafe` is the recommended follow-up (`docs/plan.md`
-    note); until then, this theorem takes it as an argument.
+    Phrased with explicit `store_idx` (rather than via `s ∈ stores`)
+    so the proof can use the within-stores positional lemma
+    `stores_foldl_at_responsible_store`. Callers with `s ∈ stores`
+    can recover an index via `Array.getElem_of_mem`.
 
-    Refined statement (after BoundPlan settles) will phrase the
-    `StoreOp` as the one emitted for a specific `Reloc.Entry` and
-    its value as `formula entry.type {S, A, B, P}`. -/
+    Three exclusion hypotheses (mmap / zero / store at any
+    *other* segment of any elf) carry the disjointness witnesses
+    that `LoadSafe` does not yet provide. A future
+    `LoadSafe.zeroDisjointFromMmap` / `LoadSafe.storesPairwiseDisjoint`
+    extension would derive them from `Plan/Layout.lean` geometry.
+    The within-segment-but-after hypothesis `h_no_later_in_seg`
+    captures "no later store in the same segment overlaps a". -/
 theorem relocs_applied
     {n : Nat} (lo : Materialize.LoadOps n) (fs : FileSnap)
-    {rsvAddr rsvLen : UInt64} (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
     (i : Nat) (h_i : i < lo.size)
     (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
-    (s : StoreOp)
-    (h_s_mem : s ∈ ((lo[i]'h_i).segments[k]'h_k).stores)
+    (store_idx : Nat) (h_si : store_idx < ((lo[i]'h_i).segments[k]'h_k).stores.size)
     (a : UInt64)
-    (h_a_lo : s.addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat < s.addr.toNat + s.byteLen.toNat)
-    -- "no later store in the tree-walk order overlaps a"
-    (h_no_later_store : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                          (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size)
-                          (s' : StoreOp),
-                          s' ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
-                          s' ≠ s →  -- placeholder; real form will use tree position
-                          ¬ (s'.addr.toNat ≤ a.toNat ∧
-                             a.toNat < s'.addr.toNat + s'.byteLen.toNat)) :
+    (h_a_lo : (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat <
+              (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat +
+                (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).byteLen.toNat)
+    (h_no_later_in_seg : ∀ (idx' : Nat)
+                          (h_idx' : idx' < ((lo[i]'h_i).segments[k]'h_k).stores.size),
+      store_idx < idx' →
+      ¬ ((((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').addr.toNat ≤ a.toNat ∧
+         a.toNat < (((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').addr.toNat +
+                   (((lo[i]'h_i).segments[k]'h_k).stores[idx']'h_idx').byteLen.toNat))
+    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
+      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
+    (h_other_zeros : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (z : ZeroOp),
+      ((lo[i']'h_i').segments[k']'h_k').zero = some z →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_other_stores : ∀ (i' : Nat) (h_i' : i' < lo.size)
+                        (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (s : StoreOp),
+      s ∈ ((lo[i']'h_i').segments[k']'h_k').stores →
+      ¬ (i' = i ∧ k' = k) →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
     (Materialize.LoadOps.apply fs lo Memory.zero) a
-      = (s.value >>> UInt64.ofNat (8 * (a.toNat - s.addr.toNat))).toUInt8 := by
-  sorry
+      = ((((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).value >>>
+         UInt64.ofNat (8 * (a.toNat -
+                            (((lo[i]'h_i).segments[k]'h_k).stores[store_idx]'h_si).addr.toNat))).toUInt8 :=
+  LoadOps.apply_at_responsible_store h_i h_k h_si h_a_lo h_a_hi
+    h_no_later_in_seg h_other_mmaps h_other_zeros h_other_stores
 
 end LeanLoad.Spec
