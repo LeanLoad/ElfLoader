@@ -182,41 +182,38 @@ theorem findLoadedIdx_lt (objs : Array LoadedObject) (name : String) {idx : Nat}
 -- Plan: per-step decision + state integration
 -- ============================================================================
 
-/-- One BFS work item: a `DT_NEEDED` soname, with its `(sourceIdx, runpath)`
-    context — `sourceIdx` identifies the object whose `DT_NEEDED` produced
-    this item (so `discoverLoop` can record the dep edge once the target
-    is resolved); `runpath` carries the source's `DT_RUNPATH` for
-    search-path resolution. -/
-abbrev WorkItem := Nat × Option String × String
+/-- One BFS work item: a `DT_NEEDED` soname, with its source-object
+    context. `sourceIdx` identifies the object whose `DT_NEEDED`
+    produced this item — `discoverLoop` records the dep edge once the
+    target is resolved. `runpath` carries the source's `DT_RUNPATH`
+    for search-path resolution. -/
+structure WorkItem where
+  sourceIdx : Nat
+  runpath   : Option String
+  soname    : String
 
-/-- The result of one BFS step over `(objs, work)`. -/
+/-- The result of looking up `item.soname` in the loaded objects. -/
 inductive StepResult where
-  /-- Work queue empty: discovery is complete. -/
-  | done
-  /-- Soname already loaded: drop the work item, but record the dep
-      edge `sourceIdx → targetIdx`. -/
-  | skip (sourceIdx targetIdx : Nat) (rest : List WorkItem)
-  /-- Soname is new: needs IO to resolve to a path, open, and parse,
-      then `integrate` the parsed result. -/
-  | resolve (sourceIdx : Nat) (sn : String) (rp : Option String)
-            (rest : List WorkItem)
+  /-- Soname already loaded — record edge `item.sourceIdx → targetIdx`. -/
+  | skip (targetIdx : Nat)
+  /-- Soname is new — needs IO to resolve to a path, open, and parse. -/
+  | resolve
 
-/-- Pure step: examine the work queue's head and decide what to do.
-    The dedup check uses `findLoadedIdx` (returns the matching index
-    for the `.skip` branch's edge recording). -/
-def step (objs : Array LoadedObject) (work : List WorkItem) : StepResult :=
-  match work with
-  | []                  => .done
-  | (src, rp, sn) :: rest =>
-    match findLoadedIdx objs sn with
-    | some tgt => .skip src tgt rest
-    | none     => .resolve src sn rp rest
+/-- Pure step: dispatch on whether the work item's soname is already
+    loaded. Returns the matching index for the `.skip` branch's edge
+    recording. The `.done` case (empty work queue) is handled by the
+    caller — `step` is only invoked on a concrete item. -/
+def step (objs : Array LoadedObject) (item : WorkItem) : StepResult :=
+  match findLoadedIdx objs item.soname with
+  | some tgt => .skip tgt
+  | none     => .resolve
 
 /-- New work items spawned by a freshly elaborated elf at `sourceIdx`:
     one per `DT_NEEDED` entry, tagged with the providing object's
     runpath. -/
 def workOfElf (sourceIdx : Nat) (elf : Elaborate.Elf) : List WorkItem :=
-  elf.needed.toList.map (fun n => (sourceIdx, elf.runpath, n))
+  elf.needed.toList.map fun n =>
+    { sourceIdx, runpath := elf.runpath, soname := n }
 
 -- ============================================================================
 -- Soundness theorems for the BFS dedup primitive.

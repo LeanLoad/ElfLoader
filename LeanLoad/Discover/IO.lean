@@ -102,21 +102,16 @@ private theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
     `step` produces `.skip` only when `findLoadedIdx` returned the
     matching index — which is bounded by `findLoadedIdx_lt`. -/
 private theorem step_skip_tgt_lt {objs : Array LoadedObject}
-    {work : List WorkItem} {src tgt : Nat} {rest : List WorkItem}
-    (h : step objs work = .skip src tgt rest) :
+    {item : WorkItem} {tgt : Nat}
+    (h : step objs item = .skip tgt) :
     tgt < objs.size := by
   unfold step at h
-  match work, h with
-  | (_, _, sn) :: _, h =>
-    simp only at h
-    split at h
-    · rename_i tgt' h_find
-      have h_eq : tgt = tgt' := by
-        injection h with _ h_tgt _
-        exact h_tgt.symm
-      rw [h_eq]
-      exact findLoadedIdx_lt objs sn h_find
-    · cases h
+  split at h
+  · rename_i tgt' h_find
+    have h_eq : tgt = tgt' := by injection h with h_tgt; exact h_tgt.symm
+    rw [h_eq]
+    exact findLoadedIdx_lt objs item.soname h_find
+  · cases h
 
 -- ============================================================================
 -- BFS executor
@@ -141,23 +136,26 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
   match fuel with
   | 0 => pure ⟨objs, deps, h_pos, h_nodup, h_deps_size, h_deps_bounds⟩
   | fuel + 1 =>
-    match h_step : step objs work with
-    | .done => pure ⟨objs, deps, h_pos, h_nodup, h_deps_size, h_deps_bounds⟩
-    | .skip src tgt rest =>
-      -- Already loaded. Record edge src → tgt and continue.
-      let deps' := recordEdge deps src tgt
+    match work with
+    | [] => pure ⟨objs, deps, h_pos, h_nodup, h_deps_size, h_deps_bounds⟩
+    | item :: rest =>
+    match h_step : step objs item with
+    | .skip tgt =>
+      -- Already loaded. Record edge item.sourceIdx → tgt and continue.
+      let deps' := recordEdge deps item.sourceIdx tgt
       have h_tgt_lt : tgt < objs.size := step_skip_tgt_lt h_step
       have h_size' : deps'.size = objs.size := by
         rw [recordEdge_size]; exact h_deps_size
       have h_bounds' : ∀ (i : Nat) (h : i < deps'.size),
           ∀ t ∈ deps'[i], t < objs.size :=
-        recordEdge_bounds deps src tgt h_deps_bounds h_tgt_lt
+        recordEdge_bounds deps item.sourceIdx tgt h_deps_bounds h_tgt_lt
       discoverLoop envPath fuel objs deps' h_pos h_nodup h_size' h_bounds' rest
-    | .resolve src sn rp rest =>
-      let ctx : SearchContext := { runpath := rp, envPath, defaults := #[] }
-      match ← resolveSoname sn ctx with
+    | .resolve =>
+      let ctx : SearchContext := { runpath := item.runpath, envPath, defaults := #[] }
+      match ← resolveSoname item.soname ctx with
       | none =>
-        throw (IO.userError s!"discover: cannot find '{sn}' (runpath={rp}, env={envPath})")
+        throw (IO.userError s!"discover: cannot find '{item.soname}' \
+          (runpath={item.runpath}, env={envPath})")
       | some path =>
         let (handle, elf) ← readAndParse path
         let canonical := canonicalName path elf
@@ -165,21 +163,21 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
         match h_canonical_idx : findLoadedIdx objs canonical with
         | some tgt =>
           -- Post-canonicalisation dedup hit. Drop `obj`, record the
-          -- edge `src → tgt` (the existing object's index).
-          let deps' := recordEdge deps src tgt
+          -- edge `item.sourceIdx → tgt` (the existing object's index).
+          let deps' := recordEdge deps item.sourceIdx tgt
           have h_size' : deps'.size = objs.size := by
             rw [recordEdge_size]; exact h_deps_size
           have h_tgt_lt : tgt < objs.size :=
             findLoadedIdx_lt objs canonical h_canonical_idx
           have h_bounds' : ∀ (i : Nat) (h : i < deps'.size),
               ∀ t ∈ deps'[i], t < objs.size :=
-            recordEdge_bounds deps src tgt h_deps_bounds h_tgt_lt
+            recordEdge_bounds deps item.sourceIdx tgt h_deps_bounds h_tgt_lt
           discoverLoop envPath fuel objs deps' h_pos h_nodup h_size' h_bounds' rest
         | none =>
-          -- Genuinely new object. Append; record edge `src → newIdx`
-          -- (where newIdx = objs.size, valid in the post-push array).
-          -- The new object's row in `deps` starts empty; subsequent
-          -- BFS steps fill it as its NEEDED items resolve.
+          -- Genuinely new object. Append; record edge `item.sourceIdx →
+          -- newIdx` (where newIdx = objs.size, valid in the post-push
+          -- array). The new object's row in `deps` starts empty;
+          -- subsequent BFS steps fill it as its NEEDED items resolve.
           have h_fresh : alreadyLoaded objs canonical = false := by
             -- findLoadedIdx = findIdx? — both expand to "no obj satisfies
             -- (·.name == canonical)". Convert via Array.findIdx?_eq_none_iff
@@ -196,7 +194,7 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
             exact absurd (h_all_ne o h_mem) (by simp [h_eq])
           let newIdx := objs.size
           let objs' := objs.push obj
-          let deps_with_edge := recordEdge deps src newIdx
+          let deps_with_edge := recordEdge deps item.sourceIdx newIdx
           let deps' := deps_with_edge.push #[]
           have h_pos' : 0 < objs'.size := by
             show 0 < (objs.push obj).size
@@ -219,7 +217,7 @@ private def discoverLoop (envPath : Option String) (fuel : Nat)
             rw [Array.size_push]; omega
           have h_bounds_re : ∀ (i : Nat) (h : i < deps_with_edge.size),
               ∀ t ∈ deps_with_edge[i], t < objs'.size :=
-            recordEdge_bounds deps src newIdx h_old_bounds_lifted h_newIdx_lt
+            recordEdge_bounds deps item.sourceIdx newIdx h_old_bounds_lifted h_newIdx_lt
           have h_bounds' : ∀ (i : Nat) (h : i < deps'.size),
               ∀ t ∈ deps'[i], t < objs'.size := by
             intro i h_lt t h_mem
