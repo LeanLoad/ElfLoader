@@ -131,6 +131,58 @@ private theorem stores_foldl_outside_rsv
       exact ih
   exact h_full
 
+/-- Fold form for stores with an explicit "no store touches `a`"
+    hypothesis. The general form that `stores_foldl_outside_rsv`
+    specialises (the latter derives the per-store hypothesis from
+    InRange + outside-reservation). Used in the positive direction
+    by `SegmentOps.apply_inside_mmap_no_overwrite`. -/
+private theorem stores_foldl_no_touch
+    (stores : Array StoreOp) (mem : Memory) {a : UInt64}
+    (h_each : ∀ s ∈ stores,
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (stores.foldl (init := mem) fun m s => s.apply m) a = mem a := by
+  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  have h_full : motive stores.size (stores.foldl (init := mem) fun m s => s.apply m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · show mem a = mem a; rfl
+    · intro idx acc ih
+      show (stores[idx].apply acc) a = mem a
+      have h_mem : stores[idx] ∈ stores := stores.getElem_mem idx.isLt
+      rw [LeanLoad.StoreOp.apply_outside (h_each _ h_mem)]
+      exact ih
+  exact h_full
+
+/-- Per-segment positive preservation: if `so.mmap` writes file bytes
+    at `a`, and neither `so.zero` nor any of `so.stores` overlaps `a`,
+    then the full per-segment apply chain reads back the file byte at
+    `a`. This is the within-segment workhorse for `bytes_preserved`. -/
+theorem SegmentOps.apply_inside_mmap_no_overwrite
+    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {m : MmapOp}
+    (h_mmap : so.mmap = some m)
+    {a : UInt64}
+    (h_a_lo : m.addr.toNat ≤ a.toNat)
+    (h_a_hi : a.toNat < m.addr.toNat + m.len.toNat)
+    (h_no_zero : ∀ z, so.zero = some z →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_no_store : ∀ s ∈ so.stores,
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.SegmentOps.apply fs so mem) a
+      = fs.byte m.handle (m.offset + (a - m.addr)) := by
+  unfold Materialize.SegmentOps.apply
+  simp only [MprotectOp.apply]
+  rw [h_mmap]
+  cases h_zero : so.zero with
+  | none =>
+    dsimp only
+    rw [stores_foldl_no_touch so.stores _ h_no_store]
+    exact LeanLoad.MmapOp.apply_inside h_a_lo h_a_hi
+  | some z =>
+    dsimp only
+    rw [stores_foldl_no_touch so.stores _ h_no_store]
+    rw [LeanLoad.ZeroOp.apply_outside (h_no_zero z h_zero)]
+    exact LeanLoad.MmapOp.apply_inside h_a_lo h_a_hi
+
 /-- Per-segment tree preservation: outside the reservation, the
     segment's full apply chain (mmap → zero → stores → mprotect) is
     the identity.
