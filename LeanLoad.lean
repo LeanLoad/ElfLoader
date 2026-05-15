@@ -85,4 +85,6 @@ import LeanLoad.Materialize.Build
 import LeanLoad.Spec.Memory
 import LeanLoad.Spec.FileSnap
 import LeanLoad.Spec.Apply
+import LeanLoad.Spec.ApplyLemmas
 import LeanLoad.Spec.FFI
+import LeanLoad.Spec.Soundness
