@@ -44,6 +44,13 @@ stage re-checks it — the witness travels in the type.
   • Runtime — the trust seam. `@[extern]` primitives wrapped in
     typed slot records; `LoadOps.runSafe` accepts the
     safety-witnessed tree only.
+
+  • Spec — pure byte-level model of the loader's memory effect
+    (`Memory := UInt64 → UInt8`), per-op denotations mirroring
+    each `Op.run`, and one FFI axiom relating `LoadOps.runSafe`'s
+    image to `LoadOps.apply fs lo Memory.zero`. The substrate the
+    three target soundness theorems (`bytes_preserved`,
+    `bss_zeroed`, `relocs_applied`) consume.
 -/
 import LeanLoad.Parse.Structs
 import LeanLoad.Parse.Dynamic
@@ -74,3 +81,8 @@ import LeanLoad.Materialize.Safety
 import LeanLoad.Materialize.Reloc
 import LeanLoad.Materialize.BoundPlan
 import LeanLoad.Materialize.Build
+
+import LeanLoad.Spec.Memory
+import LeanLoad.Spec.FileSnap
+import LeanLoad.Spec.Apply
+import LeanLoad.Spec.FFI
