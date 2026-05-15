@@ -152,16 +152,20 @@ theorem SegmentOps.apply_preserves_outside_reservation
   | none =>
     cases h_zero : so.zero with
     | none =>
+      dsimp only
       exact stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out
     | some z =>
+      dsimp only
       rw [stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out]
       exact ZeroOp.apply_preserves_outside (safe.zeroInRange z h_zero) h_out
   | some m =>
     cases h_zero : so.zero with
     | none =>
+      dsimp only
       rw [stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out]
       exact MmapOp.apply_preserves_outside (safe.mmapInRange m h_mmap) h_out
     | some z =>
+      dsimp only
       rw [stores_foldl_outside_rsv so.stores _ safe.storesInRange h_out]
       rw [ZeroOp.apply_preserves_outside (safe.zeroInRange z h_zero) h_out]
       exact MmapOp.apply_preserves_outside (safe.mmapInRange m h_mmap) h_out
@@ -249,6 +253,51 @@ theorem bytes_preserved
                        a.toNat < s.addr.toNat + s.byteLen.toNat)) :
     (Materialize.LoadOps.apply fs lo Memory.zero) a
       = fs.byte m.handle (m.offset + (a - m.addr)) := by
+  -- Proof skeleton (to fill in once build stabilises and the
+  -- BoundPlan interface settles):
+  --
+  -- 1. `LoadOps.apply` is a left-fold over `lo`, each step folding
+  --    over `eo.segments`, each step applying mmap → zero → stores
+  --    → mprotect. Express the fold as
+  --       [pre-op ops] ++ [the mmap m at position (i,k)] ++ [post-op ops]
+  --    via `Array.foldl_eq_foldl_split` (existing in Mathlib) on
+  --    both the elf array and the segment array.
+  --
+  -- 2. After "the mmap m" step, the byte at `a` equals
+  --    `fs.byte m.handle (m.offset + (a - m.addr))` by
+  --    `MmapOp.apply_inside h_a_lo h_a_hi`.
+  --
+  -- 3. For every post-op op in the chain:
+  --     · The same segment's zero/stores/mprotect:
+  --         - zero  — disjoint from mmap by segment geometry
+  --                   (zero covers [seg.vaddr+filesz, +partialBssLen),
+  --                    mmap covers [pageVaddr, +fileOverlayLen) — the
+  --                    SegmentLayout's `vaddr_memsz_le_pageEnd` +
+  --                    `fileOverlay_le_pageLength` give disjointness).
+  --                   Not currently witnessed by `LoadSafe`; will
+  --                   need a `SegmentSafe.zeroVsMmapDisjoint` field.
+  --         - stores — explicit hypothesis `h_no_store`.
+  --         - mprotect — byte-level no-op (`MprotectOp.apply_at`).
+  --     · Later segments in the same elf:
+  --         - mmaps disjoint by `ElfSafe.mmapsDisjoint`.
+  --         - zeros disjoint from earlier mmap — needs a similar
+  --           cross-segment zero/mmap disjointness witness or
+  --           reasoning via mmap disjointness + geometry.
+  --         - stores — explicit hypothesis.
+  --     · Later elves:
+  --         - mmaps disjoint by `LoadSafe.mmapsDisjoint`.
+  --         - zeros / stores — explicit hypothesis (or future
+  --           LoadSafe extensions).
+  --
+  -- 4. Compose the per-op `apply_outside` lemmas through the
+  --    post-op chain via the same `Array.foldl_induction` pattern
+  --    used in `LoadOps.apply_preserves_outside_reservation`.
+  --
+  -- Notes: `apply_preserves_outside_reservation` is a *related*
+  -- structural fact (preserves bytes outside the *reservation*),
+  -- but `bytes_preserved` needs preservation along a *single
+  -- byte's worldline* across ops that touch the reservation but
+  -- not `a`. Different shape; both rely on per-op `apply_outside`.
   sorry
 
 /-- **bss_zeroed** — every byte in a PT_LOAD's
