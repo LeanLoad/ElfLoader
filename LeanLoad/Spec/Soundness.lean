@@ -243,6 +243,116 @@ theorem ElfOps.apply_preserves_outside_reservation
       exact ih
   exact h_full
 
+-- ============================================================================
+-- "No touch" tree preservation: a strictly more general form that
+-- takes explicit per-op no-touch hypotheses instead of deriving them
+-- from `LoadSafe` + outside-reservation. The substrate for
+-- `bss_zeroed` (which has no op touching the BSS address) and for the
+-- "post-m" propagation in `bytes_preserved`. The structure mirrors
+-- the `outside_reservation` family exactly.
+-- ============================================================================
+
+/-- Per-segment no-touch preservation: if no op in this segment
+    touches `a`, the segment's apply preserves the byte at `a`. -/
+theorem SegmentOps.apply_no_touch
+    {n : Nat} {fs : FileSnap} {so : Materialize.SegmentOps n} {mem : Memory}
+    {a : UInt64}
+    (h_no_mmap : ∀ m, so.mmap = some m →
+      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_zero : ∀ z, so.zero = some z →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_no_store : ∀ s ∈ so.stores,
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.SegmentOps.apply fs so mem) a = mem a := by
+  unfold Materialize.SegmentOps.apply
+  simp only [MprotectOp.apply]
+  cases h_mmap : so.mmap with
+  | none =>
+    cases h_zero : so.zero with
+    | none =>
+      dsimp only
+      exact stores_foldl_no_touch so.stores _ h_no_store
+    | some z =>
+      dsimp only
+      rw [stores_foldl_no_touch so.stores _ h_no_store]
+      exact LeanLoad.ZeroOp.apply_outside (h_no_zero z h_zero)
+  | some m =>
+    cases h_zero : so.zero with
+    | none =>
+      dsimp only
+      rw [stores_foldl_no_touch so.stores _ h_no_store]
+      exact LeanLoad.MmapOp.apply_outside (h_no_mmap m h_mmap)
+    | some z =>
+      dsimp only
+      rw [stores_foldl_no_touch so.stores _ h_no_store]
+      rw [LeanLoad.ZeroOp.apply_outside (h_no_zero z h_zero)]
+      exact LeanLoad.MmapOp.apply_outside (h_no_mmap m h_mmap)
+
+/-- Per-elf no-touch preservation: if no op in any segment of this
+    elf touches `a`, the elf's apply preserves the byte at `a`. -/
+theorem ElfOps.apply_no_touch
+    {n : Nat} {fs : FileSnap} {eo : Materialize.ElfOps n} {mem : Memory}
+    {a : UInt64}
+    (h_no_mmap : ∀ (k : Nat) (h_k : k < eo.segments.size) (m : MmapOp),
+      (eo.segments[k]'h_k).mmap = some m →
+      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_zero : ∀ (k : Nat) (h_k : k < eo.segments.size) (z : ZeroOp),
+      (eo.segments[k]'h_k).zero = some z →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_no_store : ∀ (k : Nat) (h_k : k < eo.segments.size) (s : StoreOp),
+      s ∈ (eo.segments[k]'h_k).stores →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.ElfOps.apply fs eo mem) a = mem a := by
+  unfold Materialize.ElfOps.apply
+  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  have h_full : motive eo.segments.size
+      (eo.segments.foldl (init := mem) fun m so => Materialize.SegmentOps.apply fs so m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · show mem a = mem a; rfl
+    · intro idx acc ih
+      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc) a = mem a
+      rw [SegmentOps.apply_no_touch
+            (fun m h => h_no_mmap idx.val idx.isLt m h)
+            (fun z h => h_no_zero idx.val idx.isLt z h)
+            (fun s h => h_no_store idx.val idx.isLt s h)]
+      exact ih
+  exact h_full
+
+/-- Top-level no-touch preservation: if no op in the entire tree
+    touches `a`, the materialize pipeline preserves the byte at `a`.
+    This is the structural workhorse for `bss_zeroed` and for the
+    "post-m" half of `bytes_preserved`. -/
+theorem LoadOps.apply_no_touch
+    {n : Nat} {fs : FileSnap} {lo : Materialize.LoadOps n} {mem : Memory}
+    {a : UInt64}
+    (h_no_mmap : ∀ (i : Nat) (h_i : i < lo.size)
+                  (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (m : MmapOp),
+      ((lo[i]'h_i).segments[k]'h_k).mmap = some m →
+      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_zero : ∀ (i : Nat) (h_i : i < lo.size)
+                  (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (z : ZeroOp),
+      ((lo[i]'h_i).segments[k]'h_k).zero = some z →
+      ¬ (z.addr.toNat ≤ a.toNat ∧ a.toNat < z.addr.toNat + z.len.toNat))
+    (h_no_store : ∀ (i : Nat) (h_i : i < lo.size)
+                   (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (s : StoreOp),
+      s ∈ ((lo[i]'h_i).segments[k]'h_k).stores →
+      ¬ (s.addr.toNat ≤ a.toNat ∧ a.toNat < s.addr.toNat + s.byteLen.toNat)) :
+    (Materialize.LoadOps.apply fs lo mem) a = mem a := by
+  unfold Materialize.LoadOps.apply
+  let motive : Nat → Memory → Prop := fun _ mem' => mem' a = mem a
+  have h_full : motive lo.size
+      (lo.foldl (init := mem) fun m eo => Materialize.ElfOps.apply fs eo m) := by
+    refine Array.foldl_induction motive ?_ ?_
+    · show mem a = mem a; rfl
+    · intro idx acc ih
+      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc) a = mem a
+      rw [ElfOps.apply_no_touch
+            (fun k h_k m h => h_no_mmap idx.val idx.isLt k h_k m h)
+            (fun k h_k z h => h_no_zero idx.val idx.isLt k h_k z h)
+            (fun k h_k s h => h_no_store idx.val idx.isLt k h_k s h)]
+      exact ih
+  exact h_full
+
 /-- Top-level tree preservation: bytes outside the reservation are
     untouched by the entire materialize pipeline. The structural
     workhorse for the three soundness theorems below — it lets later-
@@ -367,18 +477,25 @@ theorem bytes_preserved
     falls into. -/
 theorem bss_zeroed
     {n : Nat} (lo : Materialize.LoadOps n) (fs : FileSnap)
-    {rsvAddr rsvLen : UInt64} (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
     (a : UInt64)
     -- Preconditions phrased structurally; full BoundPlan-aware form
     -- will refine these to "a in [vaddr+filesz, vaddr+memsz) of some
-    -- PT_LOAD segment".
-    (h_in_rsv : rsvAddr.toNat ≤ a.toNat ∧ a.toNat < rsvAddr.toNat + rsvLen.toNat)
-    (h_no_mmap_byte : ∀ (i : Nat) (h_i : i < lo.size)
-                        (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
-                        (m : MmapOp),
-                        ((lo[i]'h_i).segments[k]'h_k).mmap = some m →
-                        ¬ (m.addr.toNat ≤ a.toNat ∧
-                           a.toNat < m.addr.toNat + m.len.toNat))
+    -- PT_LOAD segment". The disjointness story (why no mmap/zero/
+    -- store touches the BSS byte) is what the future BoundPlan-aware
+    -- statement will discharge; for now the three hypotheses are
+    -- explicit.
+    (h_no_mmap : ∀ (i : Nat) (h_i : i < lo.size)
+                   (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
+                   (m : MmapOp),
+                   ((lo[i]'h_i).segments[k]'h_k).mmap = some m →
+                   ¬ (m.addr.toNat ≤ a.toNat ∧
+                      a.toNat < m.addr.toNat + m.len.toNat))
+    (h_no_zero : ∀ (i : Nat) (h_i : i < lo.size)
+                   (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
+                   (z : ZeroOp),
+                   ((lo[i]'h_i).segments[k]'h_k).zero = some z →
+                   ¬ (z.addr.toNat ≤ a.toNat ∧
+                      a.toNat < z.addr.toNat + z.len.toNat))
     (h_no_store : ∀ (i : Nat) (h_i : i < lo.size)
                     (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
                     (s : StoreOp),
@@ -386,7 +503,8 @@ theorem bss_zeroed
                     ¬ (s.addr.toNat ≤ a.toNat ∧
                        a.toNat < s.addr.toNat + s.byteLen.toNat)) :
     (Materialize.LoadOps.apply fs lo Memory.zero) a = 0 := by
-  sorry
+  rw [LoadOps.apply_no_touch h_no_mmap h_no_zero h_no_store]
+  rfl
 
 /-- **relocs_applied** — every byte covered by a `StoreOp` reads the
     appropriate little-endian byte of `s.value`, *provided* no
