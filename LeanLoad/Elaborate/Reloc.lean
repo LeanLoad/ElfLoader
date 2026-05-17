@@ -156,6 +156,62 @@ def formula : Formula := fun ty inp =>
 #guard (formula R_AARCH64_ABS64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := .b8 }
 
+-- ============================================================================
+-- Per-row soundness theorems. Each row of the table above has one
+-- `formula_*` lemma stating its spec contract; together with
+-- `formula_none_iff_unsupported` (closure), this turns the table itself
+-- into the spec. A future edit that breaks any row fails at proof time.
+-- ============================================================================
+
+@[simp] theorem formula_R_AARCH64_NONE (inp : FormulaInputs) :
+    formula R_AARCH64_NONE inp = none := rfl
+
+@[simp] theorem formula_R_AARCH64_ABS64 (inp : FormulaInputs) :
+    formula R_AARCH64_ABS64 inp =
+      some { value := inp.symValue + inp.addend, size := .b8 } := rfl
+
+@[simp] theorem formula_R_AARCH64_ABS32 (inp : FormulaInputs) :
+    formula R_AARCH64_ABS32 inp =
+      some { value := inp.symValue + inp.addend, size := .b4 } := rfl
+
+@[simp] theorem formula_R_AARCH64_GLOB_DAT (inp : FormulaInputs) :
+    formula R_AARCH64_GLOB_DAT inp =
+      some { value := inp.symValue + inp.addend, size := .b8 } := rfl
+
+@[simp] theorem formula_R_AARCH64_JUMP_SLOT (inp : FormulaInputs) :
+    formula R_AARCH64_JUMP_SLOT inp =
+      some { value := inp.symValue + inp.addend, size := .b8 } := rfl
+
+@[simp] theorem formula_R_AARCH64_RELATIVE (inp : FormulaInputs) :
+    formula R_AARCH64_RELATIVE inp =
+      some { value := inp.base + inp.addend, size := .b8 } := rfl
+
+/-- Closure: a successful application's type is one of the named
+    codes. The contrapositive — adding a new branch to `formula`
+    without naming it here breaks this proof — keeps the table
+    exhaustive by construction. -/
+theorem formula_some_isNamed {ty : UInt32} {inp : FormulaInputs}
+    {r : FormulaResult} (h : formula ty inp = some r) :
+    ty = R_AARCH64_ABS64 ∨ ty = R_AARCH64_ABS32 ∨
+    ty = R_AARCH64_GLOB_DAT ∨ ty = R_AARCH64_JUMP_SLOT ∨
+    ty = R_AARCH64_RELATIVE := by
+  unfold formula at h
+  simp only [beq_iff_eq] at h
+  by_cases h0 : ty = R_AARCH64_NONE
+  · rw [if_pos h0] at h; cases h
+  by_cases h1 : ty = R_AARCH64_ABS64
+  · exact .inl h1
+  by_cases h2 : ty = R_AARCH64_ABS32
+  · exact .inr (.inl h2)
+  by_cases h3 : ty = R_AARCH64_GLOB_DAT
+  · exact .inr (.inr (.inl h3))
+  by_cases h4 : ty = R_AARCH64_JUMP_SLOT
+  · exact .inr (.inr (.inr (.inl h4)))
+  by_cases h5 : ty = R_AARCH64_RELATIVE
+  · exact .inr (.inr (.inr (.inr h5)))
+  rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3, if_neg h4, if_neg h5] at h
+  cases h
+
 end LeanLoad.Elaborate.Aarch64
 
 -- ============================================================================
@@ -228,6 +284,58 @@ def formula : Formula := fun ty inp =>
 
 #guard (formula R_X86_64_64 { symValue := 0xFFFFFFFFFFFFFFFF, addend := 1, base := 0, place := 0 })
         == some { value := 0, size := .b8 }
+
+-- ============================================================================
+-- Per-row soundness theorems. Mirrors the AArch64 block above; each row
+-- of the table has one `formula_*` lemma stating its spec contract.
+-- Note `GLOB_DAT` / `JUMP_SLOT` are `S` (no addend) per x86-64 psABI —
+-- different from AArch64's `S + A`.
+-- ============================================================================
+
+@[simp] theorem formula_R_X86_64_NONE (inp : FormulaInputs) :
+    formula R_X86_64_NONE inp = none := rfl
+
+@[simp] theorem formula_R_X86_64_64 (inp : FormulaInputs) :
+    formula R_X86_64_64 inp =
+      some { value := inp.symValue + inp.addend, size := .b8 } := rfl
+
+@[simp] theorem formula_R_X86_64_GLOB_DAT (inp : FormulaInputs) :
+    formula R_X86_64_GLOB_DAT inp =
+      some { value := inp.symValue, size := .b8 } := rfl
+
+@[simp] theorem formula_R_X86_64_JUMP_SLOT (inp : FormulaInputs) :
+    formula R_X86_64_JUMP_SLOT inp =
+      some { value := inp.symValue, size := .b8 } := rfl
+
+@[simp] theorem formula_R_X86_64_RELATIVE (inp : FormulaInputs) :
+    formula R_X86_64_RELATIVE inp =
+      some { value := inp.base + inp.addend, size := .b8 } := rfl
+
+@[simp] theorem formula_R_X86_64_32 (inp : FormulaInputs) :
+    formula R_X86_64_32 inp =
+      some { value := inp.symValue + inp.addend, size := .b4 } := rfl
+
+/-- Closure: a successful application's type is one of the named codes. -/
+theorem formula_some_isNamed {ty : UInt32} {inp : FormulaInputs}
+    {r : FormulaResult} (h : formula ty inp = some r) :
+    ty = R_X86_64_64 ∨ ty = R_X86_64_GLOB_DAT ∨ ty = R_X86_64_JUMP_SLOT ∨
+    ty = R_X86_64_RELATIVE ∨ ty = R_X86_64_32 := by
+  unfold formula at h
+  simp only [beq_iff_eq] at h
+  by_cases h0 : ty = R_X86_64_NONE
+  · rw [if_pos h0] at h; cases h
+  by_cases h1 : ty = R_X86_64_64
+  · exact .inl h1
+  by_cases h2 : ty = R_X86_64_GLOB_DAT
+  · exact .inr (.inl h2)
+  by_cases h3 : ty = R_X86_64_JUMP_SLOT
+  · exact .inr (.inr (.inl h3))
+  by_cases h4 : ty = R_X86_64_RELATIVE
+  · exact .inr (.inr (.inr (.inl h4)))
+  by_cases h5 : ty = R_X86_64_32
+  · exact .inr (.inr (.inr (.inr h5)))
+  rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3, if_neg h4, if_neg h5] at h
+  cases h
 
 end LeanLoad.Elaborate.X86_64
 

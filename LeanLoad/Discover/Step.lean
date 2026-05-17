@@ -344,12 +344,40 @@ def appendChild (g : LoadGraph) (src : Nat) (obj : LoadedObject)
     depsSize   := h_size'
     depsBounds := h_bounds' }
 
+/-- `recordDep` doesn't touch the `objects` array. -/
+@[simp] theorem recordDep_objects (g : LoadGraph) (src tgt : Nat)
+    (h_tgt : tgt < g.objects.size) :
+    (g.recordDep src tgt h_tgt).objects = g.objects := rfl
+
+/-- Corollary used wherever a size proof needs to survive `recordDep`. -/
+@[simp] theorem recordDep_size (g : LoadGraph) (src tgt : Nat)
+    (h_tgt : tgt < g.objects.size) :
+    (g.recordDep src tgt h_tgt).objects.size = g.objects.size := rfl
+
+/-- `appendChild` pushes one entry — the size grows by exactly one. -/
+@[simp] theorem appendChild_size (g : LoadGraph) (src : Nat) (obj : LoadedObject)
+    (h_fresh : alreadyLoaded g.objects obj.name = false) :
+    (g.appendChild src obj h_fresh).objects.size = g.objects.size + 1 := by
+  show (g.objects.push obj).size = _; rw [Array.size_push]
+
+/-- The pushed object lives at the old size (= new size - 1). -/
+@[simp] theorem appendChild_objects (g : LoadGraph) (src : Nat) (obj : LoadedObject)
+    (h_fresh : alreadyLoaded g.objects obj.name = false) :
+    (g.appendChild src obj h_fresh).objects = g.objects.push obj := rfl
+
+/-- `main` is at index 0 in both old and new graphs, so it's preserved. -/
+theorem appendChild_main (g : LoadGraph) (src : Nat) (obj : LoadedObject)
+    (h_fresh : alreadyLoaded g.objects obj.name = false) :
+    (g.appendChild src obj h_fresh).main = g.main := by
+  show (g.objects.push obj)[0]'_ = g.objects[0]'_
+  rw [Array.getElem_push, dif_pos g.sizePos]
+
 end LoadGraph
 
 -- ============================================================================
 -- BFS state machine: WorkItem queue + per-item decision (`step`).
--- The queue is managed by `discoverLoop`; `step` is called only on a
--- concrete head element.
+-- The queue is managed by `bfsStep1` / `discoverLoopWith`; `step` is
+-- called only on a concrete head element.
 -- ============================================================================
 
 /-- One BFS work item: a `DT_NEEDED` soname, with its source-object
@@ -399,5 +427,209 @@ theorem step_skip_tgt_lt {objs : Array LoadedObject}
     rw [h_eq]
     exact findLoadedIdx_lt objs item.soname h_find
   · cases h
+
+/-- `workOfElf` items all carry `sourceIdx = sourceIdx`. Used by
+    `bfsStep1` to maintain the BFS-state invariant after pushing a new
+    object's NEEDED entries onto the queue. -/
+theorem workOfElf_sourceIdx (sourceIdx : Nat) (elf : Elaborate.Elf)
+    {item : WorkItem} (h_mem : item ∈ workOfElf sourceIdx elf) :
+    item.sourceIdx = sourceIdx := by
+  unfold workOfElf at h_mem
+  rw [List.mem_map] at h_mem
+  obtain ⟨_, _, h_eq⟩ := h_mem
+  rw [← h_eq]
+
+-- ============================================================================
+-- BfsState — the BFS carrier with one structural invariant: every
+-- pending work item's `sourceIdx` is a valid object index. This is
+-- maintained by `bfsStep1` across iterations and lets callers
+-- (`Materialize`-shaped reasoning, tests) treat every queued source
+-- as a `Fin graph.objects.size` without an `Option` dance.
+-- ============================================================================
+
+/-- BFS carrier: the accumulating `LoadGraph` plus the pending work
+    queue, bundled with the invariant that every queued item's
+    `sourceIdx` is in range for the current graph.
+
+    Initial state: `initBfsState`. Per-iteration state evolution:
+    `bfsStep1`. End state: `work = []` (no more sonames to resolve).
+    All transitions preserve `workSourcesValid`, so it never has to
+    be re-proven at consumer sites. -/
+structure BfsState where
+  graph            : LoadGraph
+  work             : List WorkItem
+  /-- Every queued item's source object exists. Maintained because:
+      · `.skip` / `.resolve-dedup-hit` drop the head and don't grow
+        objects — tail items remain valid by record-projection.
+      · `.resolve-new` grows objects (so old bounds still hold by
+        `<-of-<` monotonicity) and the new `workOfElf` items all carry
+        `sourceIdx = newIdx < (g.appendChild …).objects.size`. -/
+  workSourcesValid : ∀ item ∈ work, item.sourceIdx < graph.objects.size
+
+namespace BfsState
+
+/-- Initial BFS state: the main object alone, with its NEEDED entries
+    queued. `workSourcesValid` holds because every initial work item
+    has `sourceIdx = 0 < 1 = (initial graph).objects.size`. -/
+def initial (mainObj : LoadedObject) : BfsState :=
+  let graph : LoadGraph := {
+    objects    := #[mainObj]
+    deps       := #[#[]]
+    sizePos    := Nat.zero_lt_one
+    namesNodup := by simp
+    depsSize   := rfl
+    depsBounds := by
+      intro i h_lt t h_mem
+      have h_i_zero : i = 0 := by
+        have h_lt' : i < (#[#[]] : Array (Array Nat)).size := h_lt
+        simp at h_lt'; omega
+      subst h_i_zero
+      exact absurd h_mem (by simp) }
+  let work := workOfElf 0 mainObj.elf
+  { graph, work,
+    workSourcesValid := by
+      intro item h_mem
+      rw [workOfElf_sourceIdx 0 mainObj.elf h_mem]
+      show 0 < graph.objects.size
+      exact graph.sizePos }
+
+end BfsState
+
+-- ============================================================================
+-- Effects — abstract IO leaves so `bfsStep1` is generic over the
+-- effect monad. Production: `IO` via `Effects.io` (defined in
+-- `Discover/IO.lean`). Tests: synthetic monad over an in-memory
+-- store via `Effects.test`.
+-- ============================================================================
+
+/-- The two IO leaves `bfsStep1` calls plus a `fail` for the
+    missing-dep error. Parameterised over the effect monad `m` so
+    tests can swap in a pure `Except String` (or `ReaderT TestStore`)
+    instance. -/
+structure Effects (m : Type → Type) where
+  /-- Resolve a `DT_NEEDED` soname against the search context to a
+      path on disk (or in the test store). `none` means "not found". -/
+  resolveSoname : String → SearchContext → m (Option String)
+  /-- Open + parse + elaborate one ELF at `path`. Returns the open
+      handle (kept for downstream `mmap`) and the elaborated view. -/
+  readAndParse  : String → m (Runtime.FileHandle × Elaborate.Elf)
+  /-- Surface a fatal error. In `IO`, this is `throw (IO.userError …)`;
+      in `Except String`, it's `throw`. Polymorphic in the return type
+      because the caller is in continuation position. -/
+  fail          : {α : Type} → String → m α
+
+-- ============================================================================
+-- bfsStep1 — one BFS iteration. Pure interface, generic over `m`,
+-- consumes/produces `BfsState` so the invariant is type-enforced
+-- across steps. The driver `discoverLoopWith` just iterates this.
+-- ============================================================================
+
+/-- Result of one BFS iteration: either the queue was empty (`done`,
+    `s.graph` is the final output) or one item was processed
+    (`continue s'`, with `s'.workSourcesValid` preserved). -/
+inductive BfsStepResult where
+  | done
+  | continue (s' : BfsState)
+
+/-- Process exactly one work item.
+
+    Returns `.done` if the queue is empty (terminal state — caller
+    should return `s.graph`). Otherwise dispatches the head via `step`
+    and one of three branches:
+
+    · `.skip` — soname already loaded. Edge recorded via
+      `LoadGraph.recordDep`, queue tail unchanged.
+    · `.resolve` + post-canonicalisation dedup hit — drop the
+      re-parsed object, record edge to existing index.
+    · `.resolve` + new object — push via `LoadGraph.appendChild`,
+      enqueue the new elf's NEEDED entries via `workOfElf`.
+
+    In each branch, `workSourcesValid` is re-established from the
+    pre-existing invariant plus locally available bounds. -/
+def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
+    (envPath : Option String) (s : BfsState) : m BfsStepResult := do
+  match h_work : s.work with
+  | [] => pure .done
+  | item :: rest =>
+    -- The invariant gives us bounds on every queued item, including
+    -- those still in `rest` (which we'll re-queue or drop).
+    have h_rest_valid : ∀ i ∈ rest, i.sourceIdx < s.graph.objects.size := by
+      intro i hi
+      exact s.workSourcesValid i (by rw [h_work]; exact List.mem_cons_of_mem _ hi)
+    match h_step : step s.graph.objects item with
+    | .skip tgt =>
+      have h_tgt : tgt < s.graph.objects.size := step_skip_tgt_lt h_step
+      let g' := s.graph.recordDep item.sourceIdx tgt h_tgt
+      -- recordDep_size: g'.objects.size = s.graph.objects.size (rfl), so
+      -- tail bounds carry over verbatim.
+      pure (.continue { graph := g', work := rest, workSourcesValid := h_rest_valid })
+    | .resolve =>
+      let ctx : SearchContext := { runpath := item.runpath, envPath, defaults := #[] }
+      match ← eff.resolveSoname item.soname ctx with
+      | none =>
+        eff.fail s!"discover: cannot find '{item.soname}' \
+          (runpath={item.runpath}, env={envPath})"
+      | some path =>
+        let (handle, elf) ← eff.readAndParse path
+        let canonical := canonicalName path elf
+        let obj : LoadedObject := { name := canonical, handle, elf }
+        match h_idx : findLoadedIdx s.graph.objects canonical with
+        | some tgt =>
+          -- Post-canonicalisation dedup hit. Edge to existing index.
+          have h_tgt : tgt < s.graph.objects.size :=
+            findLoadedIdx_lt _ _ h_idx
+          let g' := s.graph.recordDep item.sourceIdx tgt h_tgt
+          pure (.continue { graph := g', work := rest, workSourcesValid := h_rest_valid })
+        | none =>
+          -- New object. Push via appendChild, enqueue its NEEDED entries.
+          have h_fresh : alreadyLoaded s.graph.objects canonical = false := by
+            have h_none : Array.findIdx? (·.name == canonical) s.graph.objects = none :=
+              h_idx
+            have h_all_ne := Array.findIdx?_eq_none_iff.mp h_none
+            unfold alreadyLoaded
+            rw [Bool.eq_false_iff]
+            intro h_any
+            rw [Array.any_eq_true'] at h_any
+            obtain ⟨o, h_mem, h_eq⟩ := h_any
+            exact absurd (h_all_ne o h_mem) (by simp [h_eq])
+          let newIdx := s.graph.objects.size
+          let g' := s.graph.appendChild item.sourceIdx obj h_fresh
+          -- After appendChild, g'.objects.size = s.graph.objects.size + 1.
+          -- Old rest items had sourceIdx < old size, still < new size.
+          -- New workOfElf items have sourceIdx = newIdx = old size < new size.
+          have h_g_size : g'.objects.size = s.graph.objects.size + 1 :=
+            LoadGraph.appendChild_size _ _ _ _
+          let newWork := workOfElf newIdx elf
+          have h_all_valid : ∀ i ∈ rest ++ newWork,
+              i.sourceIdx < g'.objects.size := by
+            intro i hi
+            rcases List.mem_append.mp hi with hL | hR
+            · have h_old := h_rest_valid i hL
+              rw [h_g_size]; omega
+            · rw [workOfElf_sourceIdx newIdx elf hR, h_g_size]
+              show s.graph.objects.size < s.graph.objects.size + 1
+              omega
+          pure (.continue { graph := g', work := rest ++ newWork,
+                            workSourcesValid := h_all_valid })
+
+-- ============================================================================
+-- discoverLoopWith — iterate `bfsStep1` until the queue empties (or
+-- fuel runs out). The fuel cap is invisible in practice; each push
+-- monotonically grows `objects.size`, and `objects.size ≤ total
+-- transitive deps in the system`.
+-- ============================================================================
+
+/-- Drive the BFS to completion using the given effects. Returns
+    `s.graph` once the work queue empties. The fuel cap is a Lean-
+    termination concession — the natural termination (queue shrinks
+    to empty) is invisible to the type system. -/
+def discoverLoopWith {m : Type → Type} [Monad m] (eff : Effects m)
+    (envPath : Option String) (fuel : Nat) (s : BfsState) : m LoadGraph := do
+  match fuel with
+  | 0 => pure s.graph
+  | fuel + 1 =>
+    match ← bfsStep1 eff envPath s with
+    | .done => pure s.graph
+    | .continue s' => discoverLoopWith eff envPath fuel s'
 
 end LeanLoad.Discover

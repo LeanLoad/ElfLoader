@@ -111,6 +111,18 @@ structure ElfLayout (objCount : Nat) where
       possibly more if the no-wrap dance demands. The reservation
       reserves exactly `advance` bytes per elf via `assignBases`. -/
   advance        : UInt64
+  /-- Same length as the underlying elf's PT_LOAD array. Discharged at
+      `ofElf` from `Array.size_map`; lets consumers (`Materialize`)
+      re-index between the two arrays without recomputing. -/
+  segmentsSizeEq : segments.size = elf.segments.size
+  /-- Pointwise: each `SegmentLayout`'s underlying gabi segment is the
+      corresponding entry in `elf.segments`. Discharged at `ofElf` from
+      `Array.getElem_map` + `SegmentLayout.ofSegmentCore_segment`.
+      Lets `Materialize` propagate `Elf.initArrInExecSeg` across the
+      `Plan` ↔ `Elaborate` view boundary. -/
+  segmentsSegmentEq : ∀ (k : Nat) (h : k < segments.size),
+    (segments[k]'h).segment =
+      elf.segments[k]'(segmentsSizeEq ▸ h)
   /-- Page-aligned segment ranges don't overlap pairwise. -/
   segmentsSorted : Sorted segments
   /-- Each segment's mmap'd range fits in `[0, advance)` (in `Nat`).
@@ -229,7 +241,21 @@ def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
       intro i h_lt
       have h := h_pe_le_obj i h_lt
       omega
+    have h_seg_eq : ∀ (k : Nat) (h : k < segs.size),
+        (segs[k]'h).segment =
+          e.segments[k]'(h_size_eq ▸ h) := by
+      intro k h_lt
+      have h_lt_e : k < e.segments.size := h_size_eq ▸ h_lt
+      have h_get : segs[k]'h_lt = SegmentLayout.ofSegmentCore elfs.size
+          (e.segments[k]'h_lt_e)
+          (Reloc.planSegment elfs rt objectIdx (e.segments[k]'h_lt_e)) := by
+        show (e.segments.map _)[k]'h_lt = _
+        rw [Array.getElem_map]
+      rw [h_get]
+      exact SegmentLayout.ofSegmentCore_segment elfs.size _ _
     .ok { elf := e, segments := segs, advance,
+          segmentsSizeEq := h_size_eq,
+          segmentsSegmentEq := h_seg_eq,
           segmentsSorted := h_sorted,
           pageEndAddr_le_advance := h_bound }
   else
