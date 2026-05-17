@@ -69,13 +69,18 @@ def resolveSoname (soname : String) (ctx : SearchContext) : IO (Option String) :
 -- Effects instance for production IO.
 -- ============================================================================
 
-/-- The production IO instance: filesystem-backed `resolveSoname` /
-    `readAndParse`, `IO.userError`-shaped `fail`. Tests substitute
-    `Effects.test` (in-memory store) for this. -/
+/-- The production IO instance: filesystem search → open → parse →
+    elaborate, composed into a single `resolveDep`. `fail` is
+    `throw (IO.userError …)`. Tests substitute `Effects.test`
+    (in-memory store) for this. -/
 def Effects.io : Effects IO :=
-  { resolveSoname := Discover.resolveSoname,
-    readAndParse  := Discover.readAndParse,
-    fail          := fun {_} msg => throw (IO.userError msg) }
+  { resolveDep := fun soname ctx => do
+      match ← firstExisting (searchCandidates soname ctx) with
+      | none => pure none
+      | some path =>
+        let (handle, elf) ← readAndParse path
+        pure (some (canonicalName path elf, handle, elf))
+    fail := fun {_} msg => throw (IO.userError msg) }
 
 -- ============================================================================
 -- discover — production entry point.

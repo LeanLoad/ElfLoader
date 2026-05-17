@@ -502,21 +502,29 @@ end BfsState
 -- store via `Effects.test`.
 -- ============================================================================
 
-/-- The two IO leaves `bfsStep1` calls plus a `fail` for the
+/-- The single IO leaf `bfsStep1` calls, plus a `fail` for the
     missing-dep error. Parameterised over the effect monad `m` so
     tests can swap in a pure `Except String` (or `ReaderT TestStore`)
     instance. -/
 structure Effects (m : Type → Type) where
-  /-- Resolve a `DT_NEEDED` soname against the search context to a
-      path on disk (or in the test store). `none` means "not found". -/
-  resolveSoname : String → SearchContext → m (Option String)
-  /-- Open + parse + elaborate one ELF at `path`. Returns the open
-      handle (kept for downstream `mmap`) and the elaborated view. -/
-  readAndParse  : String → m (Runtime.FileHandle × Elaborate.Elf)
+  /-- Resolve a `DT_NEEDED` soname against the search context, open
+      the file, parse it, and elaborate. Returns:
+      · `none` — soname didn't resolve to an existing file (missing dep).
+      · `some (name, handle, elf)` — `name` is the canonical dedup key
+        (`DT_SONAME` if set, else the path basename), `handle` is the
+        open fd (kept for downstream `mmap`), `elf` is the elaborated
+        view.
+      Parse/elaborate failures escape via the monad's error mechanism
+      (IO exception in production; `throw` in `Except`-based tests).
+      Splitting "not found" out as a `none` instead of using `fail`
+      lets `bfsStep1` produce the diagnostic with full `WorkItem`
+      context (runpath, envPath) that the effect doesn't know about. -/
+  resolveDep : String → SearchContext →
+               m (Option (String × Runtime.FileHandle × Elaborate.Elf))
   /-- Surface a fatal error. In `IO`, this is `throw (IO.userError …)`;
       in `Except String`, it's `throw`. Polymorphic in the return type
       because the caller is in continuation position. -/
-  fail          : {α : Type} → String → m α
+  fail       : {α : Type} → String → m α
 
 -- ============================================================================
 -- bfsStep1 — one BFS iteration. Pure interface, generic over `m`,
@@ -565,13 +573,11 @@ def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
       pure (.continue { graph := g', work := rest, workSourcesValid := h_rest_valid })
     | .resolve =>
       let ctx : SearchContext := { runpath := item.runpath, envPath, defaults := #[] }
-      match ← eff.resolveSoname item.soname ctx with
+      match ← eff.resolveDep item.soname ctx with
       | none =>
         eff.fail s!"discover: cannot find '{item.soname}' \
           (runpath={item.runpath}, env={envPath})"
-      | some path =>
-        let (handle, elf) ← eff.readAndParse path
-        let canonical := canonicalName path elf
+      | some (canonical, handle, elf) =>
         let obj : LoadedObject := { name := canonical, handle, elf }
         match h_idx : findLoadedIdx s.graph.objects canonical with
         | some tgt =>
