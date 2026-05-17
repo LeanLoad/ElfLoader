@@ -20,6 +20,10 @@ Layering:
   - `./run.sh` — end-to-end including Exec.
 -/
 import LeanLoad
+-- Pull in the Discover behavior tests so their `#guard` blocks
+-- elaborate during `lake build test`. The file isn't reachable from
+-- `LeanLoad.lean` so it doesn't bloat the production library.
+import LeanLoad.Discover.StepTest
 
 open LeanLoad
 open LeanLoad.Discover
