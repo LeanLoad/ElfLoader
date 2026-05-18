@@ -29,6 +29,9 @@ import LeanLoad.Parse.RawDyn
 import LeanLoad.Elaborate.Elf
 import LeanLoad.Discover.Graph
 import Std.Data.HashMap
+import Mathlib.Logic.Relation
+import Mathlib.Data.List.Basic
+import Mathlib.Data.List.Nodup
 
 namespace LeanLoad.Plan.Resolve
 
@@ -280,6 +283,49 @@ private theorem bfsLoop_toList_prefix (g : LoadGraph) (fuel : Nat) :
 -- so `resolveByName` returns `none` iff truly no elf defines the
 -- name.
 -- ============================================================================
+
+/-- Main is the first entry in `bfsOrder`. Unfolds one iteration:
+    push `⟨0, sizePos⟩` since `visited[0] = false`, then use
+    `bfsLoop_toList_prefix` to lift the head through the recursion. -/
+theorem bfsOrder_head (g : LoadGraph) :
+    (bfsOrder g)[0]? = some ⟨0, g.sizePos⟩ := by
+  have h_vis_main :
+      (Vector.replicate g.objects.size false)[(⟨0, g.sizePos⟩ : Fin g.objects.size)]
+        = false := by
+    show (Vector.replicate g.objects.size false)[0]'g.sizePos = false
+    simp
+  -- After unfolding one iteration, the recursive call has
+  -- `order = #[⟨0, sizePos⟩]`. `bfsLoop_toList_prefix` lifts that
+  -- head through the remaining iterations.
+  have h_step : bfsOrder g =
+      bfsLoop g (totalEdges g + g.objects.size)
+        ([] ++ ((g.deps[(⟨0, g.sizePos⟩ : Fin g.objects.size).val]'(by
+                  rw [g.depsSize]; exact g.sizePos)).attach.toList.map fun ⟨c, h_mem⟩ =>
+                (⟨c, g.depsBounds (⟨0, g.sizePos⟩ : Fin g.objects.size).val
+                    (by rw [g.depsSize]; exact g.sizePos) c h_mem⟩
+                  : Fin g.objects.size)))
+        ((Vector.replicate g.objects.size false).set
+          (⟨0, g.sizePos⟩ : Fin g.objects.size).val true
+          (⟨0, g.sizePos⟩ : Fin g.objects.size).isLt)
+        ((#[] : Array (Fin g.objects.size)).push ⟨0, g.sizePos⟩) := by
+    show bfsLoop g (totalEdges g + g.objects.size + 1) _ _ _ = _
+    conv_lhs => rw [bfsLoop]
+    simp [h_vis_main]
+  rw [h_step]
+  obtain ⟨suffix, h_suffix⟩ := bfsLoop_toList_prefix g
+    (totalEdges g + g.objects.size)
+    ([] ++ ((g.deps[(⟨0, g.sizePos⟩ : Fin g.objects.size).val]'(by
+              rw [g.depsSize]; exact g.sizePos)).attach.toList.map fun ⟨c, h_mem⟩ =>
+            (⟨c, g.depsBounds (⟨0, g.sizePos⟩ : Fin g.objects.size).val
+                (by rw [g.depsSize]; exact g.sizePos) c h_mem⟩
+              : Fin g.objects.size)))
+    ((Vector.replicate g.objects.size false).set
+      (⟨0, g.sizePos⟩ : Fin g.objects.size).val true
+      (⟨0, g.sizePos⟩ : Fin g.objects.size).isLt)
+    ((#[] : Array (Fin g.objects.size)).push ⟨0, g.sizePos⟩)
+  rw [← Array.getElem?_toList, h_suffix]
+  show ([⟨0, g.sizePos⟩] ++ suffix)[0]? = some ⟨0, g.sizePos⟩
+  rfl
 
 -- ============================================================================
 -- Deferred theorems on `bfsOrder` (spec witnesses for gabi 08).
