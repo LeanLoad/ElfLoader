@@ -65,7 +65,7 @@ import LeanLoad.Elaborate.Elf
 
 import LeanLoad.Runtime
 
-import LeanLoad.Discover.Step
+import LeanLoad.Discover.Driver
 import LeanLoad.Discover.IO
 import LeanLoad.Discover.Test  -- pure #guard scenarios; elaborate on build
 

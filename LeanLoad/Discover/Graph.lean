@@ -7,8 +7,9 @@ structural invariants the rest of the loader depends on (non-emptiness,
 name-Nodup, deps-shape, deps-bounds).
 
 Two construction methods (`recordDep`, `appendChild`) bundle the
-invariant maintenance so the BFS driver (`BfsState.step`) only calls
-them — no inline proof boilerplate at the recursive call sites.
+invariant maintenance so the BFS driver (`Driver.lean`'s
+`BfsState.{linkExisting, appendAndQueue, step}`) only calls them — no
+inline proof boilerplate at the recursive call sites.
 
 File layout:
   · `LoadedObject` + `ofMain` — one entry of the graph; the singular
@@ -196,7 +197,8 @@ theorem findLoadedIdx_none_iff (g : LoadGraph) (name : String) :
 /-- Pushing a freshly-loaded object preserves the names-Nodup invariant.
     The precondition `findLoadedIdx = none` is what `BfsState.step`
     discharges by pattern-matching on its dedup check (no extra proof
-    construction required at the call site). Used by `appendChild`. -/
+    construction required at the call site). Used by `appendChild` (and
+    transitively by `BfsState.appendAndQueue`). -/
 theorem nodup_names_push_of_findLoadedIdx_none
     (g : LoadGraph) (obj : LoadedObject)
     (h_fresh : g.findLoadedIdx obj.name = none) :
@@ -242,11 +244,11 @@ def singleton (obj : LoadedObject) : LoadGraph :=
 def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
 
 /-- Record a dep edge `src → tgt` to an already-loaded object. The
-    target's bound is the caller's obligation — `BfsState.step` discharges
-    it from `dispatch_skip_tgt_lt` (BFS dedup hit) or `findLoadedIdx_lt`
-    (post-canonicalisation dedup hit). All four `LoadGraph` invariants
-    are preserved by `recordEdge_size` + `recordEdge_bounds`; objects
-    and namesNodup are untouched. -/
+    target's bound is the caller's obligation — `BfsState.linkExisting`
+    discharges it from `dispatch_skip_tgt_lt` (pre-IO dedup hit) or
+    `findLoadedIdx_lt` (post-IO dedup hit). All four `LoadGraph`
+    invariants are preserved by `recordEdge_size` + `recordEdge_bounds`;
+    objects and namesNodup are untouched. -/
 def recordDep (g : LoadGraph) (src tgt : Nat) (h_tgt : tgt < g.objects.size) :
     LoadGraph :=
   { g with

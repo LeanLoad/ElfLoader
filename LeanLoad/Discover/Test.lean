@@ -1,11 +1,12 @@
 /-
 Discover behavior tests — pure, in-memory, no IO.
 
-The BFS state machine (`BfsState.step`, `discoverLoopWith`) is generic over
-the effect monad. This file substitutes an in-memory `TestStore` for
-the filesystem, builds an `Effects (Except String)` instance over it
-(re-simulating the C-side path search at the Lean level), and
-exercises shape-level behaviors via `#guard` at elaboration time:
+The BFS state machine (`BfsState`, `step`, `discoverLoopWith` in
+`Discover.Driver`) is generic over the effect monad. This file
+substitutes an in-memory `TestStore` for the filesystem, builds an
+`Effects (Except String)` instance over it (re-simulating the C-side
+path search at the Lean level), and exercises shape-level behaviors
+via `#guard` at elaboration time:
 
   · Linear chain (4 objects in BFS order).
   · Diamond (shared dep loaded once, two in-edges).
@@ -25,7 +26,7 @@ that want to exercise the SONAME-missing error path pass
 `soname := none` explicitly.
 -/
 
-import LeanLoad.Discover.BFS
+import LeanLoad.Discover.Driver
 
 namespace LeanLoad.Discover
 

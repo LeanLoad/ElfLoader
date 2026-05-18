@@ -1,19 +1,20 @@
 /-
 Discover executor — IO instantiation.
 
-The BFS state machine (`BfsState.step`, `discoverLoopWith`) and its
-invariant carrier (`BfsState`) live in `Discover.Step` — pure and
-generic over the effect monad. This file:
+The BFS state machine and its invariant carrier (`BfsState` + `step`
++ `discoverLoopWith`) live in `Discover.Driver` — pure and generic
+over the effect monad. The abstract IO leaf (`Effects m`) is in
+`Discover.Effects`. This file:
 
   · Builds `Effects.io` — production `resolveDep` composed from
     `Runtime.openByName` (C-side path search + open) + `Parse` +
-    `Elaborate`. Canonical dedup key = `DT_SONAME` when set, else
-    the requested NEEDED string (matches ld.so when SONAME is unset).
+    `Elaborate`. Canonical dedup key = `DT_SONAME` (production
+    *requires* it; missing-SONAME deps fail loud).
   · Provides `discover` — the production entry. Opens the main
     executable via `Runtime.openByName` (literal-path case in the
-    C function), parses it, computes its canonical name in Lean
-    (basename of mainPath when SONAME is unset — the conventional
-    case for executables), and drives the BFS via `discoverLoopWith`.
+    C function), parses it, names it via `LoadedObject.ofMain`
+    (basename of `mainPath` — executables don't conventionally set
+    SONAME), and drives the BFS via `discoverLoopWith`.
 
 Tests substitute `Effects.test` (over an in-memory store) for
 `Effects.io` and call the same `discoverLoopWith` — no IO needed.
@@ -26,7 +27,7 @@ Search rules (gabi 08 § Shared Object Dependencies) all live in
 `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.Discover.BFS
+import LeanLoad.Discover.Driver
 import LeanLoad.Parse.RawElf
 import LeanLoad.Elaborate.Elf
 import LeanLoad.Runtime

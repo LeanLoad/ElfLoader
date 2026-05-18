@@ -109,7 +109,7 @@ Runtime:     witnessed lo → IO Unit
   - `runtime/*.c` — audited C shims (~150 lines).
   - `LeanLoad/Runtime.lean` — `@[extern]` declarations + the typed slot
     records' `run` methods + `Reserve.run`.
-  - IO bookends: `LeanLoad/Discover/IO.lean`, `LeanLoad/Main.lean`,
+  - IO bookends: `LeanLoad/Discover/IO.lean`, `Main.lean`,
     plus `LoadOps.runSafe` (which only accepts a `Safe`-witnessed tree
     but the FFI dispatch itself isn't proved).
 

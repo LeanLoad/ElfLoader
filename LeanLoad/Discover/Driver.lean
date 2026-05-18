@@ -4,8 +4,9 @@ BFS driver — the algorithm, generic over the effect monad.
 Three layers, top-down:
 
   · Per-item dispatch (`WorkItem` / `Decision` / `dispatch` / `workOfElf`).
-    Pure: given the loaded objects and one queued item, decide whether
-    to skip (already loaded) or resolve (defer to the IO seam).
+    Pure: given the accumulating `LoadGraph` and one queued item,
+    decide whether to skip (already loaded) or resolve (defer to the
+    IO seam).
 
   · State carrier (`BfsState`) — accumulating `LoadGraph` + pending
     work queue + one invariant (`workSourcesValid`: every queued
@@ -59,17 +60,17 @@ inductive Decision where
   | resolve
 
 /-- Pure dispatch: decide whether the work item's soname is already
-    loaded. Returns the matching index for the `.skip` branch's edge
-    recording. The `.done` case (empty work queue) is handled by the
-    caller — `dispatch` is only invoked on a concrete item.
+    loaded in `g`. Returns the matching index for the `.skip` branch's
+    edge recording. The `.done` case (empty work queue) is handled by
+    the caller — `dispatch` is only invoked on a concrete item.
 
     Note: this is the *pre-IO* dedup, keyed on the raw `DT_NEEDED`
     string. A second dedup happens inside `step` after IO returns,
     keyed on the canonical `DT_SONAME` (see `linkExisting`'s second
     call site). Pre-IO dedup is an optimization — it skips
     `resolveDep` when the same string was already resolved. -/
-def dispatch (objs : Array LoadedObject) (item : WorkItem) : Decision :=
-  match findLoadedIdx objs item.soname with
+def dispatch (g : LoadGraph) (item : WorkItem) : Decision :=
+  match g.findLoadedIdx item.soname with
   | some tgt => .skip tgt
   | none     => .resolve
 
@@ -86,9 +87,8 @@ def workOfElf (sourceIdx : Nat) (elf : Elaborate.Elf) : List WorkItem :=
 -- ============================================================================
 
 /-- `dispatch` returns `.skip tgt` iff `findLoadedIdx` returned `some tgt`. -/
-theorem dispatch_skip_iff {objs : Array LoadedObject} {item : WorkItem}
-    {tgt : Nat} :
-    dispatch objs item = .skip tgt ↔ findLoadedIdx objs item.soname = some tgt := by
+theorem dispatch_skip_iff {g : LoadGraph} {item : WorkItem} {tgt : Nat} :
+    dispatch g item = .skip tgt ↔ g.findLoadedIdx item.soname = some tgt := by
   constructor
   · intro h
     unfold dispatch at h
@@ -101,8 +101,8 @@ theorem dispatch_skip_iff {objs : Array LoadedObject} {item : WorkItem}
     rw [h]
 
 /-- `dispatch` returns `.resolve` iff `findLoadedIdx` returned `none`. -/
-theorem dispatch_resolve_iff {objs : Array LoadedObject} {item : WorkItem} :
-    dispatch objs item = .resolve ↔ findLoadedIdx objs item.soname = none := by
+theorem dispatch_resolve_iff {g : LoadGraph} {item : WorkItem} :
+    dispatch g item = .resolve ↔ g.findLoadedIdx item.soname = none := by
   constructor
   · intro h
     unfold dispatch at h
@@ -113,14 +113,13 @@ theorem dispatch_resolve_iff {objs : Array LoadedObject} {item : WorkItem} :
     unfold dispatch
     rw [h]
 
-/-- The `.skip` arm of `dispatch` carries `tgt < objs.size`, because
+/-- The `.skip` arm of `dispatch` carries `tgt < g.objects.size`, because
     `dispatch` produces `.skip` only when `findLoadedIdx` returned the
     matching index — which is bounded by `findLoadedIdx_lt`. -/
-theorem dispatch_skip_tgt_lt {objs : Array LoadedObject}
-    {item : WorkItem} {tgt : Nat}
-    (h : dispatch objs item = .skip tgt) :
-    tgt < objs.size :=
-  findLoadedIdx_lt objs item.soname (dispatch_skip_iff.mp h)
+theorem dispatch_skip_tgt_lt {g : LoadGraph} {item : WorkItem} {tgt : Nat}
+    (h : dispatch g item = .skip tgt) :
+    tgt < g.objects.size :=
+  g.findLoadedIdx_lt item.soname (dispatch_skip_iff.mp h)
 
 /-- `workOfElf` items all carry `sourceIdx = sourceIdx`. Used by the
     state-update helpers to maintain `workSourcesValid` after pushing a
@@ -215,7 +214,7 @@ def linkExisting (s : BfsState) (srcIdx : Nat) (rest : List WorkItem)
 def appendAndQueue (s : BfsState) (srcIdx : Nat) (rest : List WorkItem)
     (h_rest_valid : ∀ i ∈ rest, i.sourceIdx < s.graph.objects.size)
     (obj : LoadedObject)
-    (h_fresh : findLoadedIdx s.graph.objects obj.name = none) : BfsState :=
+    (h_fresh : s.graph.findLoadedIdx obj.name = none) : BfsState :=
   let newIdx  := s.graph.objects.size
   let g'      := s.graph.appendChild srcIdx obj h_fresh
   let newWork := workOfElf newIdx obj.elf
@@ -262,7 +261,7 @@ def step {m : Type → Type} [Monad m] (s : BfsState) (eff : Effects m) :
   | item :: rest =>
     have h_rest_valid : ∀ i ∈ rest, i.sourceIdx < s.graph.objects.size :=
       fun i hi => s.workSourcesValid i (by rw [h_work]; exact List.mem_cons_of_mem _ hi)
-    match h_step : dispatch s.graph.objects item with
+    match h_step : dispatch s.graph item with
     | .skip tgt =>
       pure (.continue (s.linkExisting item.sourceIdx rest h_rest_valid
         tgt (dispatch_skip_tgt_lt h_step)))
@@ -272,10 +271,10 @@ def step {m : Type → Type} [Monad m] (s : BfsState) (eff : Effects m) :
         eff.fail s!"discover: cannot find '{item.soname}' \
           (runpath={item.runpath})"
       | some (canonical, handle, elf) =>
-        match h_idx : findLoadedIdx s.graph.objects canonical with
+        match h_idx : s.graph.findLoadedIdx canonical with
         | some tgt =>
           pure (.continue (s.linkExisting item.sourceIdx rest h_rest_valid
-            tgt (findLoadedIdx_lt _ _ h_idx)))
+            tgt (s.graph.findLoadedIdx_lt _ h_idx)))
         | none =>
           let obj : LoadedObject := { name := canonical, handle, elf }
           pure (.continue (s.appendAndQueue item.sourceIdx rest h_rest_valid

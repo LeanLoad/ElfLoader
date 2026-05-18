@@ -170,8 +170,18 @@ LeanLoad/
     Realize.lean           Region.ops (per-segment mmapFile/zeroout/mprotect);
                            realizeOps + planOps with decidable safety predicates
   Discover/
-    Plan.lean              ObjectList non-empty subtype; LoadedObject; BFS dedup
-    IO.lean                walk DT_NEEDED via IO; resolve filenames against runpath
+    Graph.lean             LoadedObject + LoadGraph (BFS state carrier with
+                           non-emptiness / names-Nodup / deps-shape / deps-bounds
+                           witnesses) + smart constructors recordDep / appendChild
+    Effects.lean           abstract IO leaf (resolveDep + fail), monad-polymorphic;
+                           instantiated by IO.lean (production) and Test.lean (pure)
+    Driver.lean            WorkItem / Decision / dispatch + BfsState +
+                           linkExisting / appendAndQueue helpers + step +
+                           discoverLoopWith
+    IO.lean                Effects.io (Runtime.openByName → parseFromHandle) +
+                           discover (production entry; opens main, drives BFS)
+    Test.lean              Effects.test (over in-memory TestStore) + discoverPure +
+                           #guard scenarios (linear/diamond/cycle/SONAME/search-order)
   Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
                            mmapAnonAlloc (kernel-picked reservation), mprotect,
                            write, zeroout, mmapStack, callCtor, execAndJump;

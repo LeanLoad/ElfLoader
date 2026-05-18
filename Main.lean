@@ -15,7 +15,7 @@ then the one-shot finalizers (`mmapAnon` for the stack +
 
 import LeanLoad
 
-namespace LeanLoad.Main
+namespace Main
 
 open LeanLoad
 open LeanLoad.Elaborate (Elf)
@@ -213,16 +213,16 @@ def debug (path : String) : IO Unit := do
   IO.eprintln "\n== 7. LoadOps.runSafe → callCtors → execAndJump (does not return) =="
   realize bp witnessed ctorAddrs path
 
-end LeanLoad.Main
+end Main
 
 /-- LeanLoad CLI. -/
 def main (args : List String) : IO UInt32 := do
   match args with
   | ["--debug", path] =>
-    LeanLoad.Main.debug path
+    Main.debug path
     return 0
   | [path] =>
-    LeanLoad.Main.load path
+    Main.load path
     return 0
   | _ =>
     IO.eprintln "usage: leanload [--debug] <path-to-elf>"

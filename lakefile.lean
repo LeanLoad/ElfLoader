@@ -33,6 +33,6 @@ lean_lib LeanLoad where
   extraDepTargets := #[`libleanload_runtime]
 
 lean_exe leanload where
-  root := `LeanLoad.Main
+  root := `Main
   extraDepTargets := #[`libleanload_runtime]
   moreLinkArgs := runtimeLinkArgs
