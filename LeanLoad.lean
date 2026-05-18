@@ -67,6 +67,7 @@ import LeanLoad.Runtime
 
 import LeanLoad.Discover.Step
 import LeanLoad.Discover.IO
+import LeanLoad.Discover.Test  -- pure #guard scenarios; elaborate on build
 
 import LeanLoad.Plan.Align
 import LeanLoad.Plan.SegmentLayout

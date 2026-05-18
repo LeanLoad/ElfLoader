@@ -1,15 +1,14 @@
 import Lake
 open Lake DSL System
 
-package leanload where
-  testDriver := "test"
+package leanload
 
 -- ============================================================================
 -- Native runtime (FFI shim — `LeanLoad/Runtime.c`, sibling of
 -- `LeanLoad/Runtime.lean`). Single C file → object file → static lib
--- linked into the AOT binaries (`leanload`, `test`). No shared library:
--- nothing in this project calls FFI from the Lean interpreter
--- (`#eval` / LSP), so the `.so` would be unused.
+-- linked into the AOT `leanload` binary. No shared library: nothing
+-- in this project calls FFI from the Lean interpreter (`#eval` / LSP),
+-- so the `.so` would be unused.
 -- ============================================================================
 
 def cFlags : Array String := #["-O2", "-fPIC", "-Wall", "-Wextra"]
@@ -35,10 +34,5 @@ lean_lib LeanLoad where
 
 lean_exe leanload where
   root := `LeanLoad.Main
-  extraDepTargets := #[`libleanload_runtime]
-  moreLinkArgs := runtimeLinkArgs
-
-lean_exe test where
-  root := `LeanLoad.Test
   extraDepTargets := #[`libleanload_runtime]
   moreLinkArgs := runtimeLinkArgs

@@ -38,12 +38,10 @@ jobs:
           path: build
           key: ${{ steps.cache-build.outputs.cache-primary-key }}
 
-      # Handles elan + Lean toolchain + `lake build` + `lake test` +
-      # `.lake` caching.
+      # Handles elan + Lean toolchain + `lake build` + `.lake` caching.
+      # `lake build` elaborates every `#guard` block in the library
+      # (unit-level invariants); end-to-end is `./run.sh`.
       - uses: leanprover/lean-action@v1
-
-      - name: Test
-        run: ./test.sh
 
       - name: Run
         run: ./run.sh

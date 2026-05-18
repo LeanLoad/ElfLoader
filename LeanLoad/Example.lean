@@ -22,10 +22,10 @@ stages plus boundary-rejection cases that span more than one file:
      segments, and how `Materialize.safe` flattens + checks the
      full op list.
 
-`LeanLoad/Test.lean` exercises the real `examples/build/main`
-end-to-end; that remains the authoritative "the loader copes with
-musl-gcc's actual output" check. This file trades fidelity for
-synthesis-driven readability.
+`./run.sh` exercises the real `examples/build/main` end-to-end —
+that remains the authoritative "the loader copes with musl-gcc's
+actual output" check. This file trades fidelity for synthesis-
+driven readability.
 -/
 
 import LeanLoad.Plan.Layout

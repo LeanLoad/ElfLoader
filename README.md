@@ -34,8 +34,12 @@ https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c3211
 ```sh
 ./setup.sh               # one-shot: install system C toolchain, init submodules
 ./run.sh                 # build leanload + examples, run on build/main
-./test.sh                # build examples + run the Lean test suite
 ```
+
+Unit-level invariants live as `#guard` blocks in implementation
+files (`Discover/Test.lean`, `Plan/Init.lean`, `Example.lean`, …) and
+elaborate during `lake build`. The integration test is `./run.sh`
+end-to-end against `build/main`.
 
 ## Documentation
 
