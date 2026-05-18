@@ -37,6 +37,7 @@ File layout:
 import LeanLoad.Parse.RawElf
 import LeanLoad.Elaborate.Elf
 import LeanLoad.Runtime
+import Mathlib.Logic.Relation
 
 namespace LeanLoad.Discover
 
@@ -141,13 +142,11 @@ def Step (g : LoadGraph) (i j : Nat) : Prop :=
 /-- Reachable from `i` to `j` via dep edges (reflexive-transitive
     closure of `Step`). Spec witness for the gabi 08 § Shared Object
     Dependencies "dependency graph" — every NEEDED chain from main is
-    a path under this relation. -/
-inductive Reachable (g : LoadGraph) : Nat → Nat → Prop
-  /-- Every node is reachable from itself in zero steps. -/
-  | refl (i : Nat) : Reachable g i i
-  /-- Extending a reachability path by one edge. -/
-  | tail {i j k : Nat} (h_ij : Reachable g i j) (h_jk : g.Step j k) :
-      Reachable g i k
+    a path under this relation. Defined as `Relation.ReflTransGen` so
+    the induction principles (`head_induction_on`, `tail_induction_on`,
+    `cases_tail`) are available from mathlib. -/
+def Reachable (g : LoadGraph) : Nat → Nat → Prop :=
+  Relation.ReflTransGen g.Step
 
 /-- Reachable from main (idx 0). Convenience for the most common case. -/
 def ReachableFromMain (g : LoadGraph) (i : Nat) : Prop :=
