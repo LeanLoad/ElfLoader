@@ -78,6 +78,12 @@ def expect (expected : Array UInt8) : Parser Unit := do
     let actual ← u8
     if actual != byte then throw s!"expect: got {actual}, want {byte}"
 
+/-- Return the parser's entire input buffer (cursor unchanged). Used
+    by callers that want the raw bytes of a section — e.g., a string
+    table whose contents are byte-level artifacts with no internal
+    structure to decode field-by-field. -/
+def buffer : Parser ByteArray := return (← get).bytes
+
 -- ============================================================================
 -- BytesDecode typeclass
 -- ============================================================================

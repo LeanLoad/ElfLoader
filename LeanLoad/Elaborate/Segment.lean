@@ -19,7 +19,8 @@ BSS bounds, POSIX `PROT_*`) live on `Plan.SegmentLayout`, which couples a
 segment with its chosen mmap base.
 -/
 
-import LeanLoad.Parse.Structs
+import LeanLoad.Parse.RawPhdr
+import LeanLoad.Parse.RawRela
 
 namespace LeanLoad.Elaborate
 

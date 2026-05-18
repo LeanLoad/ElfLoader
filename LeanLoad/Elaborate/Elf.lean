@@ -17,10 +17,10 @@ returns an `Elaborate.Elf`:
 
 Constants and per-section semantics live in:
   - `Header.lean` — `ELFCLASS*`, `ELFDATA*`, `ET_*`
-  - `Strtab.lean` — `RawStrtab.lookup`
   - `Symbol.lean` — `STB/STT/SHN_*`, `RawSym` predicates, `Symbol`
   - `Reloc.lean` — `RawRela.sym/type` + relocation formulas
   - `Segment.lean` — single-segment containment + bundle
+  - `Parse/RawStrtab.lean` — `RawStrtab.lookup` (UTF-8 decode)
 
 Failures are `Except String`: malformed ELF class/endianness,
 malformed PT_LOAD shape, or any rela whose write window doesn't fit
@@ -29,7 +29,6 @@ a PT_LOAD.
 
 import LeanLoad.Parse.RawElf
 import LeanLoad.Elaborate.Header
-import LeanLoad.Elaborate.Strtab
 import LeanLoad.Elaborate.Symbol
 import LeanLoad.Elaborate.Segment
 
@@ -214,12 +213,12 @@ private def locateRela (segs : Array RawPhdr) (r : RawRela) :
     against a PT_LOAD segment, bundle into `Array Segment`, verify
     gabi-07 well-formedness, pre-resolve every symbol's name. -/
 def elaborate (raw : RawElf) : Except String Elf := do
-  if raw.header.ident.ei_class != ELFCLASS64 then
+  if raw.header.ei_class != ELFCLASS64 then
     .error s!"elaborate: only ELFCLASS64 supported \
-      (got ei_class={raw.header.ident.ei_class})"
-  if raw.header.ident.ei_data != ELFDATA2LSB then
+      (got ei_class={raw.header.ei_class})"
+  if raw.header.ei_data != ELFDATA2LSB then
     .error s!"elaborate: only little-endian supported \
-      (got ei_data={raw.header.ident.ei_data})"
+      (got ei_data={raw.header.ei_data})"
   let loadable := raw.phdrs.filter (·.p_type == Parse.PT_LOAD)
   -- Per-rela "tagged with its segment index" (Sigma — destructurable).
   let GEntry := Σ i : Fin loadable.size,

@@ -20,7 +20,7 @@ say what a relocation type code *means* (which formula to apply,
 what width to write). Parse only sees `r_info` as bytes.
 -/
 
-import LeanLoad.Parse.Structs
+import LeanLoad.Parse.RawRela
 import LeanLoad.Elaborate.Header
 
 -- ============================================================================

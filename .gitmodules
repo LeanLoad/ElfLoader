@@ -46,3 +46,6 @@
 [submodule "third_party/minimal-elf"]
 	path = third_party/minimal-elf
 	url = https://github.com/tchajed/minimal-elf
+[submodule "third_party/elfutils"]
+	path = third_party/elfutils
+	url = https://sourceware.org/git/elfutils.git

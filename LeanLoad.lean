@@ -32,8 +32,9 @@ stage re-checks it — the witness travels in the type.
         Carries the no-wrap invariants needed for materialize-time
         safety proofs (`pageEnd_lt`, `fileOverlay_le`,
         `vaddr_memsz_le`, `zero_end_le`, `pageInset_eq_vaddr`).
-      · `Init.order` — DFS post-order init sequence (`Fin n` typed).
-      All four bundled in `Plan.Aggregate`.
+      Init order is already bundled in the `LoadGraph` (computed
+      during DFS discovery as `g.initOrder`). All three bundled in
+      `Plan.Aggregate`.
 
   • Materialize — base-aware. Takes a `BoundPlan` (= `Plan` + IO
     `Reserve` + coherence proof) and emits a `LoadOps` tree of
@@ -52,12 +53,15 @@ stage re-checks it — the witness travels in the type.
     three target soundness theorems (`bytes_preserved`,
     `bss_zeroed`, `relocs_applied`) consume.
 -/
-import LeanLoad.Parse.Structs
-import LeanLoad.Parse.Dynamic
+import LeanLoad.Parse.RawEhdr
+import LeanLoad.Parse.RawStrtab
+import LeanLoad.Parse.RawSym
+import LeanLoad.Parse.RawRela
+import LeanLoad.Parse.RawPhdr
+import LeanLoad.Parse.RawDyn
 import LeanLoad.Parse.RawElf
 
 import LeanLoad.Elaborate.Header
-import LeanLoad.Elaborate.Strtab
 import LeanLoad.Elaborate.Symbol
 import LeanLoad.Elaborate.Segment
 import LeanLoad.Elaborate.Reloc
@@ -74,7 +78,6 @@ import LeanLoad.Plan.SegmentLayout
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Plan.Reloc
-import LeanLoad.Plan.Init
 import LeanLoad.Plan.Aggregate
 
 import LeanLoad.Materialize.LoadOps

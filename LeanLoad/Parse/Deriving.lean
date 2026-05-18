@@ -14,9 +14,10 @@ type. For primitive widths we provide instances in `Parse.Decode`
 has its own `BytesDecode` instance (typically also derived).
 
 Used by every struct under `LeanLoad/Parse/` whose parser is a
-left-to-right sequence of fixed-width field decodes. Structs that
-need pre/post checks (e.g. `RawIdent`'s magic-byte prefix) write
-their instance manually.
+left-to-right sequence of fixed-width field decodes. Pre/post
+checks ride in via field *types* (e.g. `RawEhdr`'s magic prefix is
+a `Magic [0x7f, 0x45, 0x4c, 0x46]` field, whose own `BytesDecode`
+instance verifies the bytes); the derived parent stays mechanical.
 -/
 
 import LeanLoad.Parse.Decode

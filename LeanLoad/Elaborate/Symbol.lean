@@ -16,8 +16,8 @@ The low nibble of `st_info` (the symbol-type field) and `st_size` are
 not lifted — no consumer reads them.
 -/
 
-import LeanLoad.Parse.Structs
-import LeanLoad.Elaborate.Strtab
+import LeanLoad.Parse.RawSym
+import LeanLoad.Parse.RawStrtab
 
 namespace LeanLoad.Elaborate
 

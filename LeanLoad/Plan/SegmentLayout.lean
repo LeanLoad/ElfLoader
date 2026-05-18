@@ -31,7 +31,7 @@ import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Resolve
 import LeanLoad.Elaborate.Segment
 import LeanLoad.Elaborate.Elf
-import LeanLoad.Parse.Structs
+import LeanLoad.Parse.RawPhdr
 
 namespace LeanLoad.Plan
 

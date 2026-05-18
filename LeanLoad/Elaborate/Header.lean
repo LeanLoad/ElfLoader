@@ -13,7 +13,7 @@ rejects mismatches. `ElfType` and `Machine`, by contrast, are the
 or `elf.machine` against named cases, not raw codes.
 -/
 
-import LeanLoad.Parse.Structs
+import LeanLoad.Parse.RawEhdr
 
 namespace LeanLoad.Elaborate
 
