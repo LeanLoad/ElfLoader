@@ -53,13 +53,6 @@ predicates over the planned `Array MemoryOp`
 `Realize.planOps` boundary; `MemoryOp.runSafe` only accepts
 witnessed op arrays.
 
-## Status
-
-- Dynamic binary (musl-linked, multi-shared-object closure, PIE):
-  runs end-to-end against `examples/build/main`. ET_DYN-only —
-  ET_EXEC inputs are rejected at elaborate time.
-- Differential tests against `ld.so` are not yet wired up.
-
 ## Module layout
 
 ```

@@ -26,7 +26,7 @@ Search rules (gabi 08 § Shared Object Dependencies) all live in
 `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.Discover.Step
+import LeanLoad.Discover.BFS
 import LeanLoad.Parse.RawElf
 import LeanLoad.Elaborate.Elf
 import LeanLoad.Runtime

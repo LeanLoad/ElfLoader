@@ -22,7 +22,7 @@ production `Effects.io`. Tests usually set `mockElf.soname` explicitly,
 but a `none` SONAME exercises the input-soname fallback path.
 -/
 
-import LeanLoad.Discover.Step
+import LeanLoad.Discover.BFS
 
 namespace LeanLoad.Discover
 
