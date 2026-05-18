@@ -156,7 +156,7 @@ def step {m : Type → Type} [Monad m] (s : BfsState) (eff : Effects m) :
     have h_rest_valid : ∀ i ∈ rest, i.sourceIdx < s.graph.objects.size := by
       intro i hi
       exact s.workSourcesValid i (by rw [h_work]; exact List.mem_cons_of_mem _ hi)
-    match h_step : Discover.dispatch s.graph.objects item with
+    match h_step : Discover.dispatch s.graph item with
     | .skip tgt =>
       have h_tgt : tgt < s.graph.objects.size := dispatch_skip_tgt_lt h_step
       let g' := s.graph.recordDep item.sourceIdx tgt h_tgt
@@ -170,11 +170,11 @@ def step {m : Type → Type} [Monad m] (s : BfsState) (eff : Effects m) :
           (runpath={item.runpath})"
       | some (canonical, handle, elf) =>
         let obj : LoadedObject := { name := canonical, handle, elf }
-        match h_idx : findLoadedIdx s.graph.objects canonical with
+        match h_idx : s.graph.findLoadedIdx canonical with
         | some tgt =>
           -- Post-canonicalisation dedup hit. Edge to existing index.
           have h_tgt : tgt < s.graph.objects.size :=
-            findLoadedIdx_lt _ _ h_idx
+            s.graph.findLoadedIdx_lt canonical h_idx
           let g' := s.graph.recordDep item.sourceIdx tgt h_tgt
           pure (.continue { graph := g', work := rest, workSourcesValid := h_rest_valid })
         | none =>

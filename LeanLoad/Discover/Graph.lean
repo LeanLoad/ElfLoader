@@ -7,16 +7,22 @@ structural invariants the rest of the loader depends on (non-emptiness,
 name-Nodup, deps-shape, deps-bounds).
 
 Two construction methods (`recordDep`, `appendChild`) bundle the
-invariant maintenance so the BFS driver (`BfsState.step`) only calls them
-— no inline proof boilerplate at the recursive call sites.
+invariant maintenance so the BFS driver (`BfsState.step`) only calls
+them — no inline proof boilerplate at the recursive call sites.
 
 File layout:
-  · LoadedObject — one entry of the graph (name + handle + elf).
-  · Pure dedup primitives + soundness — `findLoadedIdx` plus the
-    `nodup_names_push_…` lemma `appendChild` consumes.
-  · Edge accumulation — `recordEdge` + size/bounds preservation.
-  · LoadGraph + `main` / `recordDep` / `appendChild` + characterisation
-    theorems (`recordDep_objects`, `appendChild_size`, etc.).
+  · `LoadedObject` + `ofMain` — one entry of the graph; the singular
+    type used at construction sites.
+  · `recordEdge` + size/bounds preservation — Array-level push primitive
+    over the adjacency-list shape. The only thing here that doesn't
+    take a LoadGraph (LoadGraph hasn't been defined yet); both LoadGraph
+    methods consume it.
+  · `LoadGraph` — the bundled type with four structural invariants.
+  · `LoadGraph.findLoadedIdx` + lemmas (`findLoadedIdx_lt`,
+    `findLoadedIdx_none_iff`) — name-based dedup primitives over a
+    LoadGraph.
+  · `LoadGraph.{singleton, main, recordDep, appendChild}` + their
+    characterisation theorems.
 -/
 
 import LeanLoad.Parse.RawElf
@@ -60,67 +66,9 @@ def LoadedObject.ofMain (mainPath : String) (handle : Runtime.FileHandle)
   { name := (mainPath.splitOn "/").getLast?.getD mainPath, handle, elf }
 
 -- ============================================================================
--- Pure dedup primitives.
---
--- The BFS uses `findLoadedIdx` to both dedup (none → not loaded) and
--- (in the `.skip` arm) recover the matching index for edge recording.
--- The dedup *key* for each `LoadedObject` is its `.name`, computed by
--- the IO seam (`Effects.resolveDep`) from `DT_SONAME` — see
--- `Discover/IO.lean` for the production policy.
--- ============================================================================
-
-/-- Linear search for an object by name. Defined via `Array.findIdx?`
-    so the size bound (`findLoadedIdx_lt` below) drops out of the core
-    `Array.of_findIdx?_eq_some` characterisation. The BFS calls this
-    once per `DT_NEEDED` to dedup before resolving, and once more after
-    canonicalisation to catch the SONAME-rename case. -/
-def findLoadedIdx (objs : Array LoadedObject) (name : String) : Option Nat :=
-  objs.findIdx? (·.name == name)
-
-/-- The index returned by `findLoadedIdx` is `< objs.size`. -/
-theorem findLoadedIdx_lt (objs : Array LoadedObject) (name : String) {idx : Nat}
-    (h : findLoadedIdx objs name = some idx) : idx < objs.size := by
-  have h_match := Array.of_findIdx?_eq_some (xs := objs) (p := (·.name == name)) h
-  match h_get : objs[idx]? with
-  | some _ =>
-    obtain ⟨h_lt, _⟩ := Array.getElem?_eq_some_iff.mp h_get
-    exact h_lt
-  | none =>
-    rw [h_get] at h_match
-    exact absurd h_match (by simp)
-
-/-- `findLoadedIdx = none` characterised: no object in `objs` carries
-    the given name. -/
-theorem findLoadedIdx_none_iff (objs : Array LoadedObject) (name : String) :
-    findLoadedIdx objs name = none ↔ ∀ o ∈ objs, o.name ≠ name := by
-  unfold findLoadedIdx
-  rw [Array.findIdx?_eq_none_iff]
-  simp
-
-/-- Pushing a freshly-loaded object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `BfsState.step` discharges
-    by pattern-matching on its dedup check (no extra proof construction
-    required at the call site). -/
-theorem nodup_names_push_of_findLoadedIdx_none
-    (objs : Array LoadedObject) (obj : LoadedObject)
-    (h_nodup : (objs.map (·.name)).toList.Nodup)
-    (h_fresh : findLoadedIdx objs obj.name = none) :
-    ((objs.push obj).map (·.name)).toList.Nodup := by
-  rw [Array.map_push, Array.toList_push, List.nodup_append]
-  refine ⟨h_nodup, by simp, ?_⟩
-  intro a ha b hb hab
-  rw [List.mem_singleton] at hb
-  subst hb
-  obtain ⟨o, ho_mem, ho_name⟩ := Array.mem_map.mp (Array.mem_toList_iff.mp ha)
-  have h_ne : o.name ≠ obj.name :=
-    (findLoadedIdx_none_iff objs obj.name).mp h_fresh o ho_mem
-  exact h_ne (ho_name.trans hab)
-
--- ============================================================================
 -- Edge accumulation. The push primitive over `deps`'s `Array (Array Nat)`
 -- shape, plus its size + bounds preservation lemmas. Both LoadGraph
--- methods (`recordDep`, `appendChild`) consume these to maintain the
--- per-LoadGraph invariants in one place.
+-- methods (`recordDep`, `appendChild`) consume these.
 -- ============================================================================
 
 /-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
@@ -210,6 +158,63 @@ structure LoadGraph where
 
 namespace LoadGraph
 
+-- ============================================================================
+-- Name-based dedup primitives (operate on a LoadGraph — every call
+-- site has one in hand). Called as `g.findLoadedIdx name` via dot
+-- notation. The BFS calls this once per `DT_NEEDED` to dedup before
+-- resolving, and once more after canonicalisation to catch the
+-- SONAME-rename case.
+-- ============================================================================
+
+/-- Linear search for an object by name. Defined via `Array.findIdx?`
+    so the size bound (`findLoadedIdx_lt` below) drops out of the core
+    `Array.of_findIdx?_eq_some` characterisation. -/
+def findLoadedIdx (g : LoadGraph) (name : String) : Option Nat :=
+  g.objects.findIdx? (·.name == name)
+
+/-- The index returned by `findLoadedIdx` is `< g.objects.size`. -/
+theorem findLoadedIdx_lt (g : LoadGraph) (name : String) {idx : Nat}
+    (h : g.findLoadedIdx name = some idx) : idx < g.objects.size := by
+  have h_match :=
+    Array.of_findIdx?_eq_some (xs := g.objects) (p := (·.name == name)) h
+  match h_get : g.objects[idx]? with
+  | some _ =>
+    obtain ⟨h_lt, _⟩ := Array.getElem?_eq_some_iff.mp h_get
+    exact h_lt
+  | none =>
+    rw [h_get] at h_match
+    exact absurd h_match (by simp)
+
+/-- `findLoadedIdx = none` characterised: no object in `g.objects`
+    carries the given name. -/
+theorem findLoadedIdx_none_iff (g : LoadGraph) (name : String) :
+    g.findLoadedIdx name = none ↔ ∀ o ∈ g.objects, o.name ≠ name := by
+  unfold findLoadedIdx
+  rw [Array.findIdx?_eq_none_iff]
+  simp
+
+/-- Pushing a freshly-loaded object preserves the names-Nodup invariant.
+    The precondition `findLoadedIdx = none` is what `BfsState.step`
+    discharges by pattern-matching on its dedup check (no extra proof
+    construction required at the call site). Used by `appendChild`. -/
+theorem nodup_names_push_of_findLoadedIdx_none
+    (g : LoadGraph) (obj : LoadedObject)
+    (h_fresh : g.findLoadedIdx obj.name = none) :
+    ((g.objects.push obj).map (·.name)).toList.Nodup := by
+  rw [Array.map_push, Array.toList_push, List.nodup_append]
+  refine ⟨g.namesNodup, by simp, ?_⟩
+  intro a ha b hb hab
+  rw [List.mem_singleton] at hb
+  subst hb
+  obtain ⟨o, ho_mem, ho_name⟩ := Array.mem_map.mp (Array.mem_toList_iff.mp ha)
+  have h_ne : o.name ≠ obj.name :=
+    (g.findLoadedIdx_none_iff obj.name).mp h_fresh o ho_mem
+  exact h_ne (ho_name.trans hab)
+
+-- ============================================================================
+-- LoadGraph constructors + methods.
+-- ============================================================================
+
 /-- The singleton graph: one object, no edges, all invariants trivial.
     Used as the BFS seed (`BfsState.initial`) — keeps the four-
     invariant boilerplate co-located with the other LoadGraph
@@ -221,6 +226,7 @@ def singleton (obj : LoadedObject) : LoadGraph :=
     namesNodup := by simp
     depsSize   := rfl
     depsBounds := by
+      -- Only row is index 0, which is `#[]`; no edges to bound.
       intro i h_lt t h_mem
       have h_i_zero : i = 0 := by
         have h_lt' : i < (#[#[]] : Array (Array Nat)).size := h_lt
@@ -256,7 +262,7 @@ def recordDep (g : LoadGraph) (src tgt : Nat) (h_tgt : tgt < g.objects.size) :
     `nodup_names_push_of_findLoadedIdx_none` needs to preserve
     `namesNodup`. -/
 def appendChild (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : findLoadedIdx g.objects obj.name = none) :
+    (h_fresh : g.findLoadedIdx obj.name = none) :
     LoadGraph :=
   let newIdx       := g.objects.size
   let objs'        := g.objects.push obj
@@ -303,10 +309,13 @@ def appendChild (g : LoadGraph) (src : Nat) (obj : LoadedObject)
   { objects    := objs'
     deps       := deps'
     sizePos    := h_pos'
-    namesNodup :=
-      nodup_names_push_of_findLoadedIdx_none g.objects obj g.namesNodup h_fresh
+    namesNodup := g.nodup_names_push_of_findLoadedIdx_none obj h_fresh
     depsSize   := h_size'
     depsBounds := h_bounds' }
+
+-- ============================================================================
+-- Characterisation theorems for `recordDep` / `appendChild`.
+-- ============================================================================
 
 /-- `recordDep` doesn't touch the `objects` array. -/
 @[simp] theorem recordDep_objects (g : LoadGraph) (src tgt : Nat)
@@ -318,35 +327,35 @@ def appendChild (g : LoadGraph) (src : Nat) (obj : LoadedObject)
     (h_tgt : tgt < g.objects.size) :
     (g.recordDep src tgt h_tgt).objects.size = g.objects.size := rfl
 
+/-- `recordDep` preserves `main`. -/
+theorem recordDep_main (g : LoadGraph) (src tgt : Nat)
+    (h_tgt : tgt < g.objects.size) :
+    (g.recordDep src tgt h_tgt).main = g.main := rfl
+
 /-- `appendChild` pushes one entry — the size grows by exactly one. -/
 @[simp] theorem appendChild_size (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : findLoadedIdx g.objects obj.name = none) :
+    (h_fresh : g.findLoadedIdx obj.name = none) :
     (g.appendChild src obj h_fresh).objects.size = g.objects.size + 1 := by
   show (g.objects.push obj).size = _; rw [Array.size_push]
 
 /-- The pushed object lives at the old size (= new size - 1). -/
 @[simp] theorem appendChild_objects (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : findLoadedIdx g.objects obj.name = none) :
+    (h_fresh : g.findLoadedIdx obj.name = none) :
     (g.appendChild src obj h_fresh).objects = g.objects.push obj := rfl
 
 /-- `main` is at index 0 in both old and new graphs, so it's preserved. -/
 theorem appendChild_main (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : findLoadedIdx g.objects obj.name = none) :
+    (h_fresh : g.findLoadedIdx obj.name = none) :
     (g.appendChild src obj h_fresh).main = g.main := by
   show (g.objects.push obj)[0]'_ = g.objects[0]'_
   rw [Array.getElem_push, dif_pos g.sizePos]
 
 /-- The pushed object is at the back of the new `objects` array. -/
 theorem appendChild_back (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : findLoadedIdx g.objects obj.name = none) :
+    (h_fresh : g.findLoadedIdx obj.name = none) :
     (g.appendChild src obj h_fresh).objects.back? = some obj := by
   show (g.objects.push obj).back? = some obj
   simp [Array.back?]
-
-/-- `recordDep` preserves `main`. -/
-theorem recordDep_main (g : LoadGraph) (src tgt : Nat)
-    (h_tgt : tgt < g.objects.size) :
-    (g.recordDep src tgt h_tgt).main = g.main := rfl
 
 end LoadGraph
 

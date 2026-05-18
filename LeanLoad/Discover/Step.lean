@@ -3,7 +3,7 @@ BFS state machine — per-item dispatch.
 
 `WorkItem` is one queued `DT_NEEDED` lookup; `dispatch` decides
 whether to skip (already loaded) or to resolve (defer to the IO
-seam). `dispatch` is a pure function over `(objs, item)`; the queue
+seam). `dispatch` is a pure function over `(g, item)`; the queue
 + monadic effects live in `BfsState.step` (`Discover/BFS.lean`).
 
 `workOfElf` is the producer: given a freshly elaborated `Elf` and its
@@ -51,11 +51,11 @@ inductive Decision where
   | resolve
 
 /-- Pure dispatch: decide whether the work item's soname is already
-    loaded. Returns the matching index for the `.skip` branch's edge
-    recording. The `.done` case (empty work queue) is handled by the
-    caller — `dispatch` is only invoked on a concrete item. -/
-def dispatch (objs : Array LoadedObject) (item : WorkItem) : Decision :=
-  match findLoadedIdx objs item.soname with
+    loaded in `g`. Returns the matching index for the `.skip` branch's
+    edge recording. The `.done` case (empty work queue) is handled by
+    the caller — `dispatch` is only invoked on a concrete item. -/
+def dispatch (g : LoadGraph) (item : WorkItem) : Decision :=
+  match g.findLoadedIdx item.soname with
   | some tgt => .skip tgt
   | none     => .resolve
 
@@ -74,9 +74,8 @@ def workOfElf (sourceIdx : Nat) (elf : Elaborate.Elf) : List WorkItem :=
 /-- `dispatch` returns `.skip tgt` iff `findLoadedIdx` returned `some tgt`.
     Each branch is a direct match — useful for tests that want to
     assert which branch fires on a given input. -/
-theorem dispatch_skip_iff {objs : Array LoadedObject} {item : WorkItem}
-    {tgt : Nat} :
-    dispatch objs item = .skip tgt ↔ findLoadedIdx objs item.soname = some tgt := by
+theorem dispatch_skip_iff {g : LoadGraph} {item : WorkItem} {tgt : Nat} :
+    dispatch g item = .skip tgt ↔ g.findLoadedIdx item.soname = some tgt := by
   constructor
   · intro h
     unfold dispatch at h
@@ -89,8 +88,8 @@ theorem dispatch_skip_iff {objs : Array LoadedObject} {item : WorkItem}
     rw [h]
 
 /-- `dispatch` returns `.resolve` iff `findLoadedIdx` returned `none`. -/
-theorem dispatch_resolve_iff {objs : Array LoadedObject} {item : WorkItem} :
-    dispatch objs item = .resolve ↔ findLoadedIdx objs item.soname = none := by
+theorem dispatch_resolve_iff {g : LoadGraph} {item : WorkItem} :
+    dispatch g item = .resolve ↔ g.findLoadedIdx item.soname = none := by
   constructor
   · intro h
     unfold dispatch at h
@@ -101,14 +100,14 @@ theorem dispatch_resolve_iff {objs : Array LoadedObject} {item : WorkItem} :
     unfold dispatch
     rw [h]
 
-/-- The `.skip` arm of `dispatch` carries `tgt < objs.size`, because
+/-- The `.skip` arm of `dispatch` carries `tgt < g.objects.size`, because
     `dispatch` produces `.skip` only when `findLoadedIdx` returned the
     matching index — which is bounded by `findLoadedIdx_lt`. -/
-theorem dispatch_skip_tgt_lt {objs : Array LoadedObject}
+theorem dispatch_skip_tgt_lt {g : LoadGraph}
     {item : WorkItem} {tgt : Nat}
-    (h : dispatch objs item = .skip tgt) :
-    tgt < objs.size :=
-  findLoadedIdx_lt objs item.soname (dispatch_skip_iff.mp h)
+    (h : dispatch g item = .skip tgt) :
+    tgt < g.objects.size :=
+  g.findLoadedIdx_lt item.soname (dispatch_skip_iff.mp h)
 
 /-- `workOfElf` items all carry `sourceIdx = sourceIdx`. Used by
     `BfsState.step` to maintain the BFS-state invariant after pushing
