@@ -1,31 +1,13 @@
 # LeanLoad [![CI](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml/badge.svg)](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml)
 
-A verified ELF loader in Lean 4. Reads, plans, and runs Linux ELF
-binaries (static + dynamically-linked) through a pipeline split into
-a **pure middle** (verified core, all under `Parse/` + `Elaborate/`
-+ `Plan/`) and two **trusted IO bookends**:
+A verified ELF loader in Lean 4 for Linux ELF binaries (static +
+dynamically-linked), targeting AArch64 + x86-64 with musl libc.
 
-| Stage     | Pure module     | IO bookend                | What it does                                                                                  |
-| --------- | --------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
-| Parse     | `Parse/*`       | `Parse/RawElf.parse`      | Byte-decode each ELF into `RawElf`; no semantic checks.                                       |
-| Elaborate | `Elaborate/*`   | —                         | Validate the bytes, lift to typed enums, group rela by segment, carry `WellFormed` segments and per-segment page-arithmetic invariants on `Segment`. |
-| Discover  | `Discover/Graph` + `Discover/Driver` | `Discover.discover` (`Discover/IO`) | BFS over `DT_NEEDED` (dedup by `DT_SONAME`); produce `LoadGraph` with non-emptiness + names-Nodup + deps witnesses.       |
-| Resolve   | `Plan/Resolve`  | —                         | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`; HashMap-indexed for O(1) lookup. |
-| Layout    | `Plan/Layout`   | —                         | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
-| Reloc     | `Plan/Reloc`    | (folded into `realize`)   | Per-arch formula → `Patch` list; each patch carries the segment-tying `coversRela` witness so `applyPatch` discharges `Region.InRange` with no runtime check. |
-| Init      | `Plan/Init`     | (folded into `realize`)   | DFS post-order over deps, then per-object `init_array` resolution → constructor address list. |
-| Exec      | —               | `Exec.realize`            | Single IO sweep over layouts/patches/ctors: mmap + zeroout + mprotect + patch writes + ctor calls + stack + jump. |
-
-Every file under `Parse/`, `Elaborate/`, and `Plan/` is pure Lean;
-the only IO seams are `Discover` (file reads) and `Exec.realize`
-(mmap + writes + control transfer). The mmap-op sequence
-(overlay/bssZero/mprotect) is derived inline from each layout's
-segments inside `realize` — there's no separate Map planner because
-that "planning" was trivial (a function of segment shape) and only
-`realize` consumed it.
-
-Targets AArch64 + x86-64 with musl libc. The verified core is pure
-Lean.
+Architecture: a **pure verified middle** — `Parse` → `Elaborate` →
+`Discover` → `Plan` → `Materialize` — bracketed by two **trusted IO
+bookends**: `Discover.discover` (file reads) at the front and
+`LoadOps.runSafe` + `execAndJump` (mmap + writes + control transfer)
+at the back.
 
 https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c32116342/run.log#L1-L319
 
@@ -37,25 +19,26 @@ https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c3211
 ```
 
 Unit-level invariants live as `#guard` blocks in implementation
-files (`Discover/Test.lean`, `Plan/Init.lean`, `Example.lean`, …) and
-elaborate during `lake build`. The integration test is `./run.sh`
-end-to-end against `build/main`.
+files (`Discover/Test.lean`, `Example.lean`, …) and elaborate during
+`lake build`. The integration test is `./run.sh` end-to-end against
+`build/main`.
 
-## Documentation
+## Audit surface
 
-- [`docs/design.md`](docs/design.md) — pipeline, trust boundary,
-  naming conventions, CLI, kernel-style exec, host-process trust
-  assumptions.
-- [`docs/plan.md`](docs/plan.md) — open work and out-of-scope items.
+The byte-level trust surface is [`LeanLoad/Parse/`](LeanLoad/Parse/)
+(gABI / psABI C-struct transcriptions) and
+[`LeanLoad/Elaborate/`](LeanLoad/Elaborate/) (typed views with
+gABI-mandated invariants carried as `Segment` fields). The IO trust
+seam is `LoadOps.runSafe` in
+[`LeanLoad/Materialize/Safety.lean`](LeanLoad/Materialize/Safety.lean):
+it only accepts a `LoadSafe`-witnessed `LoadOps` tree, where
+`SegmentSafe` / `ElfSafe` / `LoadSafe` together discharge in-bounds
+and pairwise-disjoint without ever materialising a flat predicate
+array. Soundness theorems against the abstract `Memory` model live
+in [`LeanLoad/Spec/`](LeanLoad/Spec/).
 
-The audit surface inside the code is `LeanLoad/Parse/` (byte-level
-gabi/abi transcriptions) and `LeanLoad/Elaborate/` (typed views with
-gabi-mandated invariants carried as `Segment` fields). Safety
-predicates over the planned `Array MemoryOp`
-(`OverlaysDisjoint` / `OverlaysContained` / `WritesContained` /
-`MprotectsContained`) are decidable and checked at the
-`Realize.planOps` boundary; `MemoryOp.runSafe` only accepts
-witnessed op arrays.
+See [`DESIGN.md`](DESIGN.md) for the full pipeline + trust-boundary
+writeup.
 
 ## De facto conventions
 
@@ -65,7 +48,7 @@ real-world programs assume them; deviating would break compatibility.
 Where we're *stricter* than the convention (deliberately rejecting
 edge cases instead of papering over them), it's called out below.
 
-**Dependency resolution & dedup** (`Discover/`, `runtime.c`)
+**Dependency resolution & dedup** (`Discover/`, `LeanLoad/Runtime.c`)
 
 - **Dedup by `DT_SONAME` — required for every NEEDED-loaded `.so`.**
   We *fail loud* on a SONAME-less library; ld.so falls back to
@@ -104,7 +87,7 @@ edge cases instead of papering over them), it's called out below.
   process exit; the loaded program inherits the fd table. Simplifies
   handle ownership; we never need to track refcounts.
 
-**Init / fini** (`Plan/Init.lean`, `Materialize/Build.lean`)
+**Init / fini** (`Materialize/Build.lean`)
 
 - **Init order = DFS post-order over the dep DAG; fini = its
   reverse.** gABI 08 mandates a *partial* order ("deps before
@@ -135,16 +118,17 @@ unsupported in silence)
   architectures rejected at elaborate (no per-arch reloc table).
 - **ET_DYN only.** ET_EXEC inputs rejected at elaborate — the
   reserve-then-overlay layout assumes a PIE base.
-- **No TLS yet** (deferred — see `docs/plan.md`). The fixture's
+- **No TLS yet** (deferred). The fixture's
   `__thread` test works because musl's pthread bootstrap synthesizes
   TLS state at thread-creation time, not via ELF TLS phdrs.
 
 ## Where gABI overspecifies
 
-gABI marks several fields "mandatory" that real loaders don't enforce.
-The flip side of "De facto conventions" above: there, gABI is silent
-where reality has a convention; here, gABI is strict where reality is
-lax. LeanLoad's posture per field is in the bullet.
+gABI marks several fields "mandatory" — or imposes alignment / ordering
+rules — that real loaders don't enforce. The flip side of "De facto
+conventions" above: there, gABI is silent where reality has a
+convention; here, gABI is strict where reality is lax. LeanLoad's
+posture per field is in the bullet.
 
 **`DT_STRSZ` (gABI 08 § Dynamic, "mandatory" for exec + shared)**
 
@@ -195,17 +179,110 @@ lax. LeanLoad's posture per field is in the bullet.
   the values in practice.
 - LeanLoad parses but doesn't validate against an allowlist.
 
+**`p_align` congruence (gABI 07 § Program Header, "must")**
+
+- gABI says PT_LOAD `p_vaddr` and `p_offset` "must" be congruent both
+  modulo the page size and modulo `p_align`. elflint enforces both;
+  glibc's `elf/dl-load.c` checks only mod page size (`"ELF load command
+  address/offset not page-aligned"`); musl's `ldso/dynlink.c` never
+  checks either — it masks `p_offset & -PAGE_SIZE` and mmap's. A binary
+  with junk low bits in `p_align` loads fine under both libc's.
+- LeanLoad carries a per-segment `alignCong` witness modulo `p_align`
+  (gABI-strict — stricter than either loader). See
+  [`Elaborate/Segment.lean`](LeanLoad/Elaborate/Segment.lean).
+
+**`DT_TEXTREL` "deprecated" in favor of `DF_TEXTREL` (gABI 08)**
+
+- gABI 08 marks `DT_TEXTREL` deprecated in favor of `DT_FLAGS |
+  DF_TEXTREL`. In practice the deprecated form is the canonical one:
+  musl scans only `DT_TEXTREL`, never `DF_TEXTREL`; glibc rewrites
+  `DF_TEXTREL` into a synthetic `DT_TEXTREL` at load because that's
+  the form its reloc loop checks. The "deprecated" tag never died.
+- LeanLoad's reloc tables don't include any text-touching relocs, and
+  PT_LOAD writability is segment-level (`PF_W`), so a text reloc would
+  attempt to write into a non-writable region and fail elaboration.
+
+**`PT_INTERP` uniqueness + position (gABI 07)**
+
+- gABI says a file "may" contain a `PT_INTERP` entry and is silent on
+  duplicates or where it sits among the phdrs. elflint enforces "at
+  most one" *and* "must precede the first `PT_LOAD`" as hard errors;
+  glibc + musl just stop at the first one they see and never re-scan.
+- LeanLoad is itself the interpreter — `PT_INTERP` of the main is
+  ignored (we don't recursively load an `ld-linux.so`).
+
+## Where gABI underspecifies
+
+The previous section caught gABI being strict where reality is lax.
+This one catches the opposite extreme: features every modern binary
+contains and every modern loader requires, that gABI 07/08 never
+describes. (Distinct from "De facto conventions" above, which lists
+*our* implementation choices in gABI-silent areas — these are about
+toolchain-emitted bytes we have to handle whether we like it or not.)
+
+**`PT_GNU_STACK` / `PT_GNU_RELRO` / `PT_GNU_EH_FRAME` / `PT_GNU_PROPERTY`**
+
+- gABI 07's `p_type` table goes up to `PT_TLS` and stops. Every modern
+  toolchain emits `PT_GNU_STACK` (kernel reads it to decide whether to
+  grant an executable stack — *security-critical default*),
+  `PT_GNU_RELRO` (ld.so re-mprotects the region read-only after
+  relocations), `PT_GNU_EH_FRAME` (libgcc / libunwind require it for
+  C++ exceptions and backtraces), and `PT_GNU_PROPERTY` (CET / BTI).
+  elflint accepts them as known.
+- LeanLoad doesn't yet recognize these phdr types; we mmap PT_LOAD,
+  set stack non-exec by construction (separate anon mmap, no
+  `PROT_EXEC`), and don't apply RELRO.
+
+**Symbol versioning: `DT_VERSYM` / `DT_VERDEF` / `DT_VERNEED` +
+`DT_VERDEFNUM` / `DT_VERNEEDNUM`**
+
+- Not in gABI at all. Every glibc-linked `.so` has `DT_VERSYM`;
+  glibc's `dl-lookup.c` filters every symbol resolution by version
+  index, and `libc.so.6`'s `GLIBC_2.x` ABI compatibility depends on
+  it. No `DT_*SZ` tag pairs with `DT_VERDEF` / `DT_VERNEED` —
+  toolchains emit GNU-private `DT_VERDEFNUM` / `DT_VERNEEDNUM` counts
+  that gABI couldn't have specified.
+- LeanLoad doesn't yet handle versioned symbols (musl is statically
+  linked into the fixture, sidestepping it). A glibc-linked target
+  would resolve to the wrong symbol version.
+
+**`STT_GNU_IFUNC` / `STB_GNU_UNIQUE`**
+
+- gABI 05's symbol-type / binding tables stop at `STT_TLS` and
+  `STB_WEAK`. `STT_GNU_IFUNC` (resolver function called at relocation
+  time — how glibc dispatches `memcpy` to AVX vs SSE2) and
+  `STB_GNU_UNIQUE` (process-wide single instance, used by libstdc++
+  for template static data) live in the OS-specific range. glibc's
+  `dl-lookup.c` accepts both.
+- LeanLoad's `SymBind` is a closed enum (`local` / `global` / `weak`);
+  anything else fails `SymBind.ofRaw`. IFUNC / UNIQUE symbols are
+  rejected at elaborate, not silently miscompiled.
+
+**`PN_XNUM` (`e_phnum` overflow escape)**
+
+- gABI 02 describes `e_phnum` as a 16-bit count and never says what to
+  do when a binary has ≥ 0xffff phdrs. Binutils + kernel + elflint
+  agree on a convention: when `e_phnum == 0xffff`, the actual count
+  lives in `section[0].sh_info`. elflint implements it; glibc + musl
+  haven't needed to because real binaries don't have that many phdrs.
+- LeanLoad treats `e_phnum` as a literal count — a ≥64K-phdr binary
+  (none exist in practice for our targets) would silently truncate.
+
 ## Module layout
 
 ```
 LeanLoad.lean              package root (re-exports)
-Main.lean                  CLI executable entry — Lake-blessed top-level placement
+Main.lean                  CLI executable entry — Lake-blessed top-level
 LeanLoad/
   Parse/                   byte decoders — Elf64_* C-struct transcriptions
     Decode.lean            parser monad (cursor + Except, u32le / u64le primitives)
     Deriving.lean          `deriving BytesDecode` handler — auto field-by-field decode
-    Structs.lean           Raw{Ehdr,Phdr,Sym,Rela,Dyn,…} structs + DT_*/PT_* tag constants
-    Dynamic.lean           .dynamic decoder + tag-keyed lookups (find?, findAll, pair?)
+    RawEhdr.lean           Elf64_Ehdr + e_ident prefix (gabi 02)
+    RawPhdr.lean           Elf64_Phdr (gabi 07) + PT_LOAD / PT_DYNAMIC constants
+    RawDyn.lean            Elf64_Dyn + .dynamic array + DT_* tag-keyed lookups (gabi 08)
+    RawSym.lean            Elf64_Sym (gabi 05)
+    RawRela.lean           Elf64_Rela with explicit addend (gabi 06)
+    RawStrtab.lean         byte-buffer NUL-terminated C strings (gabi 04)
     RawElf.lean            top-level `parse` (header → phdrs → .dynamic → strtab → …)
   Elaborate/               typed semantic views over Parse — validates and enriches
     Header.lean            ElfType / Machine enums; ELFCLASS64 / ELFDATA2LSB constants
@@ -217,37 +294,48 @@ LeanLoad/
                            page-aligned views + per-segment rela arrays
     Elf.lean               `Elf` aggregate (with Sorted/NonOverlap PT_LOAD witnesses);
                            `elaborate : RawElf → Except String Elf` (rejects ET_EXEC)
-  Plan/                    pure middle — every stage that produces abstract data
-    Resolve.lean           SymRef n / Unresolved n / Table n with O(1) HashMap index
-    Layout.lean            assignBases (base parameter, kernel-picked in production);
-                           totalSpan; per-Region page math; segmentsSorted validation
-    Reloc.lean             planRela / planObject / plan emit `MemoryOp.write` ops
-                           (4 or 8 bytes) with psABI 32-bit overflow check
-    Init.lean              buildDeps (HashMap O(N+E)) + DFS post-order + ctor address list
-    Realize.lean           Region.ops (per-segment mmapFile/zeroout/mprotect);
-                           realizeOps + planOps with decidable safety predicates
   Discover/
-    Graph.lean             LoadedObject + LoadGraph (BFS state carrier with
-                           non-emptiness / names-Nodup / deps-shape / deps-bounds
-                           witnesses) + smart constructors recordDep / appendChild
+    Graph.lean             LoadedObject + LoadGraph with non-emptiness / names-Nodup /
+                           deps-shape / deps-bounds witnesses + smart constructors
     Effects.lean           abstract IO leaf (resolveDep + fail), monad-polymorphic;
                            instantiated by IO.lean (production) and Test.lean (pure)
-    Driver.lean            WorkItem / Decision / dispatch + BfsState +
-                           linkExisting / appendAndQueue helpers + step +
-                           discoverLoopWith
+    Driver.lean            DFS recursion + DfsState carrier (objects in pre-order,
+                           postOrder in return order); `discoverWith` top-level
     IO.lean                Effects.io (Runtime.openByName → parseFromHandle) +
-                           discover (production entry; opens main, drives BFS)
+                           `discover` (production entry; opens main, drives DFS)
     Test.lean              Effects.test (over in-memory TestStore) + discoverPure +
                            #guard scenarios (linear/diamond/cycle/SONAME/search-order)
+  Plan/                    base-free pure planning — abstract data only
+    Align.lean             alignment / page-math helpers over UInt64
+    SegmentLayout.lean     per-segment plan (file + bss + mprotect shape), base-free
+    Layout.lean            per-object base assignment; totalSpan; segmentsSorted
+    Resolve.lean           SymRef n / Unresolved n / Table n with O(1) HashMap index
+    Reloc.lean             per-arch formula → `Patch` list with `coversRela` witness
+                           + psABI 32-bit overflow check
+    Aggregate.lean         top-level `Aggregate.ofGraph` — strong-undef rejection +
+                           per-object bundling
+  Materialize/             base-aware staging — turn Plan into a witnessed op tree
+    BoundPlan.lean         extends `Plan.Aggregate` with the IO-supplied `Reserve`
+                           plus the coherence proof tying them
+    Reloc.lean             relocation **baking** — apply formulas at the bound base
+    LoadOps.lean           `SegmentOps` / `ElfOps` / `LoadOps` tree over typed slot
+                           records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
+    Safety.lean            `SegmentSafe` / `ElfSafe` / `LoadSafe` mirror the tree;
+                           `LoadOps.runSafe` is the IO trust seam
+    Build.lean             builder: `BoundPlan` → safety-witnessed `LoadOps` tree;
+                           DFS post-order ctor / fini address lists
+  Spec/                    soundness — pure byte-level memory model
+    Memory.lean            abstract byte + perm `Memory` type
+    Apply.lean             per-op pure denotation over `Memory`
+    ApplyLemmas.lean       reusable lemmas about `Apply`
+    File.lean              file-content reads
+    FFI.lean               opaque `runSafe_image` axiomatized to match Apply
+    Soundness.lean         end-to-end soundness theorems
   Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
-                           mmapAnonAlloc (kernel-picked reservation), mprotect,
-                           write, zeroout, mmapStack, callCtor, execAndJump;
-                           MemoryOp inductive + safety predicates + runSafe
+                           mmapAnonAlloc, mprotect, write, zeroout, mmapStack,
+                           callCtor, execAndJump
+  Runtime.c                C shims behind the @[extern] declarations
   Example.lean             cross-stage `#guard` walkthrough (synthetic fixtures)
-runtime/
-  Runtime.c                C shims (open / pread / mmap variants / mprotect /
-                           write / zeroout / mmapStack / callCtor / execAndJump)
-docs/                      design.md · plan.md
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)
-third_party/               submodules (musl, gabi, …)
+third_party/               submodules (musl, gabi, glibc, elfutils, …)
 ```
