@@ -247,7 +247,7 @@ private def missingStore : TestStore := [
 
 #guard (discoverPure missingStore "/main").isOk = false
 
--- ---- 5. Search-order precedence -----------------------------------------
+-- ---- 6. Search-order precedence -----------------------------------------
 -- env > runpath. The same bare soname `libx.so` exists in both
 -- `/env/libx.so` and `/run/libx.so`; with envPath=`/env`, env wins.
 
@@ -264,6 +264,27 @@ private def searchStore : TestStore := [
 -- Without envPath, runpath wins.
 #guard match discoverPure searchStore "/main" (envPath := none) with
   | .ok g => (g.objects.map (·.name)) = #["main", "libx-from-run"]
+  | _     => false
+
+-- ---- 7. SONAME-required for NEEDED deps --------------------------------
+-- A NEEDED dep without DT_SONAME is rejected: production Effects.io
+-- throws; Effects.test (matching policy) makes the entry invisible to
+-- the store lookup (findSome? skips SONAME-less elves), surfacing as
+-- the same "cannot find" diagnostic.
+
+private def sonameMissingStore : TestStore := [
+  ("/main",          mockElf (soname := some "main") (needed := #["/anonlib"])),
+  ("/anonlib",       mockElf (soname := none))]    -- SONAME-less .so
+
+#guard (discoverPure sonameMissingStore "/main").isOk = false
+
+-- Main without SONAME is fine — main's canonical name is basename
+-- mainPath, never elf.soname. Loads cleanly with no deps.
+private def mainNoSonameStore : TestStore := [
+  ("/main", mockElf (soname := none))]
+
+#guard match discoverPure mainNoSonameStore "/main" with
+  | .ok g => g.objects.size = 1 ∧ g.main.name = "main"
   | _     => false
 
 end LeanLoad.Discover
