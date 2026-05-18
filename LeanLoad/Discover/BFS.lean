@@ -11,7 +11,7 @@ Effects are abstract — `Effects (m : Type → Type)` is a record
 bundling `resolveDep` (open + parse + elaborate) and `fail` (surface
 a fatal error). Production wires `Effects.io` over `IO` in
 `Discover/IO.lean`; tests wire `Effects.test` over `Except String` in
-`Discover/StepTest.lean`. Same driver, two effects.
+`Discover/Test.lean`. Same driver, two effects.
 -/
 
 import LeanLoad.Discover.Step
@@ -49,25 +49,13 @@ structure BfsState where
 
 namespace BfsState
 
-/-- Initial BFS state: the main object alone, with its NEEDED entries
-    queued. `workSourcesValid` holds because every initial work item
-    has `sourceIdx = 0 < 1 = (initial graph).objects.size`. -/
+/-- Initial BFS state: the main object alone (via `LoadGraph.singleton`),
+    with its NEEDED entries queued. `workSourcesValid` holds because
+    every initial work item has `sourceIdx = 0 < 1 = singleton size`. -/
 def initial (mainObj : LoadedObject) : BfsState :=
-  let graph : LoadGraph := {
-    objects    := #[mainObj]
-    deps       := #[#[]]
-    sizePos    := Nat.zero_lt_one
-    namesNodup := by simp
-    depsSize   := rfl
-    depsBounds := by
-      intro i h_lt t h_mem
-      have h_i_zero : i = 0 := by
-        have h_lt' : i < (#[#[]] : Array (Array Nat)).size := h_lt
-        simp at h_lt'; omega
-      subst h_i_zero
-      exact absurd h_mem (by simp) }
-  let work := workOfElf 0 mainObj.elf
-  { graph, work,
+  let graph := LoadGraph.singleton mainObj
+  { graph
+    work := workOfElf 0 mainObj.elf
     workSourcesValid := by
       intro item h_mem
       rw [workOfElf_sourceIdx 0 mainObj.elf h_mem]

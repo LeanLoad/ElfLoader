@@ -84,13 +84,6 @@ def Effects.io : Effects IO :=
 -- discover — production entry point.
 -- ============================================================================
 
-/-- `(s.splitOn "/").getLast?` — basename of a path. Used as the
-    main executable's canonical name; executables conventionally don't
-    set DT_SONAME, and main is path-loaded (not NEEDED-driven) so its
-    name is mostly for diagnostics + the rare cycle-back-to-main case. -/
-private def basename (s : String) : String :=
-  (s.splitOn "/").getLast?.getD s
-
 /-- Walk `DT_NEEDED` from `mainPath` transitively. Returns an
     `LoadGraph` containing main and all reachable dependencies in
     BFS order — non-emptiness, name-`Nodup`, and `deps`-coherence
@@ -98,17 +91,14 @@ private def basename (s : String) : String :=
 
     Main is opened directly via `Runtime.openByName` (literal-path
     branch — `mainPath` contains '/'). Its canonical name is the
-    path basename (executables don't have DT_SONAME by convention,
-    so the SONAME branch is dead in practice — we don't consult it).
-    All NEEDED-loaded deps go through `Effects.io.resolveDep`, which
-    *requires* DT_SONAME. -/
+    path basename (via `LoadedObject.ofMain`); all NEEDED-loaded deps
+    go through `Effects.io.resolveDep`, which *requires* DT_SONAME. -/
 def discover (mainPath : String) : IO LoadGraph := do
   match ← Runtime.openByName mainPath none with
   | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
   | some mainHandle => do
     let mainElf ← parseFromHandle mainHandle
-    let mainObj : LoadedObject :=
-      { name := basename mainPath, handle := mainHandle, elf := mainElf }
-    discoverLoopWith Effects.io 4096 (BfsState.initial mainObj)
+    discoverLoopWith Effects.io 4096
+      (BfsState.initial (LoadedObject.ofMain mainPath mainHandle mainElf))
 
 end LeanLoad.Discover

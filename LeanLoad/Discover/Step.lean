@@ -2,9 +2,9 @@
 BFS state machine — per-item dispatch.
 
 `WorkItem` is one queued `DT_NEEDED` lookup; `step` decides whether
-to skip (already loaded) or to resolve (call out to IO). The queue
-itself is managed by `BfsState.step` in `Discover.BFS`; `step` only sees
-one item at a time.
+to skip (already loaded) or to resolve (defer to the IO seam).
+`step` is a pure function over `(objs, item)`; the queue + monadic
+effects live in `BfsState.step` (`Discover/BFS.lean`).
 
 `workOfElf` is the producer: given a freshly elaborated `Elf` and its
 sourceIdx in the graph, it enumerates the per-NEEDED `WorkItem`s to

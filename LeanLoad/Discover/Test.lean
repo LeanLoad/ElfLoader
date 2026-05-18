@@ -19,8 +19,10 @@ via `Runtime.openByName`) is exercised by `LeanLoad.Test`'s
 
 Canonical name = `elf.soname` (required) for NEEDED deps; `basename
 mainPath` for the main entry. Matches production `Effects.io` /
-`discover` exactly. `mockElf` defaults `soname` to `some "anon"` so
-the SONAME-required path is satisfied by accident.
+`discover` exactly. `mockElf` defaults `soname := some "anon"` so the
+SONAME-required production policy is satisfied by default — tests
+that want to exercise the SONAME-missing error path pass
+`soname := none` explicitly.
 -/
 
 import LeanLoad.Discover.BFS
@@ -120,15 +122,13 @@ def Effects.test (store : TestStore) (envPath : Option String := none) :
 /-- Run the BFS to completion against a `TestStore`. The main object
     is looked up directly by path (no soname search for it — same as
     production `discover`). Main's canonical name is `basename
-    mainPath` (we don't consult SONAME for main, same as production). -/
+    mainPath` (via `LoadedObject.ofMain`, same as production). -/
 def discoverPure (store : TestStore) (mainPath : String)
     (envPath : Option String := none) : Except String LoadGraph := do
   let some mainElf := store.getElf? mainPath
     | .error s!"discoverPure: main {mainPath} not in store"
-  let basename (s : String) : String := (s.splitOn "/").getLast?.getD s
-  let mainObj : LoadedObject :=
-    { name := basename mainPath, handle := 0, elf := mainElf }
-  discoverLoopWith (Effects.test store envPath) 64 (BfsState.initial mainObj)
+  discoverLoopWith (Effects.test store envPath) 64
+    (BfsState.initial (LoadedObject.ofMain mainPath 0 mainElf))
 
 -- ============================================================================
 -- Behavior tests via `#guard`. Each scenario builds a small store, runs

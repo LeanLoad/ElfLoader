@@ -32,23 +32,32 @@ open LeanLoad.Parse
 -- LoadedObject — one entry of the graph.
 -- ============================================================================
 
-/-- One loaded object. Identified by its `DT_SONAME` if present (else
-    by the `DT_NEEDED` string we resolved through). -/
+/-- One loaded object. Production policy (`Discover/IO.lean`):
+    NEEDED-loaded deps must have `DT_SONAME` (used as `.name`);
+    the main executable's `.name` is `basename mainPath` (executables
+    conventionally don't set SONAME). -/
 structure LoadedObject where
-  /-- Canonical name (`DT_SONAME` if defined; otherwise the path
-      basename or the resolving `DT_NEEDED` string). Used for
-      deduplication. -/
+  /-- Canonical dedup key. For NEEDED deps: `elf.soname.get!` (production
+      requires DT_SONAME). For the main executable: `basename
+      mainPath`. -/
   name : String
   /-- Open read-only file handle, kept for `pread` (parsing extras)
-      and `mmap` (Map stage). Synthetic objects built by
-      `LeanLoad.Example` use a dummy fd (any UInt32); production
-      paths always carry a real fd. -/
+      and `mmap` (Materialize stage). Production paths always carry a
+      real fd; tests use a dummy `(0 : UInt32)`. -/
   handle : Runtime.FileHandle
   /-- Elaborated ELF — output of `Elaborate.elaborate` after
       `Parse.parse`. The type itself is the witness that PT_LOAD
       well-formedness held and every dynamic relocation was located
       against a covering segment. -/
   elf  : Elaborate.Elf
+
+/-- Construct the main `LoadedObject` from a user-supplied path. The
+    canonical name is the path basename — executables don't
+    conventionally set DT_SONAME, and main is path-loaded (not
+    NEEDED-driven), so we don't consult `elf.soname`. -/
+def LoadedObject.ofMain (mainPath : String) (handle : Runtime.FileHandle)
+    (elf : Elaborate.Elf) : LoadedObject :=
+  { name := (mainPath.splitOn "/").getLast?.getD mainPath, handle, elf }
 
 -- ============================================================================
 -- Pure dedup primitives.
@@ -169,9 +178,9 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
       * `deps` — for each object index `i`, the indices of objects it
         depends on. Recorded directly during BFS (the source/target
         pair is known at edge-creation time), so it survives any
-        mismatch between `DT_NEEDED` strings and canonical
-        (`DT_SONAME` / basename) names. `Init.order` consumes this
-        directly — no name-based re-derivation, no silent drops.
+        mismatch between `DT_NEEDED` strings and `DT_SONAME`-canonical
+        names. `Init.order` consumes this directly — no name-based
+        re-derivation, no silent drops.
 
       * `depsSize` — `deps.size = objects.size`. Maintained by every push.
 
@@ -200,6 +209,27 @@ structure LoadGraph where
   depsBounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
 
 namespace LoadGraph
+
+/-- The singleton graph: one object, no edges, all invariants trivial.
+    Used as the BFS seed (`BfsState.initial`) — keeps the four-
+    invariant boilerplate co-located with the other LoadGraph
+    constructors instead of leaking through the abstraction barrier. -/
+def singleton (obj : LoadedObject) : LoadGraph :=
+  { objects    := #[obj]
+    deps       := #[#[]]
+    sizePos    := Nat.zero_lt_one
+    namesNodup := by simp
+    depsSize   := rfl
+    depsBounds := by
+      intro i h_lt t h_mem
+      have h_i_zero : i = 0 := by
+        have h_lt' : i < (#[#[]] : Array (Array Nat)).size := h_lt
+        simp at h_lt'; omega
+      subst h_i_zero
+      exact absurd h_mem (by simp) }
+
+@[simp] theorem singleton_objects (obj : LoadedObject) :
+    (singleton obj).objects = #[obj] := rfl
 
 /-- The main executable — total because `LoadGraph` carries the
     non-emptiness witness. -/
