@@ -51,7 +51,7 @@ in `Materialize/Reloc.lean` and runs base-aware.
 | `Parse.RawElf`                | `Parse.RawElf`               | Per-file byte decode (header, phdrs, strtab, symtab, needed, soname, runpath, rela, jmprel, init/fini arrays). |
 | `Elaborate.Segment`           | `Elaborate.Segment`          | One PT_LOAD with gabi-07 invariants (`fileszLeMemsz`, `alignPow2`, `alignCong`, `addrBound`) + per-segment relocs in `coversRela` subtype. |
 | `Elaborate.Elf`               | `Elaborate.Elf`              | Per-elf bundle with `Sorted` / `NonOverlap` / `PhdrCovered` / `CtorsInExecSeg` witnesses. |
-| `Discover.LoadGraph`         | `Discover.Step`              | Loaded objects in BFS order + `sizePos` / `namesNodup` / `deps` (recorded during BFS).    |
+| `Discover.LoadGraph`         | `Discover.Graph`             | Loaded objects in BFS order + `sizePos` / `namesNodup` / `depsSize` / `depsBounds` (smart constructors `singleton` / `recordDep` / `appendChild` maintain all four). |
 | `Resolve.SymRef n`            | `Plan.Resolve`               | Resolved symbol `(objectIdx : Fin n, symIdx : Nat)`.                                      |
 | `Plan.SegmentLayout n`          | `Plan.Layout`                | One `Segment` lifted with page math + 5 per-segment Prop fields (`pageEnd_lt`, …) + per-segment relocs. |
 | `Plan.ElfLayout n`              | `Plan.Layout`                | One elf's `SegmentLayout`s + `advance` + cross-segment proofs (`segmentsSorted`, `pageEndAddr_le_advance`). |

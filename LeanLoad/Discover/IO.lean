@@ -1,10 +1,9 @@
 /-
 Discover executor — IO instantiation.
 
-The BFS state machine and its invariant carrier (`BfsState` + `step`
-+ `discoverLoopWith`) live in `Discover.Driver` — pure and generic
-over the effect monad. The abstract IO leaf (`Effects m`) is in
-`Discover.Effects`. This file:
+The DFS driver (`dfs` + `discoverWith`) lives in `Discover.Driver` —
+pure and generic over the effect monad. The abstract IO leaf
+(`Effects m`) is in `Discover.Effects`. This file:
 
   · Builds `Effects.io` — production `resolveDep` composed from
     `Runtime.openByName` (C-side path search + open) + `Parse` +
@@ -14,10 +13,10 @@ over the effect monad. The abstract IO leaf (`Effects m`) is in
     executable via `Runtime.openByName` (literal-path case in the
     C function), parses it, names it via `LoadedObject.ofMain`
     (basename of `mainPath` — executables don't conventionally set
-    SONAME), and drives the BFS via `discoverLoopWith`.
+    SONAME), and drives the DFS via `discoverWith`.
 
 Tests substitute `Effects.test` (over an in-memory store) for
-`Effects.io` and call the same `discoverLoopWith` — no IO needed.
+`Effects.io` and call the same `discoverWith` — no IO needed.
 
 Search rules (gabi 08 § Shared Object Dependencies) all live in
 `Runtime.c` (`leanload_open_by_name`):
@@ -85,10 +84,11 @@ def Effects.io : Effects IO :=
 -- discover — production entry point.
 -- ============================================================================
 
-/-- Walk `DT_NEEDED` from `mainPath` transitively. Returns an
+/-- Walk `DT_NEEDED` from `mainPath` transitively. Returns a
     `LoadGraph` containing main and all reachable dependencies in
-    BFS order — non-emptiness, name-`Nodup`, and `deps`-coherence
-    witnessed at the type level.
+    DFS pre-order — non-emptiness, name-`Nodup`, `deps`-coherence,
+    and `closure` (`deps[i].size = elf.needed.size`) all witnessed
+    at the type level.
 
     Main is opened directly via `Runtime.openByName` (literal-path
     branch — `mainPath` contains '/'). Its canonical name is the
@@ -99,7 +99,7 @@ def discover (mainPath : String) : IO LoadGraph := do
   | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
   | some mainHandle => do
     let mainElf ← parseFromHandle mainHandle
-    discoverLoopWith Effects.io 4096
-      (BfsState.initial (LoadedObject.ofMain mainPath mainHandle mainElf))
+    discoverWith Effects.io 4096
+      (LoadedObject.ofMain mainPath mainHandle mainElf)
 
 end LeanLoad.Discover

@@ -6,7 +6,8 @@ defined in `Runtime`.
 Stage boundary:
   • `Plan/` produces base-free facts: `Layout objCount` (page math,
     `objectSpan`, `totalSpan`, per-segment relocs), `Resolve.Table`,
-    `Init.order`. None of those know an mmap base.
+    and the DFS post-order init sequence (now bundled into the
+    `LoadGraph` as `g.initOrder`). None of those know an mmap base.
   • `Materialize/` consumes those plus the IO-supplied reservation
     base and emits the structured op tree below. The runtime seam
     (`runSafe`) consumes the witnessed tree directly — there is no

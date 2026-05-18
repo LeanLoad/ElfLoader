@@ -35,7 +35,6 @@ the IO-supplied `Reserve`, and passes that down to materialize.
 import LeanLoad.Discover.Graph
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
-import LeanLoad.Plan.Init
 
 namespace LeanLoad.Plan
 
@@ -87,17 +86,14 @@ def formula (p : Aggregate) : Elaborate.Formula :=
 def ofGraph (g : LoadGraph) : Except String Aggregate := do
   let elfs := g.objects.map (·.elf)
   have h_size : elfs.size = g.objects.size := by simp [elfs]
-  -- The optional `h_size` argument retypes the result at
-  -- `g.objects.size` (instead of `elfs.size`) — no outer `▸` cast needed.
-  let resolve := Resolve.buildTable elfs h_size
+  let resolve := Resolve.buildTable g
   -- Reject loads with strong-undef references — production loaders
   -- would surface this as an early `ld.so` failure.
   if let some u := resolve.missing[0]? then
     .error s!"Aggregate.ofGraph: {resolve.missing.size} unresolved strong symbol(s); \
       first: {u.name}"
   let layout ← Layout.ofElfs elfs resolve h_size
-  let initOrder := Init.order g
-  return { graph := g, resolve, layout, initOrder }
+  return { graph := g, resolve, layout, initOrder := g.initOrder }
 
 end Aggregate
 

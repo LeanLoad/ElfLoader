@@ -58,11 +58,12 @@
   machine    = LeanLoad.Elaborate.Machine.x86_64
   entry      = 0x0
   phnum      = 9
+  soname     = libc.so
   symtab     = 1646 entries
   initArr    = 0 ctor(s)
   finiArr    = 0 dtor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13d00 memsz=0x13d00 prot=r--  rela=0  jmprel=0
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13d08 memsz=0x13d08 prot=r--  rela=0  jmprel=0
     [1] vaddr=0x000000014000 offset=0x14000 filesz=0x554a7 memsz=0x554a7 prot=r-x  rela=0  jmprel=0
     [2] vaddr=0x00000006a000 offset=0x6a000 filesz=0x3527c memsz=0x3527c prot=r--  rela=0  jmprel=0
     [3] vaddr=0x0000000a0b20 offset=0x9fb20 filesz=0x90c memsz=0x2f90 prot=rw-  rela=96  jmprel=6
@@ -247,7 +248,7 @@ fini order: #[0, 2, 4, 1, 3]
 [3] libc.so       type=8   seg=3  @0x7ffffe818de8 ← 0x7ffffe81ba6c (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe818df0 ← 0x7ffffe81b980 (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe818df8 ← 0x7ffffe81ba74 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818f60 ← 0x7ffffe818e00 (8B)  sym=''
+[3] libc.so       type=8   seg=3  @0x7ffffe818f70 ← 0x7ffffe818e00 (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe8190d8 ← 0x7ffffe7d4fce (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe819108 ← 0x7ffffe7d516b (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe819110 ← 0x7ffffe7d515f (8B)  sym=''
@@ -267,22 +268,22 @@ fini order: #[0, 2, 4, 1, 3]
 [3] libc.so       type=8   seg=3  @0x7ffffe8193d8 ← 0x7ffffe8192c0 (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe8193f0 ← 0x7ffffe81b5c0 (8B)  sym=''
 [3] libc.so       type=8   seg=3  @0x7ffffe8193f8 ← 0x7ffffe7defc6 (8B)  sym=''
-[3] libc.so       type=6   seg=3  @0x7ffffe818f50 ← 0x7ffffe81ba7c (8B)  sym='__daylight'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f58 ← 0x7ffffe81b828 (8B)  sym='__stack_chk_guard'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f68 ← 0x7ffffe81b7e0 (8B)  sym='__tzname'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f70 ← 0x7ffffe81b8b0 (8B)  sym='optarg'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f78 ← 0x7ffffe819400 (8B)  sym='opterr'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f80 ← 0x7ffffe81ba80 (8B)  sym='getdate_err'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f88 ← 0x7ffffe81b820 (8B)  sym='__environ'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f90 ← 0x7ffffe81b7e0 (8B)  sym='tzname'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f98 ← 0x7ffffe81ba3c (8B)  sym='h_errno'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fa0 ← 0x7ffffe819404 (8B)  sym='optind'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fa8 ← 0x7ffffe81b860 (8B)  sym='__progname'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fb0 ← 0x7ffffe81ba10 (8B)  sym='__optreset'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fb8 ← 0x7ffffe81ba18 (8B)  sym='optopt'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fc0 ← 0x7ffffe81ba0c (8B)  sym='__signgam'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fc8 ← 0x7ffffe81b9c0 (8B)  sym='__timezone'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fd0 ← 0x7ffffe81b858 (8B)  sym='__progname_full'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f60 ← 0x7ffffe81ba7c (8B)  sym='__daylight'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f68 ← 0x7ffffe81b828 (8B)  sym='__stack_chk_guard'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f78 ← 0x7ffffe81b7e0 (8B)  sym='__tzname'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f80 ← 0x7ffffe81b8b0 (8B)  sym='optarg'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f88 ← 0x7ffffe819400 (8B)  sym='opterr'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f90 ← 0x7ffffe81ba80 (8B)  sym='getdate_err'
+[3] libc.so       type=6   seg=3  @0x7ffffe818f98 ← 0x7ffffe81b820 (8B)  sym='__environ'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fa0 ← 0x7ffffe81b7e0 (8B)  sym='tzname'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fa8 ← 0x7ffffe81ba3c (8B)  sym='h_errno'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fb0 ← 0x7ffffe819404 (8B)  sym='optind'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fb8 ← 0x7ffffe81b860 (8B)  sym='__progname'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fc0 ← 0x7ffffe81ba10 (8B)  sym='__optreset'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fc8 ← 0x7ffffe81ba18 (8B)  sym='optopt'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fd0 ← 0x7ffffe81ba0c (8B)  sym='__signgam'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fd8 ← 0x7ffffe81b9c0 (8B)  sym='__timezone'
+[3] libc.so       type=6   seg=3  @0x7ffffe818fe0 ← 0x7ffffe81b858 (8B)  sym='__progname_full'
 [3] libc.so       type=7   seg=3  @0x7ffffe819000 ← 0x7ffffe7ba67a (8B)  sym='malloc'
 [3] libc.so       type=7   seg=3  @0x7ffffe819008 ← 0x7ffffe78e5c0 (8B)  sym='calloc'
 [3] libc.so       type=7   seg=3  @0x7ffffe819010 ← 0x7ffffe7bb483 (8B)  sym='realloc'

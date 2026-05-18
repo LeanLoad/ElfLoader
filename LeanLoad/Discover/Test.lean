@@ -1,16 +1,17 @@
 /-
 Discover behavior tests — pure, in-memory, no IO.
 
-The BFS state machine (`BfsState`, `step`, `discoverLoopWith` in
-`Discover.Driver`) is generic over the effect monad. This file
-substitutes an in-memory `TestStore` for the filesystem, builds an
-`Effects (Except String)` instance over it (re-simulating the C-side
-path search at the Lean level), and exercises shape-level behaviors
-via `#guard` at elaboration time:
+The DFS driver (`dfs`, `discoverWith` in `Discover.Driver`) is
+generic over the effect monad. This file substitutes an in-memory
+`TestStore` for the filesystem, builds an `Effects (Except String)`
+instance over it (re-simulating the C-side path search at the Lean
+level), and exercises shape-level behaviors via `#guard` at
+elaboration time:
 
-  · Linear chain (4 objects in BFS order).
-  · Diamond (shared dep loaded once, two in-edges).
-  · Cycle (A → B → A terminates without diverging).
+  · Linear chain (4 objects in DFS pre-order).
+  · Diamond (shared dep loaded once, two in-edges, DFS pre-order).
+  · Cycle (A → B → A terminates without diverging — back-edge
+    dedups against the in-progress ancestor's idx).
   · Missing dep (returns `Except.error`).
   · Search-order precedence (env > runpath).
 
@@ -120,7 +121,7 @@ def Effects.test (store : TestStore) (envPath : Option String := none) :
 -- envPath, and runs the BFS to completion in `Except String`.
 -- ============================================================================
 
-/-- Run the BFS to completion against a `TestStore`. The main object
+/-- Run the DFS to completion against a `TestStore`. The main object
     is looked up directly by path (no soname search for it — same as
     production `discover`). Main's canonical name is `basename
     mainPath` (via `LoadedObject.ofMain`, same as production). -/
@@ -128,8 +129,8 @@ def discoverPure (store : TestStore) (mainPath : String)
     (envPath : Option String := none) : Except String LoadGraph := do
   let some mainElf := store.getElf? mainPath
     | .error s!"discoverPure: main {mainPath} not in store"
-  discoverLoopWith (Effects.test store envPath) 64
-    (BfsState.initial (LoadedObject.ofMain mainPath 0 mainElf))
+  discoverWith (Effects.test store envPath) 64
+    (LoadedObject.ofMain mainPath 0 mainElf)
 
 -- ============================================================================
 -- Behavior tests via `#guard`. Each scenario builds a small store, runs
@@ -179,16 +180,18 @@ private def diamondGraph : Except String LoadGraph := discoverPure diamondStore 
   | .ok g => g.objects.size = 4
   | _     => false
 
--- BFS order: main, b, c, d (b and c queued together; d via b first).
+-- DFS pre-order: main (0), then descend into /b — push b (1), descend
+-- into /d — push d (2), back up to /c — push c (3). `/c → /d` resolves
+-- as a dedup hit against d at idx 2.
 #guard match diamondGraph with
-  | .ok g => (g.objects.map (·.name)) = #["main", "b", "c", "d"]
+  | .ok g => (g.objects.map (·.name)) = #["main", "b", "d", "c"]
   | _     => false
 
--- Both `/b` (idx 1) and `/c` (idx 2) record an edge to `/d` (idx 3).
--- The second arrival (`/c → /d`) goes through the post-canonicalisation
--- dedup-hit branch in `BfsState.step.resolve`.
+-- main (0) → {b (1), c (3)}; b (1) → d (2); d (2) → ∅; c (3) → d (2).
+-- The shared dep `/d` is loaded once at idx 2; both b and c record
+-- an edge to it (c's edge via the dedup-hit branch in `dfs`).
 #guard match diamondGraph with
-  | .ok g => g.deps = #[#[1, 2], #[3], #[3], #[]]
+  | .ok g => g.deps = #[#[1, 3], #[2], #[], #[2]]
   | _     => false
 
 -- ---- 3. Cycle -----------------------------------------------------------

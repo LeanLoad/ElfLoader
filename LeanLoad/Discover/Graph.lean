@@ -1,29 +1,37 @@
 /-
-LoadGraph + invariant-bundling methods.
+LoadGraph — the typed output of Discover.
 
-The output type of Discover and the BFS state's primary carrier:
-loaded objects (in BFS order, main at idx 0), dep edges, and four
-structural invariants the rest of the loader depends on (non-emptiness,
-name-Nodup, deps-shape, deps-bounds).
+Loaded objects (`[0] = main`; the rest in an implementation-defined
+order), their dep edges, the DFS post-order init sequence, and seven
+structural invariants:
 
-Two construction methods (`recordDep`, `appendChild`) bundle the
-invariant maintenance so the BFS driver (`Driver.lean`'s
-`BfsState.{linkExisting, appendAndQueue, step}`) only calls them — no
-inline proof boilerplate at the recursive call sites.
+  · `sizePos`        — `0 < objects.size`. Makes `main` total (no Option).
+  · `namesNodup`     — names pairwise distinct (canonical-SONAME dedup).
+  · `depsSize`       — `deps.size = objects.size`. `deps` parallel.
+  · `depsBounds`     — every recorded edge target is a valid object idx.
+  · `closure`        — `∀ i, deps[i].size = objects[i].elf.needed.size`.
+                       Every NEEDED has been discovered, resolved, and
+                       recorded — downstream sees a complete dep relation.
+  · `initOrderSize`  — `initOrder.size = objects.size`. Every object
+                       appears exactly once in the init sequence.
+  · `initOrderNodup` — no duplicate `.val`s. With `initOrderSize`, makes
+                       `initOrder` a permutation of `[0, objects.size)`.
+
+`LoadGraph` is the *output* type of Discover and the canonical spec of
+what Discover produces. Construction lives in `Discover/Driver.lean`
+on an internal `DfsState` (carries the four "structural" invariants
+plus a name→index HashMap accelerator, a pending counter for closure,
+and the postOrder array). The output invariants `closure`,
+`initOrderSize`, `initOrderNodup` are established at the end of
+`discoverWith` from `DfsState`'s end-state.
 
 File layout:
-  · `LoadedObject` + `ofMain` — one entry of the graph; the singular
-    type used at construction sites.
-  · `recordEdge` + size/bounds preservation — Array-level push primitive
-    over the adjacency-list shape. The only thing here that doesn't
-    take a LoadGraph (LoadGraph hasn't been defined yet); both LoadGraph
-    methods consume it.
-  · `LoadGraph` — the bundled type with four structural invariants.
-  · `LoadGraph.findLoadedIdx` + lemmas (`findLoadedIdx_lt`,
-    `findLoadedIdx_none_iff`) — name-based dedup primitives over a
-    LoadGraph.
-  · `LoadGraph.{singleton, main, recordDep, appendChild}` + their
-    characterisation theorems.
+  · `LoadedObject` + `ofMain` — one entry of the graph.
+  · `LoadGraph` + `LoadGraph.main` — the bundled output.
+  · `recordEdge` + lemmas — `Array (Array Nat)` push primitive used by
+    `DfsState.recordDep`.
+  · `findLoadedIdx` + lemmas — name-based lookup over `Array
+    LoadedObject`. Free function so `DfsState` can use it.
 -/
 
 import LeanLoad.Parse.RawElf
@@ -45,37 +53,116 @@ open LeanLoad.Parse
     conventionally don't set SONAME). -/
 structure LoadedObject where
   /-- Canonical dedup key. For NEEDED deps: `elf.soname.get!` (production
-      requires DT_SONAME). For the main executable: `basename
-      mainPath`. -/
+      requires DT_SONAME). For the main executable: `basename mainPath`. -/
   name : String
-  /-- Open read-only file handle, kept for `pread` (parsing extras)
-      and `mmap` (Materialize stage). Production paths always carry a
-      real fd; tests use a dummy `(0 : UInt32)`. -/
+  /-- Open read-only file handle, kept for `pread` (parsing extras) and
+      `mmap` (Materialize stage). Production paths always carry a real
+      fd; tests use a dummy `(0 : UInt32)`. -/
   handle : Runtime.FileHandle
-  /-- Elaborated ELF — output of `Elaborate.elaborate` after
-      `Parse.parse`. The type itself is the witness that PT_LOAD
-      well-formedness held and every dynamic relocation was located
-      against a covering segment. -/
+  /-- Elaborated ELF — output of `Elaborate.elaborate` after `Parse.parse`.
+      The type is the witness that PT_LOAD well-formedness held and every
+      dynamic relocation was located against a covering segment. -/
   elf  : Elaborate.Elf
 
 /-- Construct the main `LoadedObject` from a user-supplied path. The
-    canonical name is the path basename — executables don't
-    conventionally set DT_SONAME, and main is path-loaded (not
-    NEEDED-driven), so we don't consult `elf.soname`. -/
+    canonical name is the path basename — executables don't conventionally
+    set DT_SONAME, and main is path-loaded (not NEEDED-driven), so we
+    don't consult `elf.soname`. -/
 def LoadedObject.ofMain (mainPath : String) (handle : Runtime.FileHandle)
     (elf : Elaborate.Elf) : LoadedObject :=
   { name := (mainPath.splitOn "/").getLast?.getD mainPath, handle, elf }
 
 -- ============================================================================
--- Edge accumulation. The push primitive over `deps`'s `Array (Array Nat)`
--- shape, plus its size + bounds preservation lemmas. Both LoadGraph
--- methods (`recordDep`, `appendChild`) consume these.
+-- LoadGraph — the bundled output of Discover.
+-- ============================================================================
+
+/-- Output of `Discover` — every transitively-NEEDED object loaded,
+    indexed for `Fin`-total downstream access, with the dep graph and
+    a DFS post-order init sequence bundled. The specific *traversal*
+    order Discover used is an implementation detail: only `[0] = main`
+    is spec-relevant. Symbol resolution (gabi 08 § Shared Object
+    Dependencies) iterates BFS-from-0 over `deps` — see
+    `Plan.Resolve.bfsOrder` — and doesn't depend on `objects`'s
+    intrinsic order.
+
+    See the module docstring for the seven invariants. -/
+structure LoadGraph where
+  /-- The loaded objects, indexed in an implementation-defined order
+      whose only spec-relevant property is `objects[0] = main` (the
+      `Discover` seed). Consumers that need a particular traversal
+      order compute it explicitly from `deps` — e.g. BFS for symbol
+      resolution (`Plan.Resolve.bfsOrder`), DFS post-order for init
+      (already bundled as `initOrder`). -/
+  objects     : Array LoadedObject
+  /-- Per-object dependency indices, recorded during DFS. Parallel to
+      `objects` and complete: every NEEDED has been resolved to an
+      idx in `deps[i]`. -/
+  deps        : Array (Array Nat)
+  /-- DFS post-order over the dep graph: indices in the order each
+      object's `dfs` returned. Used as the init order (deps before
+      dependents, cycles undefined per gabi 08). Established during
+      `discoverWith` via `DfsState.markComplete`. -/
+  initOrder   : Array (Fin objects.size)
+  /-- Non-emptiness — witnessed by `DfsState.initial` seeding with main
+      before the DFS begins. -/
+  sizePos     : 0 < objects.size
+  /-- Names pairwise distinct. Witnessed by the DFS `nameIx` dedup
+      check before each push. -/
+  namesNodup  : (objects.map (·.name)).toList.Nodup
+  /-- `deps` is parallel to `objects`. -/
+  depsSize    : deps.size = objects.size
+  /-- Every recorded edge target is a valid index into `objects`. -/
+  depsBounds  : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
+  /-- Closure under NEEDED: every object's `deps` row holds exactly one
+      entry per `DT_NEEDED` of its elf. Established at the end of
+      `discoverWith` once the top-level DFS has returned. -/
+  closure     : ∀ (i : Nat) (h : i < objects.size),
+    (deps[i]'(by rw [depsSize]; exact h)).size = (objects[i]'h).elf.needed.size
+  /-- `initOrder` is parallel to `objects` — every object appears
+      exactly once. -/
+  initOrderSize  : initOrder.size = objects.size
+  /-- No duplicate indices in `initOrder` (treated as `Nat` via `.val`).
+      Combined with `initOrderSize`, makes `initOrder` a permutation
+      of `[0, objects.size)`. -/
+  initOrderNodup : (initOrder.toList.map (·.val)).Nodup
+
+namespace LoadGraph
+
+/-- The main executable — total because `LoadGraph` carries `sizePos`. -/
+def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
+
+/-- Single-step dependency edge in the loaded graph: `j ∈ deps[i]`.
+    Defined on `Nat × Nat`; the `i < g.deps.size` hypothesis is part
+    of the existential so the relation can be lifted through
+    `Reachable` without a Fin wrapper. -/
+def Step (g : LoadGraph) (i j : Nat) : Prop :=
+  ∃ (h : i < g.deps.size), j ∈ g.deps[i]'h
+
+/-- Reachable from `i` to `j` via dep edges (reflexive-transitive
+    closure of `Step`). Spec witness for the gabi 08 § Shared Object
+    Dependencies "dependency graph" — every NEEDED chain from main is
+    a path under this relation. -/
+inductive Reachable (g : LoadGraph) : Nat → Nat → Prop
+  /-- Every node is reachable from itself in zero steps. -/
+  | refl (i : Nat) : Reachable g i i
+  /-- Extending a reachability path by one edge. -/
+  | tail {i j k : Nat} (h_ij : Reachable g i j) (h_jk : g.Step j k) :
+      Reachable g i k
+
+/-- Reachable from main (idx 0). Convenience for the most common case. -/
+def ReachableFromMain (g : LoadGraph) (i : Nat) : Prop :=
+  g.Reachable 0 i
+
+end LoadGraph
+
+-- ============================================================================
+-- recordEdge — push a target onto deps[src]. Used by `DfsState.recordDep`.
 -- ============================================================================
 
 /-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
     array unchanged when `src` is out of range, but in practice every
-    `src` we pass came from a `WorkItem` we emitted, so the in-range
-    case is the only one ever exercised. -/
+    `src` we pass is a known-valid object index (the DFS only ever uses
+    the index of an object that's already been pushed). -/
 def recordEdge (deps : Array (Array Nat)) (src tgt : Nat) :
     Array (Array Nat) :=
   deps.modify src (·.push tgt)
@@ -83,6 +170,24 @@ def recordEdge (deps : Array (Array Nat)) (src tgt : Nat) :
 theorem recordEdge_size (deps : Array (Array Nat)) (src tgt : Nat) :
     (recordEdge deps src tgt).size = deps.size := by
   unfold recordEdge; exact Array.size_modify
+
+/-- Per-row size accounting: `recordEdge` grows row `src` by one and
+    leaves every other row's size unchanged. Used by the DFS closure
+    proof to track per-row edge growth across the foldlM over
+    `elf.needed`. -/
+theorem recordEdge_row_size {deps : Array (Array Nat)} {src tgt i : Nat}
+    (h : i < deps.size) :
+    ((recordEdge deps src tgt)[i]'(by rw [recordEdge_size]; exact h)).size =
+      deps[i].size + (if src = i then 1 else 0) := by
+  have h_get :
+      (recordEdge deps src tgt)[i]'(by rw [recordEdge_size]; exact h) =
+        if src = i then deps[i].push tgt else deps[i] := by
+    unfold recordEdge
+    exact Array.getElem_modify _
+  rw [h_get]
+  by_cases h_eq : src = i
+  · simp [h_eq, Array.size_push]
+  · simp [h_eq]
 
 /-- If every existing target was `< N` and the new target is `< N`,
     then every target after `recordEdge` is `< N`. -/
@@ -94,7 +199,6 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
       ∀ t ∈ (recordEdge deps src tgt)[i], t < N := by
   intro i h_lt t h_mem
   have h_lt_orig : i < deps.size := by rw [recordEdge_size] at h_lt; exact h_lt
-  -- Unfold the modify via Array.getElem_modify (returns `if`-form).
   have h_get :
       (recordEdge deps src tgt)[i]'h_lt =
         (if src = i then (·.push tgt) deps[i] else deps[i]) := by
@@ -110,75 +214,23 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
     exact h_bounds i h_lt_orig t h_mem
 
 -- ============================================================================
--- LoadGraph — the BFS state carrier and final discovery output.
--- ============================================================================
-
-/-- Output of `Discover` — the loaded objects in BFS discovery order
-    with `main` at index 0. Carries the structural invariants needed
-    by every downstream consumer:
-
-      * `sizePos` — `0 < val.size`. `discover` seeds with main and
-        BFS only pushes, so non-emptiness holds by construction.
-        Makes `main` total (no `Option`).
-
-      * `namesNodup` — names are pairwise distinct. The BFS dedups
-        via canonical SONAME before pushing.
-
-      * `deps` — for each object index `i`, the indices of objects it
-        depends on. Recorded directly during BFS (the source/target
-        pair is known at edge-creation time), so it survives any
-        mismatch between `DT_NEEDED` strings and `DT_SONAME`-canonical
-        names. `Init.order` consumes this directly — no name-based
-        re-derivation, no silent drops.
-
-      * `depsSize` — `deps.size = objects.size`. Maintained by every push.
-
-      * `depsBounds` — every recorded edge target is a valid index
-        into `objects`. Maintained because edges only originate from
-        `findLoadedIdx` (iterates `[:objs.size]`) or from the index
-        about to be pushed (always `< objs.size + 1`).
-
-    Access pattern: `g.objects[i]` (indexed) / `for obj in g.objects do`
-    (iteration). Use `g.main` for the main executable instead of
-    `g.objects[0]?`. -/
-structure LoadGraph where
-  /-- The loaded objects, in BFS discovery order. Main at index 0. -/
-  objects    : Array LoadedObject
-  /-- Per-object dependency indices, recorded during BFS. -/
-  deps       : Array (Array Nat)
-  /-- Non-emptiness — `0 < objects.size`. Witnessed by `discover`
-      seeding with `main` before entering the BFS loop. -/
-  sizePos    : 0 < objects.size
-  /-- Names pairwise distinct. Witnessed by the BFS `findLoadedIdx`
-      dedup check before each push. -/
-  namesNodup : (objects.map (·.name)).toList.Nodup
-  /-- `deps` is parallel to `objects`. -/
-  depsSize   : deps.size = objects.size
-  /-- Every recorded edge target is a valid index into `objects`. -/
-  depsBounds : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
-
-namespace LoadGraph
-
--- ============================================================================
--- Name-based dedup primitives (operate on a LoadGraph — every call
--- site has one in hand). Called as `g.findLoadedIdx name` via dot
--- notation. The BFS calls this once per `DT_NEEDED` to dedup before
--- resolving, and once more after canonicalisation to catch the
--- SONAME-rename case.
+-- findLoadedIdx — name lookup over Array LoadedObject. Free function so
+-- both `LoadGraph` (final output) and `DfsState` (Driver.lean
+-- construction state) can use it.
 -- ============================================================================
 
 /-- Linear search for an object by name. Defined via `Array.findIdx?`
     so the size bound (`findLoadedIdx_lt` below) drops out of the core
     `Array.of_findIdx?_eq_some` characterisation. -/
-def findLoadedIdx (g : LoadGraph) (name : String) : Option Nat :=
-  g.objects.findIdx? (·.name == name)
+def findLoadedIdx (objects : Array LoadedObject) (name : String) : Option Nat :=
+  objects.findIdx? (·.name == name)
 
-/-- The index returned by `findLoadedIdx` is `< g.objects.size`. -/
-theorem findLoadedIdx_lt (g : LoadGraph) (name : String) {idx : Nat}
-    (h : g.findLoadedIdx name = some idx) : idx < g.objects.size := by
+/-- The index returned by `findLoadedIdx` is `< objects.size`. -/
+theorem findLoadedIdx_lt {objects : Array LoadedObject} {name : String} {idx : Nat}
+    (h : findLoadedIdx objects name = some idx) : idx < objects.size := by
   have h_match :=
-    Array.of_findIdx?_eq_some (xs := g.objects) (p := (·.name == name)) h
-  match h_get : g.objects[idx]? with
+    Array.of_findIdx?_eq_some (xs := objects) (p := (·.name == name)) h
+  match h_get : objects[idx]? with
   | some _ =>
     obtain ⟨h_lt, _⟩ := Array.getElem?_eq_some_iff.mp h_get
     exact h_lt
@@ -186,179 +238,30 @@ theorem findLoadedIdx_lt (g : LoadGraph) (name : String) {idx : Nat}
     rw [h_get] at h_match
     exact absurd h_match (by simp)
 
-/-- `findLoadedIdx = none` characterised: no object in `g.objects`
-    carries the given name. -/
-theorem findLoadedIdx_none_iff (g : LoadGraph) (name : String) :
-    g.findLoadedIdx name = none ↔ ∀ o ∈ g.objects, o.name ≠ name := by
+/-- `findLoadedIdx = none` characterised: no object in `objects` carries
+    the given name. -/
+theorem findLoadedIdx_none_iff (objects : Array LoadedObject) (name : String) :
+    findLoadedIdx objects name = none ↔ ∀ o ∈ objects, o.name ≠ name := by
   unfold findLoadedIdx
   rw [Array.findIdx?_eq_none_iff]
   simp
 
-/-- Pushing a freshly-loaded object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `BfsState.step`
-    discharges by pattern-matching on its dedup check (no extra proof
-    construction required at the call site). Used by `appendChild` (and
-    transitively by `BfsState.appendAndQueue`). -/
+/-- Pushing a freshly-resolved object preserves the names-Nodup invariant.
+    The precondition `findLoadedIdx = none` is what `DfsState.pushObject`
+    discharges from `nameIx[obj.name]? = none` via `nameIxValid`. -/
 theorem nodup_names_push_of_findLoadedIdx_none
-    (g : LoadGraph) (obj : LoadedObject)
-    (h_fresh : g.findLoadedIdx obj.name = none) :
-    ((g.objects.push obj).map (·.name)).toList.Nodup := by
+    {objects : Array LoadedObject} {obj : LoadedObject}
+    (h_nodup : (objects.map (·.name)).toList.Nodup)
+    (h_fresh : findLoadedIdx objects obj.name = none) :
+    ((objects.push obj).map (·.name)).toList.Nodup := by
   rw [Array.map_push, Array.toList_push, List.nodup_append]
-  refine ⟨g.namesNodup, by simp, ?_⟩
+  refine ⟨h_nodup, by simp, ?_⟩
   intro a ha b hb hab
   rw [List.mem_singleton] at hb
   subst hb
   obtain ⟨o, ho_mem, ho_name⟩ := Array.mem_map.mp (Array.mem_toList_iff.mp ha)
   have h_ne : o.name ≠ obj.name :=
-    (g.findLoadedIdx_none_iff obj.name).mp h_fresh o ho_mem
+    (findLoadedIdx_none_iff objects obj.name).mp h_fresh o ho_mem
   exact h_ne (ho_name.trans hab)
-
--- ============================================================================
--- LoadGraph constructors + methods.
--- ============================================================================
-
-/-- The singleton graph: one object, no edges, all invariants trivial.
-    Used as the BFS seed (`BfsState.initial`) — keeps the four-
-    invariant boilerplate co-located with the other LoadGraph
-    constructors instead of leaking through the abstraction barrier. -/
-def singleton (obj : LoadedObject) : LoadGraph :=
-  { objects    := #[obj]
-    deps       := #[#[]]
-    sizePos    := Nat.zero_lt_one
-    namesNodup := by simp
-    depsSize   := rfl
-    depsBounds := by
-      -- Only row is index 0, which is `#[]`; no edges to bound.
-      intro i h_lt t h_mem
-      have h_i_zero : i = 0 := by
-        have h_lt' : i < (#[#[]] : Array (Array Nat)).size := h_lt
-        simp at h_lt'; omega
-      subst h_i_zero
-      exact absurd h_mem (by simp) }
-
-@[simp] theorem singleton_objects (obj : LoadedObject) :
-    (singleton obj).objects = #[obj] := rfl
-
-/-- The main executable — total because `LoadGraph` carries the
-    non-emptiness witness. -/
-def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
-
-/-- Record a dep edge `src → tgt` to an already-loaded object. The
-    target's bound is the caller's obligation — `BfsState.linkExisting`
-    discharges it from `dispatch_skip_tgt_lt` (pre-IO dedup hit) or
-    `findLoadedIdx_lt` (post-IO dedup hit). All four `LoadGraph`
-    invariants are preserved by `recordEdge_size` + `recordEdge_bounds`;
-    objects and namesNodup are untouched. -/
-def recordDep (g : LoadGraph) (src tgt : Nat) (h_tgt : tgt < g.objects.size) :
-    LoadGraph :=
-  { g with
-    deps       := recordEdge g.deps src tgt
-    depsSize   := by rw [recordEdge_size]; exact g.depsSize
-    depsBounds := recordEdge_bounds g.deps src tgt g.depsBounds h_tgt }
-
-/-- Append a freshly-discovered object as `g.objects.size`'s entry,
-    plus the dep edge `src → newIdx` from the requesting object. The
-    fresh row in `deps` starts empty; subsequent BFS steps fill it as
-    the new object's NEEDED items resolve. The `h_fresh` precondition
-    (no existing object carries this name) is what
-    `nodup_names_push_of_findLoadedIdx_none` needs to preserve
-    `namesNodup`. -/
-def appendChild (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : g.findLoadedIdx obj.name = none) :
-    LoadGraph :=
-  let newIdx       := g.objects.size
-  let objs'        := g.objects.push obj
-  let depsWithEdge := recordEdge g.deps src newIdx
-  let deps'        := depsWithEdge.push #[]
-  have h_pos' : 0 < objs'.size := by rw [Array.size_push]; omega
-  have h_size_re : depsWithEdge.size = g.objects.size := by
-    rw [recordEdge_size]; exact g.depsSize
-  have h_size' : deps'.size = objs'.size := by
-    show (depsWithEdge.push #[]).size = (g.objects.push obj).size
-    rw [Array.size_push, Array.size_push, h_size_re]
-  -- Lift the old-deps bound to the new (larger) objects array, then
-  -- chain through `recordEdge_bounds` and the trailing `push #[]`.
-  have h_old_bounds_lifted : ∀ (i : Nat) (h : i < g.deps.size),
-      ∀ t ∈ g.deps[i], t < objs'.size := by
-    intro i h_lt_i t h_mem
-    have h_t := g.depsBounds i h_lt_i t h_mem
-    show t < (g.objects.push obj).size
-    rw [Array.size_push]; omega
-  have h_newIdx_lt : newIdx < objs'.size := by
-    show g.objects.size < (g.objects.push obj).size
-    rw [Array.size_push]; omega
-  have h_bounds_re : ∀ (i : Nat) (h : i < depsWithEdge.size),
-      ∀ t ∈ depsWithEdge[i], t < objs'.size :=
-    recordEdge_bounds g.deps src newIdx h_old_bounds_lifted h_newIdx_lt
-  have h_bounds' : ∀ (i : Nat) (h : i < deps'.size),
-      ∀ t ∈ deps'[i], t < objs'.size := by
-    intro i h_lt t h_mem
-    have h_split : i < depsWithEdge.size ∨ i = depsWithEdge.size := by
-      have h_lt' : i < (depsWithEdge.push #[]).size := h_lt
-      rw [Array.size_push] at h_lt'; omega
-    rcases h_split with h_lt_old | h_eq
-    · have h_get : deps'[i]'h_lt = depsWithEdge[i]'h_lt_old := by
-        show (depsWithEdge.push #[])[i]'h_lt = _
-        rw [Array.getElem_push, dif_pos h_lt_old]
-      rw [h_get] at h_mem
-      exact h_bounds_re i h_lt_old t h_mem
-    · subst h_eq
-      have h_get : deps'[depsWithEdge.size]'h_lt = (#[] : Array Nat) := by
-        show (depsWithEdge.push #[])[depsWithEdge.size]'h_lt = _
-        rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
-      rw [h_get] at h_mem
-      exact absurd h_mem (by simp)
-  { objects    := objs'
-    deps       := deps'
-    sizePos    := h_pos'
-    namesNodup := g.nodup_names_push_of_findLoadedIdx_none obj h_fresh
-    depsSize   := h_size'
-    depsBounds := h_bounds' }
-
--- ============================================================================
--- Characterisation theorems for `recordDep` / `appendChild`.
--- ============================================================================
-
-/-- `recordDep` doesn't touch the `objects` array. -/
-@[simp] theorem recordDep_objects (g : LoadGraph) (src tgt : Nat)
-    (h_tgt : tgt < g.objects.size) :
-    (g.recordDep src tgt h_tgt).objects = g.objects := rfl
-
-/-- Corollary used wherever a size proof needs to survive `recordDep`. -/
-@[simp] theorem recordDep_size (g : LoadGraph) (src tgt : Nat)
-    (h_tgt : tgt < g.objects.size) :
-    (g.recordDep src tgt h_tgt).objects.size = g.objects.size := rfl
-
-/-- `recordDep` preserves `main`. -/
-theorem recordDep_main (g : LoadGraph) (src tgt : Nat)
-    (h_tgt : tgt < g.objects.size) :
-    (g.recordDep src tgt h_tgt).main = g.main := rfl
-
-/-- `appendChild` pushes one entry — the size grows by exactly one. -/
-@[simp] theorem appendChild_size (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : g.findLoadedIdx obj.name = none) :
-    (g.appendChild src obj h_fresh).objects.size = g.objects.size + 1 := by
-  show (g.objects.push obj).size = _; rw [Array.size_push]
-
-/-- The pushed object lives at the old size (= new size - 1). -/
-@[simp] theorem appendChild_objects (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : g.findLoadedIdx obj.name = none) :
-    (g.appendChild src obj h_fresh).objects = g.objects.push obj := rfl
-
-/-- `main` is at index 0 in both old and new graphs, so it's preserved. -/
-theorem appendChild_main (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : g.findLoadedIdx obj.name = none) :
-    (g.appendChild src obj h_fresh).main = g.main := by
-  show (g.objects.push obj)[0]'_ = g.objects[0]'_
-  rw [Array.getElem_push, dif_pos g.sizePos]
-
-/-- The pushed object is at the back of the new `objects` array. -/
-theorem appendChild_back (g : LoadGraph) (src : Nat) (obj : LoadedObject)
-    (h_fresh : g.findLoadedIdx obj.name = none) :
-    (g.appendChild src obj h_fresh).objects.back? = some obj := by
-  show (g.objects.push obj).back? = some obj
-  simp [Array.back?]
-
-end LoadGraph
 
 end LeanLoad.Discover
