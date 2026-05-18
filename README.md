@@ -53,6 +53,88 @@ predicates over the planned `Array MemoryOp`
 `Realize.planOps` boundary; `MemoryOp.runSafe` only accepts
 witnessed op arrays.
 
+## De facto conventions
+
+LeanLoad follows several conventions that are *not* mandated by gABI
+but are universal across glibc / musl / ld.so. We follow them because
+real-world programs assume them; deviating would break compatibility.
+Where we're *stricter* than the convention (deliberately rejecting
+edge cases instead of papering over them), it's called out below.
+
+**Dependency resolution & dedup** (`Discover/`, `runtime.c`)
+
+- **Dedup by `DT_SONAME` — required for every NEEDED-loaded `.so`.**
+  We *fail loud* on a SONAME-less library; ld.so falls back to
+  realpath/inode. SONAME is universally set by modern linkers
+  (`-Wl,-soname,…`); missing it almost always indicates a build
+  mistake. (gABI doesn't mandate dedup at all — see `ld.so(8)`.)
+- **Main executable's canonical name = path basename.** Executables
+  conventionally don't set SONAME (nothing should link against an
+  exe); we use `basename(mainPath)`, never consulting SONAME.
+- **Search order for NEEDED:** literal-path (if soname contains `/`)
+  → `LD_LIBRARY_PATH` → owning object's `DT_RUNPATH`. Matches ld.so.
+- **`DT_RPATH` ignored.** Deprecated by gABI in favor of `DT_RUNPATH`.
+  ld.so still honours both with quirky precedence rules; we just
+  refuse RPATH outright.
+
+**Layout & process startup** (`Plan/`, `Elaborate/Elf.lean`, `Main.lean`)
+
+- **PT_LOAD segments pairwise disjoint.** gABI only mandates sorted
+  `p_vaddr` order; non-overlap is de facto. We carry it as a
+  validated `NonOverlap` witness on `Elf`.
+- **First PT_LOAD covers the ELF header + program-header table with
+  `vaddr = offset`.** Convention so `mainBase + phoff` equals the
+  kernel's `AT_PHDR` without offset→vaddr translation. Validated as
+  `phdrCovered`.
+- **4 KiB page size, hardcoded.** Linux x86_64 + AArch64 default.
+  AArch64 supports 16/64 KiB pages but musl + most distros use 4 KiB.
+  We don't honour `getpagesize()` at runtime.
+- **Stack size: 8 MiB.** Matches musl's default. gABI silent.
+- **Stack allocated as a separate `mmap`**, not contiguous with the
+  loaded image. Implementation choice — simplifies the reservation
+  arithmetic. ld.so does the same.
+- **`auxv` (AT_PHDR / AT_PHENT / AT_PHNUM / AT_BASE / AT_RANDOM / …)
+  forwarded from the host process** via `getauxval`. Matches the
+  kernel exec convention `__libc_start_main` expects.
+- **Files opened `O_RDONLY | O_CLOEXEC`, never closed.** Held until
+  process exit; the loaded program inherits the fd table. Simplifies
+  handle ownership; we never need to track refcounts.
+
+**Init / fini** (`Plan/Init.lean`, `Materialize/Build.lean`)
+
+- **Init order = DFS post-order over the dep DAG; fini = its
+  reverse.** gABI 08 mandates a *partial* order ("deps before
+  dependents") and leaves cycle order undefined. Our DFS post-order
+  matches glibc / musl; reverse-init for fini is also their choice.
+- **Zero entries in `DT_INIT_ARRAY` / `DT_FINI_ARRAY` skipped as
+  no-ops.** gABI leaves them unspecified; glibc / musl skip them.
+
+**Relocations** (`Elaborate/Reloc.lean`, `Materialize/Reloc.lean`)
+
+- **RELA only, not REL.** Toolchains emit RELA for x86_64 + AArch64;
+  REL is legacy.
+- **`R_*_GLOB_DAT` addend `A` treated as 0.** psABI documents the
+  formula as `S + A` for completeness, but linkers emit GLOB_DAT
+  with `A = 0`; a nonzero addend would be a malformed link.
+- **Strong undef → fail loud at `Plan.Aggregate.ofGraph`.** ld.so
+  fails at startup; we fail at planning time (earlier).
+- **Weak undef → resolves to 0.** psABI convention.
+- **psABI `OVERFLOW_CHECK` enforced per-relocation.** A 32-bit
+  relocation that overflows is rejected; ld.so does the same.
+
+**Target ABI restrictions** (rejected at elaborate time, not just
+unsupported in silence)
+
+- **ELFCLASS64 + ELFDATA2LSB only.** 32-bit and big-endian inputs
+  rejected at elaborate.
+- **`Machine` is a closed enum: x86_64 + AArch64.** Other
+  architectures rejected at elaborate (no per-arch reloc table).
+- **ET_DYN only.** ET_EXEC inputs rejected at elaborate — the
+  reserve-then-overlay layout assumes a PIE base.
+- **No TLS yet** (deferred — see `docs/plan.md`). The fixture's
+  `__thread` test works because musl's pthread bootstrap synthesizes
+  TLS state at thread-creation time, not via ELF TLS phdrs.
+
 ## Module layout
 
 ```
