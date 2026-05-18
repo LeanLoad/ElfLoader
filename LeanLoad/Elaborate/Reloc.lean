@@ -61,7 +61,7 @@ namespace LeanLoad.Elaborate
     a 2-element type means `Materialize.bakeReloc` dispatches
     structurally — no `if size = 8 …` runtime check, no
     width-validity lookup. Converted to `UInt8` (4 or 8) at the
-    `MemoryOp.write` boundary. -/
+    `StoreOp` boundary. -/
 inductive PatchSize where | b4 | b8
   deriving Repr, BEq
 

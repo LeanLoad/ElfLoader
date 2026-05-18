@@ -1,7 +1,8 @@
 # LeanLoad [![CI](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml/badge.svg)](https://github.com/ShawnZhong/LeanLoad/actions/workflows/ci.yml)
 
-A verified ELF loader in Lean 4 for Linux ELF binaries (static +
-dynamically-linked), targeting AArch64 + x86-64 with musl libc.
+A verified ELF loader in Lean 4 for PIE Linux ELF binaries
+(static-PIE + dynamically-linked), targeting AArch64 + x86-64 with
+musl libc.
 
 Architecture: a **pure verified middle** — `Parse` → `Elaborate` →
 `Discover` → `Plan` → `Materialize` — bracketed by two **trusted IO
@@ -198,9 +199,10 @@ posture per field is in the bullet.
   musl scans only `DT_TEXTREL`, never `DF_TEXTREL`; glibc rewrites
   `DF_TEXTREL` into a synthetic `DT_TEXTREL` at load because that's
   the form its reloc loop checks. The "deprecated" tag never died.
-- LeanLoad's reloc tables don't include any text-touching relocs, and
-  PT_LOAD writability is segment-level (`PF_W`), so a text reloc would
-  attempt to write into a non-writable region and fail elaboration.
+- LeanLoad's per-arch reloc tables don't enumerate any text-touching
+  relocs, so we never emit a text-segment write — protection by
+  omission, not by safety predicate. (`SegmentSafe` checks in-bounds
+  and disjointness; it doesn't inspect `PF_W`.)
 
 **`PT_INTERP` uniqueness + position (gABI 07)**
 
@@ -213,12 +215,9 @@ posture per field is in the bullet.
 
 ## Where gABI underspecifies
 
-The previous section caught gABI being strict where reality is lax.
-This one catches the opposite extreme: features every modern binary
-contains and every modern loader requires, that gABI 07/08 never
-describes. (Distinct from "De facto conventions" above, which lists
-*our* implementation choices in gABI-silent areas — these are about
-toolchain-emitted bytes we have to handle whether we like it or not.)
+The opposite extreme of the previous section: features every modern
+binary contains and every modern loader requires, that gABI 07/08
+never describes.
 
 **`PT_GNU_STACK` / `PT_GNU_RELRO` / `PT_GNU_EH_FRAME` / `PT_GNU_PROPERTY`**
 
