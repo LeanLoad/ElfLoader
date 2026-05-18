@@ -9,7 +9,7 @@ a **pure middle** (verified core, all under `Parse/` + `Elaborate/`
 | --------- | --------------- | ------------------------- | --------------------------------------------------------------------------------------------- |
 | Parse     | `Parse/*`       | `Parse/RawElf.parse`      | Byte-decode each ELF into `RawElf`; no semantic checks.                                       |
 | Elaborate | `Elaborate/*`   | —                         | Validate the bytes, lift to typed enums, group rela by segment, carry `WellFormed` segments and per-segment page-arithmetic invariants on `Segment`. |
-| Discover  | `Plan/Discover` | `Discover.discover`       | Walk `DT_NEEDED`, BFS-dedup; produce non-empty `ObjectList`.                                  |
+| Discover  | `Discover/Graph` + `Discover/Driver` | `Discover.discover` (`Discover/IO`) | BFS over `DT_NEEDED` (dedup by `DT_SONAME`); produce `LoadGraph` with non-emptiness + names-Nodup + deps witnesses.       |
 | Resolve   | `Plan/Resolve`  | —                         | Match each undef ref to a providing `(object, symbol)` via `Fin n`-typed `SymRef`; HashMap-indexed for O(1) lookup. |
 | Layout    | `Plan/Layout`   | —                         | Pick per-object mmap base; carry sorted-segments witness in the type.                         |
 | Reloc     | `Plan/Reloc`    | (folded into `realize`)   | Per-arch formula → `Patch` list; each patch carries the segment-tying `coversRela` witness so `applyPatch` discharges `Region.InRange` with no runtime check. |
@@ -139,10 +139,67 @@ unsupported in silence)
   `__thread` test works because musl's pthread bootstrap synthesizes
   TLS state at thread-creation time, not via ELF TLS phdrs.
 
+## Where gABI overspecifies
+
+gABI marks several fields "mandatory" that real loaders don't enforce.
+The flip side of "De facto conventions" above: there, gABI is silent
+where reality has a convention; here, gABI is strict where reality is
+lax. LeanLoad's posture per field is in the bullet.
+
+**`DT_STRSZ` (gABI 08 § Dynamic, "mandatory" for exec + shared)**
+
+- musl's `ldso/dynlink.c` never reads it — `dso->strings` is a bare
+  `char*` indexed by `st_name`, trusting NUL termination. glibc reads
+  it only in `elf/dl-addr.c` for `dladdr`'s bounds check, not on the
+  load path. A `.so` missing `DT_STRSZ` would load fine under both.
+- LeanLoad uses it as the pread byte count for `.dynstr`. Absence →
+  empty strtab (silent, not an error). See [`Parse/RawElf.lean`'s
+  layer-3 strtab read](LeanLoad/Parse/RawElf.lean).
+
+**`DT_HASH` (gABI 08, "mandatory")**
+
+- `--hash-style=gnu` (modern default on most distros) emits only
+  `DT_GNU_HASH`, omitting `DT_HASH`. glibc + musl walk GNU-hash chains
+  in that case; gABI never mentions `DT_GNU_HASH` at all.
+- LeanLoad sidesteps by requiring `--hash-style=both` in the Makefile
+  so `DT_HASH.nchain` is always available as the symtab count (the
+  only section whose size doesn't pair with a `DT_*SZ` tag).
+
+**`DT_RELAENT` / `DT_SYMENT` / `DT_PLTREL` (gABI 08, "mandatory")**
+
+- Entry-size tags. Every loader hardcodes the sizes (24 / 24 / 8)
+  because they're fixed by gABI itself — reading them would be
+  circular. LeanLoad does the same: `RawRelaSize`, `RawSymSize`,
+  `RawDynSize` are compile-time constants; the tags are ignored.
+
+**Section headers (gABI 03)**
+
+- gABI describes section headers extensively, but loaders don't need
+  them at all — only `.dynamic` matters at load time. `strip
+  --strip-all` removes them; many production binaries ship without.
+- LeanLoad strips them too: the fixture sets `e_shoff = 0`, and the
+  parser never reads section headers — only the program-header table
+  + `.dynamic`.
+
+**`DT_RPATH` "deprecated" (gABI 08)**
+
+- gABI deprecates `DT_RPATH` in favor of `DT_RUNPATH`, but ld.so still
+  honors both with quirky precedence rules. So "deprecated in gABI"
+  understates how alive it is in practice.
+- LeanLoad takes the stricter line — `DT_RPATH` is refused outright
+  (see "De facto conventions" above, `Discover/`).
+
+**`EI_OSABI` / `EI_ABIVERSION` (gABI 02)**
+
+- gABI says these identify the target OS ABI; Linux's loader ignores
+  the values in practice.
+- LeanLoad parses but doesn't validate against an allowlist.
+
 ## Module layout
 
 ```
 LeanLoad.lean              package root (re-exports)
+Main.lean                  CLI executable entry — Lake-blessed top-level placement
 LeanLoad/
   Parse/                   byte decoders — Elf64_* C-struct transcriptions
     Decode.lean            parser monad (cursor + Except, u32le / u64le primitives)
@@ -186,10 +243,7 @@ LeanLoad/
                            mmapAnonAlloc (kernel-picked reservation), mprotect,
                            write, zeroout, mmapStack, callCtor, execAndJump;
                            MemoryOp inductive + safety predicates + runSafe
-  Main.lean                CLI + load / debug orchestration; calls mmapAnonAlloc once,
-                           threads base into pure planning, dispatches via runSafe
   Example.lean             cross-stage `#guard` walkthrough (synthetic fixtures)
-  Test.lean                test exe entry — runs every pure stage on the real fixture
 runtime/
   Runtime.c                C shims (open / pread / mmap variants / mprotect /
                            write / zeroout / mmapStack / callCtor / execAndJump)
