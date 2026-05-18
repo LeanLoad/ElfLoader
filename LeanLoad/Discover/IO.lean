@@ -1,7 +1,7 @@
 /-
 Discover executor — IO instantiation.
 
-The BFS state machine (`bfsStep1`, `discoverLoopWith`) and its
+The BFS state machine (`BfsState.step`, `discoverLoopWith`) and its
 invariant carrier (`BfsState`) live in `Discover.Step` — pure and
 generic over the effect monad. This file:
 

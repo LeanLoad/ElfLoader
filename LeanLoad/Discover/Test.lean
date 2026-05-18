@@ -1,7 +1,7 @@
 /-
 Discover behavior tests — pure, in-memory, no IO.
 
-The BFS state machine (`bfsStep1`, `discoverLoopWith`) is generic over
+The BFS state machine (`BfsState.step`, `discoverLoopWith`) is generic over
 the effect monad. This file substitutes an in-memory `TestStore` for
 the filesystem, builds an `Effects (Except String)` instance over it
 (re-simulating the C-side path search at the Lean level), and
@@ -182,7 +182,7 @@ private def diamondGraph : Except String LoadGraph := discoverPure diamondStore 
 
 -- Both `/b` (idx 1) and `/c` (idx 2) record an edge to `/d` (idx 3).
 -- The second arrival (`/c → /d`) goes through the post-canonicalisation
--- dedup-hit branch in `bfsStep1.resolve`.
+-- dedup-hit branch in `BfsState.step.resolve`.
 #guard match diamondGraph with
   | .ok g => g.deps = #[#[1, 2], #[3], #[3], #[]]
   | _     => false
@@ -211,7 +211,7 @@ private def cycleGraph : Except String LoadGraph := discoverPure cycleStore "/ma
 -- main NEEDs both `/libfoo.so` and `/libfoo.so.1` — two different files
 -- in the store, but BOTH have `DT_SONAME = "libfoo.so.1"`. Production
 -- policy: dedup by SONAME. The second resolution hits the post-load
--- dedup branch in `bfsStep1.resolve` via `findLoadedIdx`.
+-- dedup branch in `BfsState.step.resolve` via `findLoadedIdx`.
 
 private def sonameStore : TestStore := [
   ("/main",        mockElf (soname := some "main")
@@ -237,7 +237,7 @@ private def sonameGraph : Except String LoadGraph := discoverPure sonameStore "/
 
 -- ---- 5. Missing dep -----------------------------------------------------
 -- main NEEDs /missing which isn't in the store → resolveDep returns
--- none → bfsStep1 fires `eff.fail` → `.error` propagates out.
+-- none → BfsState.step fires `eff.fail` → `.error` propagates out.
 
 private def missingStore : TestStore := [
   ("/main", mockElf (soname := some "main") (needed := #["/missing"]))]

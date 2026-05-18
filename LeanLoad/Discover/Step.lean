@@ -3,7 +3,7 @@ BFS state machine — per-item dispatch.
 
 `WorkItem` is one queued `DT_NEEDED` lookup; `step` decides whether
 to skip (already loaded) or to resolve (call out to IO). The queue
-itself is managed by `bfsStep1` in `Discover.BFS`; `step` only sees
+itself is managed by `BfsState.step` in `Discover.BFS`; `step` only sees
 one item at a time.
 
 `workOfElf` is the producer: given a freshly elaborated `Elf` and its
@@ -12,7 +12,7 @@ push onto the queue.
 
 Characterisation theorems (`step_skip_iff`, `step_resolve_iff`,
 `step_skip_tgt_lt`, `workOfElf_sourceIdx`) pin down the decision so
-`bfsStep1`'s invariant maintenance can cite them by name.
+`BfsState.step`'s invariant maintenance can cite them by name.
 -/
 
 import LeanLoad.Discover.Graph
@@ -27,7 +27,7 @@ open LeanLoad
 
 /-- One BFS work item: a `DT_NEEDED` soname, with its source-object
     context. `sourceIdx` identifies the object whose `DT_NEEDED`
-    produced this item — `bfsStep1` records the dep edge once the
+    produced this item — `BfsState.step` records the dep edge once the
     target is resolved. `runpath` carries the source's `DT_RUNPATH`
     for search-path resolution. -/
 structure WorkItem where
@@ -60,7 +60,7 @@ def workOfElf (sourceIdx : Nat) (elf : Elaborate.Elf) : List WorkItem :=
 
 -- ============================================================================
 -- Characterisation theorems — pin down `step` and `workOfElf` so
--- `bfsStep1`'s invariant proofs can cite them.
+-- `BfsState.step`'s invariant proofs can cite them.
 -- ============================================================================
 
 /-- `step` returns `.skip tgt` iff `findLoadedIdx` returned `some tgt`.
@@ -102,7 +102,7 @@ theorem step_skip_tgt_lt {objs : Array LoadedObject}
   findLoadedIdx_lt objs item.soname (step_skip_iff.mp h)
 
 /-- `workOfElf` items all carry `sourceIdx = sourceIdx`. Used by
-    `bfsStep1` to maintain the BFS-state invariant after pushing a new
+    `BfsState.step` to maintain the BFS-state invariant after pushing a new
     object's NEEDED entries onto the queue. -/
 theorem workOfElf_sourceIdx (sourceIdx : Nat) (elf : Elaborate.Elf)
     {item : WorkItem} (h_mem : item ∈ workOfElf sourceIdx elf) :

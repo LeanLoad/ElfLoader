@@ -7,7 +7,7 @@ structural invariants the rest of the loader depends on (non-emptiness,
 name-Nodup, deps-shape, deps-bounds).
 
 Two construction methods (`recordDep`, `appendChild`) bundle the
-invariant maintenance so the BFS driver (`bfsStep1`) only calls them
+invariant maintenance so the BFS driver (`BfsState.step`) only calls them
 — no inline proof boilerplate at the recursive call sites.
 
 File layout:
@@ -89,7 +89,7 @@ theorem findLoadedIdx_none_iff (objs : Array LoadedObject) (name : String) :
   simp
 
 /-- Pushing a freshly-loaded object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `bfsStep1` discharges
+    The precondition `findLoadedIdx = none` is what `BfsState.step` discharges
     by pattern-matching on its dedup check (no extra proof construction
     required at the call site). -/
 theorem nodup_names_push_of_findLoadedIdx_none
@@ -206,7 +206,7 @@ namespace LoadGraph
 def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
 
 /-- Record a dep edge `src → tgt` to an already-loaded object. The
-    target's bound is the caller's obligation — `bfsStep1` discharges
+    target's bound is the caller's obligation — `BfsState.step` discharges
     it from `step_skip_tgt_lt` (BFS dedup hit) or `findLoadedIdx_lt`
     (post-canonicalisation dedup hit). All four `LoadGraph` invariants
     are preserved by `recordEdge_size` + `recordEdge_bounds`; objects

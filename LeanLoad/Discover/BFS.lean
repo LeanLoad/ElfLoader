@@ -4,7 +4,7 @@ BFS driver — generic over the effect monad.
 The state carrier (`BfsState`) bundles the accumulating `LoadGraph`
 with the pending work queue and one structural invariant
 (`workSourcesValid`: every queued item's `sourceIdx` is a valid
-object index). `bfsStep1` advances the state by one work item;
+object index). `BfsState.step` advances the state by one work item;
 `discoverLoopWith` iterates to completion.
 
 Effects are abstract — `Effects (m : Type → Type)` is a record
@@ -23,9 +23,9 @@ open LeanLoad
 -- ============================================================================
 -- BfsState — the BFS carrier with one structural invariant: every
 -- pending work item's `sourceIdx` is a valid object index. This is
--- maintained by `bfsStep1` across iterations and lets callers treat
--- every queued source as a `Fin graph.objects.size` without an
--- `Option` dance.
+-- maintained by `BfsState.step` across iterations and lets callers
+-- treat every queued source as a `Fin graph.objects.size` without
+-- an `Option` dance.
 -- ============================================================================
 
 /-- BFS carrier: the accumulating `LoadGraph` plus the pending work
@@ -33,9 +33,9 @@ open LeanLoad
     `sourceIdx` is in range for the current graph.
 
     Initial state: `BfsState.initial`. Per-iteration state evolution:
-    `bfsStep1`. End state: `work = []` (no more sonames to resolve).
-    All transitions preserve `workSourcesValid`, so it never has to
-    be re-proven at consumer sites. -/
+    `BfsState.step`. End state: `work = []` (no more sonames to
+    resolve). All transitions preserve `workSourcesValid`, so it
+    never has to be re-proven at consumer sites. -/
 structure BfsState where
   graph            : LoadGraph
   work             : List WorkItem
@@ -90,13 +90,13 @@ def initial (mainObj : LoadedObject) : BfsState :=
 end BfsState
 
 -- ============================================================================
--- Effects — abstract IO leaves so `bfsStep1` is generic over the
+-- Effects — abstract IO leaves so `BfsState.step` is generic over the
 -- effect monad. Production: `IO` via `Effects.io` (defined in
 -- `Discover/IO.lean`). Tests: synthetic monad over an in-memory
--- store via `Effects.test` (in `Discover/StepTest.lean`).
+-- store via `Effects.test` (in `Discover/Test.lean`).
 -- ============================================================================
 
-/-- The single IO leaf `bfsStep1` calls, plus a `fail` for the
+/-- The single IO leaf `BfsState.step` calls, plus a `fail` for the
     missing-dep error. Parameterised over the effect monad `m` so
     tests can swap in a pure `Except String` (or `ReaderT TestStore`)
     instance.
@@ -117,8 +117,8 @@ structure Effects (m : Type → Type) where
       Parse/elaborate failures escape via the monad's error mechanism
       (IO exception in production; `throw` in `Except`-based tests).
       Splitting "not found" out as a `none` instead of using `fail`
-      lets `bfsStep1` produce the diagnostic with the full `WorkItem`
-      context (runpath, soname) attached. -/
+      lets `BfsState.step` produce the diagnostic with the full
+      `WorkItem` context (runpath, soname) attached. -/
   resolveDep : String → Option String →
                m (Option (String × Runtime.FileHandle × Elaborate.Elf))
   /-- Surface a fatal error. In `IO`, this is `throw (IO.userError …)`;
@@ -126,8 +126,10 @@ structure Effects (m : Type → Type) where
       because the caller is in continuation position. -/
   fail       : {α : Type} → String → m α
 
+namespace BfsState
+
 -- ============================================================================
--- bfsStep1 — one BFS iteration. Pure interface, generic over `m`,
+-- BfsState.step — one BFS iteration. Pure interface, generic over `m`,
 -- consumes/produces `BfsState` so the invariant is type-enforced
 -- across steps. The driver `discoverLoopWith` just iterates this.
 -- ============================================================================
@@ -135,15 +137,15 @@ structure Effects (m : Type → Type) where
 /-- Result of one BFS iteration: either the queue was empty (`done`,
     `s.graph` is the final output) or one item was processed
     (`continue s'`, with `s'.workSourcesValid` preserved). -/
-inductive BfsStepResult where
+inductive StepResult where
   | done
   | continue (s' : BfsState)
 
 /-- Process exactly one work item.
 
     Returns `.done` if the queue is empty (terminal state — caller
-    should return `s.graph`). Otherwise dispatches the head via `step`
-    and one of three branches:
+    should return `s.graph`). Otherwise dispatches the head via the
+    pure `Discover.step` and one of three branches:
 
     · `.skip` — soname already loaded. Edge recorded via
       `LoadGraph.recordDep`, queue tail unchanged.
@@ -153,9 +155,11 @@ inductive BfsStepResult where
       enqueue the new elf's NEEDED entries via `workOfElf`.
 
     In each branch, `workSourcesValid` is re-established from the
-    pre-existing invariant plus locally available bounds. -/
-def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
-    (s : BfsState) : m BfsStepResult := do
+    pre-existing invariant plus locally available bounds.
+
+    Called as `s.step eff` via dot notation. -/
+def step {m : Type → Type} [Monad m] (s : BfsState) (eff : Effects m) :
+    m StepResult := do
   match h_work : s.work with
   | [] => pure .done
   | item :: rest =>
@@ -164,7 +168,7 @@ def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
     have h_rest_valid : ∀ i ∈ rest, i.sourceIdx < s.graph.objects.size := by
       intro i hi
       exact s.workSourcesValid i (by rw [h_work]; exact List.mem_cons_of_mem _ hi)
-    match h_step : step s.graph.objects item with
+    match h_step : Discover.step s.graph.objects item with
     | .skip tgt =>
       have h_tgt : tgt < s.graph.objects.size := step_skip_tgt_lt h_step
       let g' := s.graph.recordDep item.sourceIdx tgt h_tgt
@@ -209,10 +213,12 @@ def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
           pure (.continue { graph := g', work := rest ++ newWork,
                             workSourcesValid := h_all_valid })
 
+end BfsState
+
 -- ============================================================================
--- discoverLoopWith — iterate `bfsStep1` until the queue empties (or
--- fuel runs out). The fuel cap is invisible in practice; each push
--- monotonically grows `objects.size`, and `objects.size ≤ total
+-- discoverLoopWith — iterate `BfsState.step` until the queue empties
+-- (or fuel runs out). The fuel cap is invisible in practice; each
+-- push monotonically grows `objects.size`, and `objects.size ≤ total
 -- transitive deps in the system`.
 -- ============================================================================
 
@@ -225,7 +231,7 @@ def discoverLoopWith {m : Type → Type} [Monad m] (eff : Effects m)
   match fuel with
   | 0 => pure s.graph
   | fuel + 1 =>
-    match ← bfsStep1 eff s with
+    match ← s.step eff with
     | .done => pure s.graph
     | .continue s' => discoverLoopWith eff fuel s'
 
