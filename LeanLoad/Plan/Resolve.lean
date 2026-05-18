@@ -79,9 +79,9 @@ private def bfsLoop (g : LoadGraph) (fuel : Nat)
     match queue with
     | [] => order
     | idx :: rest =>
-      if visited[idx] then
-        bfsLoop g fuel rest visited order
-      else
+      match visited[idx] with
+      | true => bfsLoop g fuel rest visited order
+      | false =>
         let visited' := visited.set idx.val true idx.isLt
         let order' := order.push idx
         have h_lt_deps : idx.val < g.deps.size := by
@@ -166,16 +166,14 @@ private theorem bfsLoop_preserves_inv (g : LoadGraph) (fuel : Nat) :
       simp only
       by_cases h_vidx : visited[idx] = true
       · -- visited[idx] = true: skip, state unchanged.
-        rw [if_pos h_vidx]
+        rw [h_vidx]
         exact ih rest visited order h_inv
       · -- visited[idx] = false: push idx + mark visited + recurse.
-        rw [if_neg h_vidx]
-        -- The new state has visited' = visited.set idx true, order' = order.push idx.
-        -- We need to show BfsInv for the new state.
         have h_vidx_false : visited[idx] = false := by
           cases h_b : visited[idx] with
           | true => exact absurd h_b h_vidx
           | false => rfl
+        rw [h_vidx_false]
         -- Establish idx ∉ order.toList (to preserve Nodup after push).
         have h_idx_not_in : idx ∉ order.toList := fun h_mem => by
           have := h_inv.orderVisited idx h_mem
@@ -248,9 +246,13 @@ private theorem bfsLoop_toList_prefix (g : LoadGraph) (fuel : Nat) :
     | cons idx rest =>
       simp only
       by_cases h_vidx : visited[idx] = true
-      · rw [if_pos h_vidx]
+      · rw [h_vidx]
         exact ih rest visited order
-      · rw [if_neg h_vidx]
+      · have h_vidx_false : visited[idx] = false := by
+          cases h_b : visited[idx] with
+          | true => exact absurd h_b h_vidx
+          | false => rfl
+        rw [h_vidx_false]
         -- After push, recurse on `order.push idx`. Result's toList equals
         -- (order.push idx).toList ++ subSuffix = order.toList ++ [idx] ++ subSuffix.
         obtain ⟨subSuffix, h_sub⟩ := ih _ _ (order.push idx)
