@@ -92,13 +92,26 @@ private def bfsLoop (g : LoadGraph) (fuel : Nat)
         bfsLoop g fuel (rest ++ children) visited' order'
 termination_by fuel
 
+/-- Total number of edges in the dep graph — sum over objects of
+    `deps[i].size`. Bounds the number of `bfsLoop` iterations needed
+    for completeness (each iteration either pops one queue element,
+    and each push is one out-edge from a newly-visited node). -/
+def totalEdges (g : LoadGraph) : Nat :=
+  g.deps.foldl (fun acc r => acc + r.size) 0
+
 /-- BFS traversal of the dep graph starting at idx 0 (main). The
     returned array is the iteration order for `resolveByName` — every
     entry is in `[0, g.objects.size)` (by `g.depsBounds`) and the
-    visited bitmap ensures each index is visited at most once. -/
+    visited bitmap ensures each index is visited at most once.
+
+    Fuel = `totalEdges + objects.size + 1` is provably sufficient
+    for the queue to empty: each iteration pops one element, and the
+    total push count is bounded by `1 + totalEdges` (initial main
+    push plus one push per out-edge from a visited node). The `+n`
+    slack accommodates the visited-bitmap bound. -/
 def bfsOrder (g : LoadGraph) : Array (Fin g.objects.size) :=
-  let fuel := g.objects.size * (g.objects.size + 1) + 1
-  bfsLoop g fuel [⟨0, g.sizePos⟩] (Vector.replicate _ false) #[]
+  bfsLoop g (totalEdges g + g.objects.size + 1)
+    [⟨0, g.sizePos⟩] (Vector.replicate _ false) #[]
 
 -- ============================================================================
 -- bfsOrder correctness witnesses: Nodup of indices + main-at-head.

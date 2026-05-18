@@ -2,6 +2,8 @@
 
 Research project. No backward compatibility required.
 
+## Working style
+
 - Refactor freely. Delete old forms entirely; do not leave aliases,
   `@deprecated` shims, or "removed" comments.
 - Don't hunt for the smallest possible diff. If a deeper restructure
@@ -27,3 +29,36 @@ Research project. No backward compatibility required.
   regardless of who reads it. Drop a property only when it's
   genuinely incidental — not just because no caller happens to use
   it today.
+
+## Debuggability
+
+Three rules that pay off across the project:
+
+1. **`deriving Repr` on every parse / elaborate / plan type.**
+   Then `--debug` is structured by construction.
+2. **Deterministic output.** No timestamps, no hash-iteration order,
+   no addresses chosen by ASLR in the plan. Sort everything that has
+   no semantic order — golden tests rely on this.
+3. **Failure messages with context, not bare `panic`.** When the
+   surrounding logic already knows the offending tag / offset /
+   symbol, surface it; don't force the user to grep. Don't reach
+   for context that isn't already at hand.
+
+## Tests vs. theorems
+
+Both have a job, and adding one doesn't retire the other:
+
+- **`#guard` checks** colocated with each definition serve *readers*.
+  Concrete examples like
+  `formula R_X86_64_RELATIVE { B := 0x10000, A := 0xa90, … } = some { value := 0x10a90, size := .b8 }`
+  make a function's contract scannable and fail at elaboration time
+  if the table moves under them. Use them anywhere a function does
+  nontrivial arithmetic, table lookups, formula evaluation, or has
+  interesting edge cases (empty inputs, alignment boundaries,
+  symbol-less relocations).
+- **Theorems live next to the definitions they characterise.** No
+  separate `Thm/` tree — the proofs live with the code they're about.
+
+A `#guard` shows *what the function does* on a concrete input; the
+theorem shows *what it always does*. The two are complementary
+audit surfaces.
