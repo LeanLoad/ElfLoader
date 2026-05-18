@@ -17,9 +17,10 @@ These are unit-level checks. The integration path (real ELFs on disk
 via `Runtime.openByName`) is exercised by `LeanLoad.Test`'s
 `discoverTest` over `build/main`.
 
-Canonical name = `elf.soname.getD requested_soname` — same policy as
-production `Effects.io`. Tests usually set `mockElf.soname` explicitly,
-but a `none` SONAME exercises the input-soname fallback path.
+Canonical name = `elf.soname` (required) for NEEDED deps; `basename
+mainPath` for the main entry. Matches production `Effects.io` /
+`discover` exactly. `mockElf` defaults `soname` to `some "anon"` so
+the SONAME-required path is satisfied by accident.
 -/
 
 import LeanLoad.Discover.BFS
@@ -38,10 +39,12 @@ open LeanLoad.Elaborate (Elf)
 /-- Build a minimal `Elf` for Discover testing. `soname`, `runpath`,
     and `needed` are the only fields BFS observes; everything else is
     zeroed and the structural invariants discharge automatically.
-    `soname` is `Option String` (mirroring `Elf.soname`) so tests
-    can also exercise the "SONAME unset → fall back to input soname"
-    path that production `Effects.io` uses. -/
-def mockElf (soname : Option String := none) (runpath : Option String := none)
+    `soname` defaults to `some "anon"` because production `Effects.io`
+    *requires* DT_SONAME on every NEEDED-loaded `.so`. Tests that want
+    to exercise the SONAME-missing error path can pass `soname := none`
+    explicitly. -/
+def mockElf (soname : Option String := some "anon")
+    (runpath : Option String := none)
     (needed : Array String := #[]) : Elf := {
   elfType  := .dyn
   machine  := .x86_64
@@ -96,15 +99,16 @@ private def testSearchCandidates (soname : String)
     dirs.map (fun d => s!"{d}/{soname}")
 
 /-- The test `Effects` instance: simulate `Runtime.openByName` over a
-    `TestStore`, with the same `elf.soname.getD requested-soname`
-    fallback as production `Effects.io`. Closure captures both the
-    store and a simulated `LD_LIBRARY_PATH`. -/
+    `TestStore`, with the same SONAME-required policy as production
+    `Effects.io` — `findSome?` skips entries whose elf has no DT_SONAME
+    (treats them as "not found"; production throws). Closure captures
+    both the store and a simulated `LD_LIBRARY_PATH`. -/
 def Effects.test (store : TestStore) (envPath : Option String := none) :
     Effects (Except String) :=
   { resolveDep := fun soname runpath => .ok <|
       (testSearchCandidates soname runpath envPath).findSome? fun path =>
-        (store.getElf? path).map fun elf =>
-          (elf.soname.getD soname, (0 : Runtime.FileHandle), elf)
+        (store.getElf? path).bind fun elf =>
+          elf.soname.map fun name => (name, (0 : Runtime.FileHandle), elf)
     fail := fun {_} msg => .error msg }
 
 -- ============================================================================
@@ -115,16 +119,15 @@ def Effects.test (store : TestStore) (envPath : Option String := none) :
 
 /-- Run the BFS to completion against a `TestStore`. The main object
     is looked up directly by path (no soname search for it — same as
-    production `discover`). Main's canonical name is `DT_SONAME` if
-    set, else the path basename. -/
+    production `discover`). Main's canonical name is `basename
+    mainPath` (we don't consult SONAME for main, same as production). -/
 def discoverPure (store : TestStore) (mainPath : String)
     (envPath : Option String := none) : Except String LoadGraph := do
   let some mainElf := store.getElf? mainPath
     | .error s!"discoverPure: main {mainPath} not in store"
   let basename (s : String) : String := (s.splitOn "/").getLast?.getD s
-  let mainName := mainElf.soname.getD (basename mainPath)
   let mainObj : LoadedObject :=
-    { name := mainName, handle := 0, elf := mainElf }
+    { name := basename mainPath, handle := 0, elf := mainElf }
   discoverLoopWith (Effects.test store envPath) 64 (BfsState.initial mainObj)
 
 -- ============================================================================

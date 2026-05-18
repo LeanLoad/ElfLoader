@@ -35,7 +35,15 @@ $(MUSL_CC): | $(BUILD_DIR)
 	# does the dynamic-loader's job itself. Differential testing
 	# against the kernel exec path is forfeited; that's the
 	# tradeoff.
-	$(MAKE) -C $(MUSL_DIR) LDSO_OBJS= install
+	#
+	# `LDFLAGS=-Wl,-soname,libc.so` sets DT_SONAME on the produced
+	# libc.so — required by leanload's discover stage (`Effects.io`
+	# fails loud on SONAME-less .so files; dedup by SONAME is the
+	# only sound key without realpath/inode tracking). Stock musl
+	# (with the `dlstart` bootstrap intact) sets SONAME implicitly
+	# via its own link rules; stripping LDSO_OBJS also strips that,
+	# so we set it back explicitly.
+	$(MAKE) -C $(MUSL_DIR) LDSO_OBJS= LDFLAGS=-Wl,-soname,libc.so install
 
 # ==================== Examples ====================
 # -rpath,<our build>: embed DT_RUNPATH so the binaries resolve their

@@ -59,32 +59,35 @@ def parseFromHandle (handle : Runtime.FileHandle) : IO Elaborate.Elf := do
 -- ============================================================================
 
 /-- Production `Effects.resolveDep`: C-side search + open, then Lean-
-    side parse + elaborate. Canonical dedup key = `DT_SONAME` when
-    set, else the NEEDED string the caller requested.
+    side parse + elaborate. Canonical dedup key = `DT_SONAME` —
+    required for every NEEDED-loaded `.so`. Fails loud if unset.
 
-    The input-soname fallback is the only sound choice without a
-    resolved-path return from C: it dedups correctly when the same
-    NEEDED string appears multiple times (the common case — diamond
-    deps), and is the same key ld.so would use against a SONAME-less
-    file. The (rare) edge case "two different NEEDED strings resolve
-    to the same SONAME-less file" can result in double-load, but
-    every modern .so sets SONAME, so this is theoretical. -/
+    Why required: SONAME is what makes cross-NEEDED dedup work
+    (objects A and B both NEEDED the same library, possibly via
+    different strings — same SONAME = dedup hits). Every modern
+    toolchain sets it via `-Wl,-soname,…`; a SONAME-less `.so` is
+    almost always a build mistake. Failing loud here is more
+    diagnostic-friendly than silently double-loading. -/
 def Effects.io : Effects IO :=
   { resolveDep := fun soname runpath => do
       match ← Runtime.openByName soname runpath with
       | none => pure none
       | some handle => do
         let elf ← parseFromHandle handle
-        pure (some (elf.soname.getD soname, handle, elf))
+        match elf.soname with
+        | some name => pure (some (name, handle, elf))
+        | none      => throw (IO.userError
+            s!"discover: '{soname}' is missing DT_SONAME (cannot dedup)")
     fail := fun {_} msg => throw (IO.userError msg) }
 
 -- ============================================================================
 -- discover — production entry point.
 -- ============================================================================
 
-/-- `(s.splitOn "/").getLast?` — basename of a path. Used only for
-    the main entry, where SONAME is conventionally unset and the
-    user-supplied path is the natural canonical name source. -/
+/-- `(s.splitOn "/").getLast?` — basename of a path. Used as the
+    main executable's canonical name; executables conventionally don't
+    set DT_SONAME, and main is path-loaded (not NEEDED-driven) so its
+    name is mostly for diagnostics + the rare cycle-back-to-main case. -/
 private def basename (s : String) : String :=
   (s.splitOn "/").getLast?.getD s
 
@@ -94,18 +97,18 @@ private def basename (s : String) : String :=
     witnessed at the type level.
 
     Main is opened directly via `Runtime.openByName` (literal-path
-    branch — `mainPath` contains '/'). Its canonical name is
-    `DT_SONAME` if set, else `basename mainPath` (the convention
-    for executables). All NEEDED-loaded deps go through
-    `Effects.io.resolveDep`. -/
+    branch — `mainPath` contains '/'). Its canonical name is the
+    path basename (executables don't have DT_SONAME by convention,
+    so the SONAME branch is dead in practice — we don't consult it).
+    All NEEDED-loaded deps go through `Effects.io.resolveDep`, which
+    *requires* DT_SONAME. -/
 def discover (mainPath : String) : IO LoadGraph := do
   match ← Runtime.openByName mainPath none with
   | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
   | some mainHandle => do
     let mainElf ← parseFromHandle mainHandle
-    let mainName := mainElf.soname.getD (basename mainPath)
     let mainObj : LoadedObject :=
-      { name := mainName, handle := mainHandle, elf := mainElf }
+      { name := basename mainPath, handle := mainHandle, elf := mainElf }
     discoverLoopWith Effects.io 4096 (BfsState.initial mainObj)
 
 end LeanLoad.Discover
