@@ -38,8 +38,25 @@ namespace Runtime
 
 abbrev FileHandle : Type := UInt32
 
-@[extern "leanload_open"]
-opaque openFile (path : @& String) : IO FileHandle
+/-- Resolve a `DT_NEEDED` soname against `LD_LIBRARY_PATH` + the
+    given `runpath`, open the resulting file `RDONLY | CLOEXEC`, and
+    return the open `FileHandle`.
+
+    Search rules (gabi 08 § Shared Object Dependencies):
+      1. If `soname` contains '/', open as a literal path.
+      2. Else search `LD_LIBRARY_PATH` (`:`-separated; first hit wins).
+      3. Else search `runpath` (if `some`).
+      4. Else `none`.
+
+    The canonical dedup key is `DT_SONAME` (read from the parsed
+    elf), so we don't need the resolved path back from C — production
+    BFS rejects a NEEDED-loaded .so that lacks DT_SONAME, and the
+    main executable's name is computed in Lean from the user-supplied
+    path. Implementation lives in `Runtime.c` — keeps the path
+    splitting and `getenv` call out of Lean. -/
+@[extern "leanload_open_soname"]
+opaque openSoname (soname : @& String) (runpath : @& Option String) :
+    IO (Option FileHandle)
 
 @[extern "leanload_pread"]
 opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray

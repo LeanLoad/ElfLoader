@@ -1,33 +1,30 @@
 /-
 Discover planner — pure.
 
-The graph-construction logic plus the search-path resolution rules,
-separated from the IO loop. Given the current `(objs, work)` state,
-decides what to do next; given a just-parsed dep, integrates it. No
-file IO, no parsing — those live in `LeanLoad.Discover.IO`.
+The graph-construction logic plus the BFS state machine, separated
+from the IO loop. Given the current `(graph, work)` state, decides
+what to do next; given a just-parsed dep, integrates it. No file IO,
+no parsing, no path-search — those live in `LeanLoad.Discover.IO`
+(production) or `LeanLoad.Discover.StepTest` (in-memory).
 
 Mirrors the `Reloc.plan` / `Init.plan` / `Exec.realize` pattern:
 pure decision + state update, IO bookend orchestrator.
 
-Spec: gabi 08 § Shared Object Dependencies (BFS dedup + search rules).
-
-Search rules:
-  1. If the soname contains `/`, treat it as a path directly
-     (no search performed).
-  2. Otherwise search in order: `LD_LIBRARY_PATH`, owning object's
-     `DT_RUNPATH`, caller-supplied defaults.
-  `DT_RPATH` is deprecated and intentionally not honoured.
+Spec: gabi 08 § Shared Object Dependencies (BFS dedup; search rules
+live in the C runtime — see `Runtime.openSoname`).
 
 File layout (top-to-bottom dependency order):
-  · Search-path resolution (parsePathList, SearchContext, searchCandidates)
   · LoadedObject (one entry of the graph)
-  · Pure dedup primitives + soundness (canonicalName, findLoadedIdx,
+  · Pure dedup primitives + soundness (findLoadedIdx,
     findLoadedIdx_lt, findLoadedIdx_none_iff, nodup_names_push_…)
   · Edge accumulation (recordEdge + size/bounds preservation)
   · LoadGraph (the BFS state = output bundle) + LoadGraph.{main,
     recordDep, appendChild} — the methods bundle invariant maintenance
-    so `discoverLoop` only calls them.
+    so `bfsStep1` only calls them.
   · WorkItem, StepResult, step (BFS state machine + per-item decision)
+  · BfsState (graph + work queue + workSourcesValid invariant)
+  · Effects (resolveDep + fail; m-generic IO seam)
+  · bfsStep1 / discoverLoopWith (the driver)
 -/
 
 import LeanLoad.Parse.RawElf
@@ -38,45 +35,6 @@ namespace LeanLoad.Discover
 
 open LeanLoad
 open LeanLoad.Parse
-
--- ============================================================================
--- Search-path resolution (pure helpers, used by `Discover.resolveSoname`)
--- ============================================================================
-
-/-- Split a colon-separated path list. Empty entries are dropped. -/
-def parsePathList (s : String) : Array String :=
-  s.splitOn ":" |>.filter (! ·.isEmpty) |>.toArray
-
-#guard parsePathList "" = #[]
-#guard parsePathList "/a:/b" = #["/a", "/b"]
-#guard parsePathList "/a::/b" = #["/a", "/b"]
-
-/-- Search context for one resolution call. -/
-structure SearchContext where
-  /-- The owning object's `DT_RUNPATH`, if any. Per-binary, not transitive. -/
-  runpath  : Option String := none
-  /-- Host's `LD_LIBRARY_PATH`, if set. -/
-  envPath  : Option String := none
-  /-- Caller-supplied default paths (`/lib`, `/usr/lib`, ...). Empty for
-      hermetic tests. -/
-  defaults : Array String  := #[]
-
-/-- Enumerate candidate paths for `soname` under `ctx`. If `soname`
-    contains `/` the result is `#[soname]` (treated as a path). -/
-def searchCandidates (soname : String) (ctx : SearchContext) : Array String :=
-  if soname.contains '/' then
-    #[soname]
-  else
-    let dirs : Array String := Id.run do
-      let mut acc : Array String := #[]
-      if let some p := ctx.envPath  then acc := acc ++ parsePathList p
-      if let some p := ctx.runpath  then acc := acc ++ parsePathList p
-      acc := acc ++ ctx.defaults
-      return acc
-    dirs.map (fun d => s!"{d}/{soname}")
-
-#guard searchCandidates "/abs/path" {} = #["/abs/path"]
-#guard searchCandidates "libfoo.so" { runpath := some "/a:/b" } = #["/a/libfoo.so", "/b/libfoo.so"]
 
 -- ============================================================================
 -- LoadedObject — one entry of the graph.
@@ -103,21 +61,12 @@ structure LoadedObject where
 -- ============================================================================
 -- Pure dedup primitives.
 --
--- The BFS uses `findLoadedIdx` to both dedup and (in the `.skip` arm)
--- recover the matching index for edge recording. `canonicalName`
--- assigns the dedup key from a path + parsed elf.
+-- The BFS uses `findLoadedIdx` to both dedup (none → not loaded) and
+-- (in the `.skip` arm) recover the matching index for edge recording.
+-- The dedup *key* for each `LoadedObject` is its `.name`, computed by
+-- the IO seam (`Effects.resolveDep`) from `DT_SONAME` — see
+-- `Discover/IO.lean` for the production policy.
 -- ============================================================================
-
-/-- The canonical name we use to deduplicate an elaborated ELF.
-    Prefer `DT_SONAME`; fall back to the path's basename. The path
-    fallback gives a *file-canonical* dedup key — two `DT_NEEDED`
-    strings that resolve to the same file get the same key even
-    when `DT_SONAME` is absent. Basename (rather than full path)
-    keeps the name short for diagnostics; collisions only occur
-    when loading two different files with the same filename, which
-    is unusual. -/
-def canonicalName (path : String) (elf : Elaborate.Elf) : String :=
-  elf.soname.getD ((path.splitOn "/").getLast?.getD path)
 
 /-- Linear search for an object by name. Defined via `Array.findIdx?`
     so the size bound (`findLoadedIdx_lt` below) drops out of the core
@@ -546,10 +495,16 @@ end BfsState
 /-- The single IO leaf `bfsStep1` calls, plus a `fail` for the
     missing-dep error. Parameterised over the effect monad `m` so
     tests can swap in a pure `Except String` (or `ReaderT TestStore`)
-    instance. -/
+    instance.
+
+    The search-path arguments (`LD_LIBRARY_PATH`) are *not* passed
+    through here — the production `Effects.io` reads them inside the
+    C runtime (`Runtime.openSoname`). Tests construct their own
+    `Effects.test` that closes over whatever environment they want
+    to simulate. -/
 structure Effects (m : Type → Type) where
-  /-- Resolve a `DT_NEEDED` soname against the search context, open
-      the file, parse it, and elaborate. Returns:
+  /-- Resolve a `DT_NEEDED` soname against the runtime's search rules
+      (env + runpath), open the file, parse it, and elaborate. Returns:
       · `none` — soname didn't resolve to an existing file (missing dep).
       · `some (name, handle, elf)` — `name` is the canonical dedup key
         (`DT_SONAME` if set, else the path basename), `handle` is the
@@ -558,9 +513,9 @@ structure Effects (m : Type → Type) where
       Parse/elaborate failures escape via the monad's error mechanism
       (IO exception in production; `throw` in `Except`-based tests).
       Splitting "not found" out as a `none` instead of using `fail`
-      lets `bfsStep1` produce the diagnostic with full `WorkItem`
-      context (runpath, envPath) that the effect doesn't know about. -/
-  resolveDep : String → SearchContext →
+      lets `bfsStep1` produce the diagnostic with the full `WorkItem`
+      context (runpath, soname) attached. -/
+  resolveDep : String → Option String →
                m (Option (String × Runtime.FileHandle × Elaborate.Elf))
   /-- Surface a fatal error. In `IO`, this is `throw (IO.userError …)`;
       in `Except String`, it's `throw`. Polymorphic in the return type
@@ -596,7 +551,7 @@ inductive BfsStepResult where
     In each branch, `workSourcesValid` is re-established from the
     pre-existing invariant plus locally available bounds. -/
 def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
-    (envPath : Option String) (s : BfsState) : m BfsStepResult := do
+    (s : BfsState) : m BfsStepResult := do
   match h_work : s.work with
   | [] => pure .done
   | item :: rest =>
@@ -613,11 +568,10 @@ def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
       -- tail bounds carry over verbatim.
       pure (.continue { graph := g', work := rest, workSourcesValid := h_rest_valid })
     | .resolve =>
-      let ctx : SearchContext := { runpath := item.runpath, envPath, defaults := #[] }
-      match ← eff.resolveDep item.soname ctx with
+      match ← eff.resolveDep item.soname item.runpath with
       | none =>
         eff.fail s!"discover: cannot find '{item.soname}' \
-          (runpath={item.runpath}, env={envPath})"
+          (runpath={item.runpath})"
       | some (canonical, handle, elf) =>
         let obj : LoadedObject := { name := canonical, handle, elf }
         match h_idx : findLoadedIdx s.graph.objects canonical with
@@ -663,12 +617,12 @@ def bfsStep1 {m : Type → Type} [Monad m] (eff : Effects m)
     termination concession — the natural termination (queue shrinks
     to empty) is invisible to the type system. -/
 def discoverLoopWith {m : Type → Type} [Monad m] (eff : Effects m)
-    (envPath : Option String) (fuel : Nat) (s : BfsState) : m LoadGraph := do
+    (fuel : Nat) (s : BfsState) : m LoadGraph := do
   match fuel with
   | 0 => pure s.graph
   | fuel + 1 =>
-    match ← bfsStep1 eff envPath s with
+    match ← bfsStep1 eff s with
     | .done => pure s.graph
-    | .continue s' => discoverLoopWith eff envPath fuel s'
+    | .continue s' => discoverLoopWith eff fuel s'
 
 end LeanLoad.Discover

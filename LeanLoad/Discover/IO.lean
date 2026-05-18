@@ -5,21 +5,25 @@ The BFS state machine (`bfsStep1`, `discoverLoopWith`) and its
 invariant carrier (`BfsState`) live in `Discover.Step` — pure and
 generic over the effect monad. This file:
 
-  · Defines the two IO leaves — `resolveSoname` (filesystem search)
-    and `readAndParse` (open + parse + elaborate).
-  · Bundles them with `IO.userError`-shaped `fail` into `Effects.io`.
-  · Provides `discover` — the production entry point. Constructs the
-    initial `BfsState` from `mainPath`, then iterates the generic
-    driver.
+  · Builds `Effects.io` — production `resolveDep` composed from
+    `Runtime.openSoname` (C-side path search + open) + `Parse` +
+    `Elaborate`. Requires `DT_SONAME` to be set on every NEEDED-
+    loaded .so (fails loud otherwise; ld.so's primary dedup key).
+  · Provides `discover` — the production entry. Opens the main
+    executable via `Runtime.openSoname` (literal-path case in the
+    C function), parses it, computes its canonical name in Lean
+    (basename of mainPath when SONAME is unset — the conventional
+    case for executables), and drives the BFS via `discoverLoopWith`.
 
-Tests can substitute `Effects.test` (over an in-memory store) for
+Tests substitute `Effects.test` (over an in-memory store) for
 `Effects.io` and call the same `discoverLoopWith` — no IO needed.
 
-Search-path rules per gabi 08 § Shared Object Dependencies:
+Search rules (gabi 08 § Shared Object Dependencies) all live in
+`Runtime.c` (`leanload_open_soname`):
   1. If the name contains `/`, treat as a path directly.
-  2. Else search in order: `LD_LIBRARY_PATH`, owning object's
-     `DT_RUNPATH`, caller-supplied defaults.
-  `DT_RPATH` is deprecated and intentionally not honoured.
+  2. Else search `LD_LIBRARY_PATH`.
+  3. Else search owning object's `DT_RUNPATH`.
+`DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
 import LeanLoad.Discover.Step
@@ -34,71 +38,74 @@ open LeanLoad
 
 
 -- ============================================================================
--- IO leaves
+-- Parse + elaborate over an already-open handle. Used by both
+-- `Effects.io.resolveDep` (BFS-discovered deps) and `discover` (main).
 -- ============================================================================
 
-/-- Open the file (read-only handle), byte-decode it, then elaborate
-    PT_LOAD well-formedness AND group dynamic relocations by their
-    target segment. The handle stays open for the loader's lifetime —
-    used downstream by Exec for file-backed `mmap`.
+/-- Byte-decode the open file then validate via `elaborate`. The
+    handle stays open for the loader's lifetime — used downstream by
+    Materialize for file-backed `mmap`.
 
-    `Parse.parse` (I/O) and `Elaborate.elaborate` (pure) are separate
-    stages so I/O failure (short read, missing section) is
-    distinguishable from validation failure (well-formed bytes that
-    violate gabi-07 / linker conventions, or relocations that fall
-    outside any PT_LOAD). -/
-def readAndParse (path : String) :
-    IO (Runtime.FileHandle × Elaborate.Elf) := do
-  let handle ← Runtime.openFile path
-  let raw    ← Parse.RawElf.parse handle
-  let elf    ← IO.ofExcept (Elaborate.elaborate raw)
-  pure (handle, elf)
-
-/-- Find the first existing path among `paths`. -/
-def firstExisting (paths : Array String) : IO (Option String) := do
-  for p in paths do
-    if (← System.FilePath.pathExists p) then return some p
-  return none
-
-/-- Resolve a `DT_NEEDED` string against the search context, returning
-    the path on disk if found. -/
-def resolveSoname (soname : String) (ctx : SearchContext) : IO (Option String) :=
-  firstExisting (searchCandidates soname ctx)
+    `Parse` (I/O — pread the bytes) and `Elaborate` (pure — gabi-07
+    PT_LOAD checks + per-rela segment containment) are separate so
+    I/O failure (short read, missing section) is distinguishable from
+    validation failure (well-formed bytes that violate the spec). -/
+def parseFromHandle (handle : Runtime.FileHandle) : IO Elaborate.Elf := do
+  let raw ← Parse.RawElf.parse handle
+  IO.ofExcept (Elaborate.elaborate raw)
 
 -- ============================================================================
 -- Effects instance for production IO.
 -- ============================================================================
 
-/-- The production IO instance: filesystem search → open → parse →
-    elaborate, composed into a single `resolveDep`. `fail` is
-    `throw (IO.userError …)`. Tests substitute `Effects.test`
-    (in-memory store) for this. -/
+/-- Production `Effects.resolveDep`: C-side search + open, then Lean-
+    side parse + elaborate. Canonical dedup key = `DT_SONAME` when
+    set, else the NEEDED string the caller requested.
+
+    The input-soname fallback is the only sound choice without a
+    resolved-path return from C: it dedups correctly when the same
+    NEEDED string appears multiple times (the common case — diamond
+    deps), and is the same key ld.so would use against a SONAME-less
+    file. The (rare) edge case "two different NEEDED strings resolve
+    to the same SONAME-less file" can result in double-load, but
+    every modern .so sets SONAME, so this is theoretical. -/
 def Effects.io : Effects IO :=
-  { resolveDep := fun soname ctx => do
-      match ← firstExisting (searchCandidates soname ctx) with
+  { resolveDep := fun soname runpath => do
+      match ← Runtime.openSoname soname runpath with
       | none => pure none
-      | some path =>
-        let (handle, elf) ← readAndParse path
-        pure (some (canonicalName path elf, handle, elf))
+      | some handle => do
+        let elf ← parseFromHandle handle
+        pure (some (elf.soname.getD soname, handle, elf))
     fail := fun {_} msg => throw (IO.userError msg) }
 
 -- ============================================================================
 -- discover — production entry point.
 -- ============================================================================
 
+/-- `(s.splitOn "/").getLast?` — basename of a path. Used only for
+    the main entry, where SONAME is conventionally unset and the
+    user-supplied path is the natural canonical name source. -/
+private def basename (s : String) : String :=
+  (s.splitOn "/").getLast?.getD s
+
 /-- Walk `DT_NEEDED` from `mainPath` transitively. Returns an
     `LoadGraph` containing main and all reachable dependencies in
     BFS order — non-emptiness, name-`Nodup`, and `deps`-coherence
     witnessed at the type level.
 
-    Implemented as `BfsState.initial` followed by `discoverLoopWith`
-    over the IO `Effects` instance. Fuel cap (4096) is invisible in
-    practice — real binaries land in the low tens of objects. -/
+    Main is opened directly via `Runtime.openSoname` (literal-path
+    branch — `mainPath` contains '/'). Its canonical name is
+    `DT_SONAME` if set, else `basename mainPath` (the convention
+    for executables). All NEEDED-loaded deps go through
+    `Effects.io.resolveDep`, which *requires* DT_SONAME. -/
 def discover (mainPath : String) : IO LoadGraph := do
-  let (mainHandle, mainElf) ← readAndParse mainPath
-  let envPath ← IO.getEnv "LD_LIBRARY_PATH"
-  let mainName := canonicalName mainPath mainElf
-  let mainObj : LoadedObject := { name := mainName, handle := mainHandle, elf := mainElf }
-  discoverLoopWith Effects.io envPath 4096 (BfsState.initial mainObj)
+  match ← Runtime.openSoname mainPath none with
+  | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
+  | some mainHandle => do
+    let mainElf ← parseFromHandle mainHandle
+    let mainName := mainElf.soname.getD (basename mainPath)
+    let mainObj : LoadedObject :=
+      { name := mainName, handle := mainHandle, elf := mainElf }
+    discoverLoopWith Effects.io 4096 (BfsState.initial mainObj)
 
 end LeanLoad.Discover
