@@ -6,11 +6,11 @@ invariant carrier (`BfsState`) live in `Discover.Step` — pure and
 generic over the effect monad. This file:
 
   · Builds `Effects.io` — production `resolveDep` composed from
-    `Runtime.openSoname` (C-side path search + open) + `Parse` +
-    `Elaborate`. Requires `DT_SONAME` to be set on every NEEDED-
-    loaded .so (fails loud otherwise; ld.so's primary dedup key).
+    `Runtime.openByName` (C-side path search + open) + `Parse` +
+    `Elaborate`. Canonical dedup key = `DT_SONAME` when set, else
+    the requested NEEDED string (matches ld.so when SONAME is unset).
   · Provides `discover` — the production entry. Opens the main
-    executable via `Runtime.openSoname` (literal-path case in the
+    executable via `Runtime.openByName` (literal-path case in the
     C function), parses it, computes its canonical name in Lean
     (basename of mainPath when SONAME is unset — the conventional
     case for executables), and drives the BFS via `discoverLoopWith`.
@@ -19,7 +19,7 @@ Tests substitute `Effects.test` (over an in-memory store) for
 `Effects.io` and call the same `discoverLoopWith` — no IO needed.
 
 Search rules (gabi 08 § Shared Object Dependencies) all live in
-`Runtime.c` (`leanload_open_soname`):
+`Runtime.c` (`leanload_open_by_name`):
   1. If the name contains `/`, treat as a path directly.
   2. Else search `LD_LIBRARY_PATH`.
   3. Else search owning object's `DT_RUNPATH`.
@@ -71,7 +71,7 @@ def parseFromHandle (handle : Runtime.FileHandle) : IO Elaborate.Elf := do
     every modern .so sets SONAME, so this is theoretical. -/
 def Effects.io : Effects IO :=
   { resolveDep := fun soname runpath => do
-      match ← Runtime.openSoname soname runpath with
+      match ← Runtime.openByName soname runpath with
       | none => pure none
       | some handle => do
         let elf ← parseFromHandle handle
@@ -93,13 +93,13 @@ private def basename (s : String) : String :=
     BFS order — non-emptiness, name-`Nodup`, and `deps`-coherence
     witnessed at the type level.
 
-    Main is opened directly via `Runtime.openSoname` (literal-path
+    Main is opened directly via `Runtime.openByName` (literal-path
     branch — `mainPath` contains '/'). Its canonical name is
     `DT_SONAME` if set, else `basename mainPath` (the convention
     for executables). All NEEDED-loaded deps go through
-    `Effects.io.resolveDep`, which *requires* DT_SONAME. -/
+    `Effects.io.resolveDep`. -/
 def discover (mainPath : String) : IO LoadGraph := do
-  match ← Runtime.openSoname mainPath none with
+  match ← Runtime.openByName mainPath none with
   | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
   | some mainHandle => do
     let mainElf ← parseFromHandle mainHandle

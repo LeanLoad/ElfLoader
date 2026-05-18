@@ -48,14 +48,13 @@ abbrev FileHandle : Type := UInt32
       3. Else search `runpath` (if `some`).
       4. Else `none`.
 
-    The canonical dedup key is `DT_SONAME` (read from the parsed
-    elf), so we don't need the resolved path back from C — production
-    BFS rejects a NEEDED-loaded .so that lacks DT_SONAME, and the
-    main executable's name is computed in Lean from the user-supplied
-    path. Implementation lives in `Runtime.c` — keeps the path
-    splitting and `getenv` call out of Lean. -/
-@[extern "leanload_open_soname"]
-opaque openSoname (soname : @& String) (runpath : @& Option String) :
+    Returns just the `FileHandle` (no resolved path back) — the
+    canonical dedup key is `DT_SONAME` with the requested name as
+    fallback (see `Discover.Effects.io`), neither of which needs the
+    resolved path. Implementation lives in `Runtime.c` — keeps the
+    path splitting and `getenv` call out of Lean. -/
+@[extern "leanload_open_by_name"]
+opaque openByName (soname : @& String) (runpath : @& Option String) :
     IO (Option FileHandle)
 
 @[extern "leanload_pread"]

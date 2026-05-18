@@ -11,7 +11,7 @@ Mirrors the `Reloc.plan` / `Init.plan` / `Exec.realize` pattern:
 pure decision + state update, IO bookend orchestrator.
 
 Spec: gabi 08 § Shared Object Dependencies (BFS dedup; search rules
-live in the C runtime — see `Runtime.openSoname`).
+live in the C runtime — see `Runtime.openByName`).
 
 File layout (top-to-bottom dependency order):
   · LoadedObject (one entry of the graph)
@@ -499,7 +499,7 @@ end BfsState
 
     The search-path arguments (`LD_LIBRARY_PATH`) are *not* passed
     through here — the production `Effects.io` reads them inside the
-    C runtime (`Runtime.openSoname`). Tests construct their own
+    C runtime (`Runtime.openByName`). Tests construct their own
     `Effects.test` that closes over whatever environment they want
     to simulate. -/
 structure Effects (m : Type → Type) where

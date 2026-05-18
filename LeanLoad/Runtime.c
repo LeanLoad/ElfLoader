@@ -87,7 +87,7 @@ static int leanload_search_path_list(const char *list,
  * `DT_SONAME` (read after parse) — no path needed back from C.
  * Open errors propagate as `none`; the BFS surfaces them with the
  * full WorkItem context (runpath, soname) attached. */
-LEAN_EXPORT lean_object * leanload_open_soname(
+LEAN_EXPORT lean_object * leanload_open_by_name(
         b_lean_obj_arg soname_obj,
         b_lean_obj_arg runpath_opt,
         lean_object * /* w */) {

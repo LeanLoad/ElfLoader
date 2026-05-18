@@ -14,7 +14,7 @@ exercises shape-level behaviors via `#guard` at elaboration time:
   · Search-order precedence (env > runpath).
 
 These are unit-level checks. The integration path (real ELFs on disk
-via `Runtime.openSoname`) is exercised by `LeanLoad.Test`'s
+via `Runtime.openByName`) is exercised by `LeanLoad.Test`'s
 `discoverTest` over `build/main`.
 
 Canonical name = `elf.soname.getD requested_soname` — same policy as
@@ -63,7 +63,7 @@ def mockElf (soname : Option String := none) (runpath : Option String := none)
 
 -- ============================================================================
 -- TestStore — in-memory `path → Elf` map. Mirrors what the production
--- C runtime's `leanload_open_soname` searches, but in Lean. The
+-- C runtime's `leanload_open_by_name` searches, but in Lean. The
 -- `searchCandidates` simulator below is test-only — production path
 -- resolution happens entirely in C.
 -- ============================================================================
@@ -81,7 +81,7 @@ def getElf? (store : TestStore) (path : String) : Option Elf :=
 end TestStore
 
 /-- Mirror the C runtime's path search at the Lean level. Test-only —
-    production goes through `Runtime.openSoname`. -/
+    production goes through `Runtime.openByName`. -/
 private def testSearchCandidates (soname : String)
     (runpath : Option String) (envPath : Option String) : Array String :=
   if soname.contains '/' then #[soname]
@@ -95,7 +95,7 @@ private def testSearchCandidates (soname : String)
       return acc
     dirs.map (fun d => s!"{d}/{soname}")
 
-/-- The test `Effects` instance: simulate `Runtime.openSoname` over a
+/-- The test `Effects` instance: simulate `Runtime.openByName` over a
     `TestStore`, with the same `elf.soname.getD requested-soname`
     fallback as production `Effects.io`. Closure captures both the
     store and a simulated `LD_LIBRARY_PATH`. -/
