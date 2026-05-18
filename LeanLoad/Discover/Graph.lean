@@ -237,7 +237,7 @@ def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
 
 /-- Record a dep edge `src → tgt` to an already-loaded object. The
     target's bound is the caller's obligation — `BfsState.step` discharges
-    it from `step_skip_tgt_lt` (BFS dedup hit) or `findLoadedIdx_lt`
+    it from `dispatch_skip_tgt_lt` (BFS dedup hit) or `findLoadedIdx_lt`
     (post-canonicalisation dedup hit). All four `LoadGraph` invariants
     are preserved by `recordEdge_size` + `recordEdge_bounds`; objects
     and namesNodup are untouched. -/

@@ -99,14 +99,14 @@ structure Effects (m : Type → Type) where
       (env + runpath), open the file, parse it, and elaborate. Returns:
       · `none` — soname didn't resolve to an existing file (missing dep).
       · `some (name, handle, elf)` — `name` is the canonical dedup key
-        (`DT_SONAME` if set, else the requested NEEDED string), `handle`
-        is the open fd (kept for downstream `mmap`), `elf` is the
-        elaborated view.
-      Parse/elaborate failures escape via the monad's error mechanism
-      (IO exception in production; `throw` in `Except`-based tests).
-      Splitting "not found" out as a `none` instead of using `fail`
-      lets `BfsState.step` produce the diagnostic with the full
-      `WorkItem` context (runpath, soname) attached. -/
+        (`DT_SONAME`; production *requires* it), `handle` is the open
+        fd (kept for downstream `mmap`), `elf` is the elaborated view.
+      Parse/elaborate failures (including missing SONAME in production)
+      escape via the monad's error mechanism (IO exception in production;
+      `throw` in `Except`-based tests). Splitting "not found" out as a
+      `none` instead of using `fail` lets `BfsState.step` produce the
+      diagnostic with the full `WorkItem` context (runpath, soname)
+      attached. -/
   resolveDep : String → Option String →
                m (Option (String × Runtime.FileHandle × Elaborate.Elf))
   /-- Surface a fatal error. In `IO`, this is `throw (IO.userError …)`;
@@ -133,7 +133,7 @@ inductive StepResult where
 
     Returns `.done` if the queue is empty (terminal state — caller
     should return `s.graph`). Otherwise dispatches the head via the
-    pure `Discover.step` and one of three branches:
+    pure `Discover.dispatch` and one of three branches:
 
     · `.skip` — soname already loaded. Edge recorded via
       `LoadGraph.recordDep`, queue tail unchanged.
@@ -156,9 +156,9 @@ def step {m : Type → Type} [Monad m] (s : BfsState) (eff : Effects m) :
     have h_rest_valid : ∀ i ∈ rest, i.sourceIdx < s.graph.objects.size := by
       intro i hi
       exact s.workSourcesValid i (by rw [h_work]; exact List.mem_cons_of_mem _ hi)
-    match h_step : Discover.step s.graph.objects item with
+    match h_step : Discover.dispatch s.graph.objects item with
     | .skip tgt =>
-      have h_tgt : tgt < s.graph.objects.size := step_skip_tgt_lt h_step
+      have h_tgt : tgt < s.graph.objects.size := dispatch_skip_tgt_lt h_step
       let g' := s.graph.recordDep item.sourceIdx tgt h_tgt
       -- recordDep_size: g'.objects.size = s.graph.objects.size (rfl), so
       -- tail bounds carry over verbatim.
