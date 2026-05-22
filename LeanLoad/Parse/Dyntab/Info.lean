@@ -41,6 +41,8 @@ is set from `DT_RUNPATH` alone — a DT_RPATH-only object yields
 
 import LeanLoad.Parse.Dyntab.Raw
 import LeanLoad.Parse.Address
+import LeanLoad.Parse.Symbol.Raw
+import LeanLoad.Parse.Reloc.Raw
 
 namespace LeanLoad.Parse
 
@@ -77,6 +79,11 @@ structure DynInfo where
 
 namespace DynInfo
 
+/-- `DT_RELA`'s numeric tag value, used as the required `DT_PLTREL` payload
+    because LeanLoad only reads Elf64_Rela PLT relocations (gabi 08 § Dynamic
+    Section, `DT_PLTREL`). -/
+private def dtRelaValue : UInt64 := 7
+
 /-- Value of a tag that must appear at most once. Repeated singleton tags are
     rejected here so downstream parsing does not depend on "first wins" order. -/
 private def single? (tab : RawDyntab) (label : String) (tag : DynTag) :
@@ -101,6 +108,27 @@ private def pair? (tab : RawDyntab) (label addrLabel sizeLabel : String)
   | some _, none     => .error s!"parse: {label}: {addrLabel} present without {sizeLabel}"
   | none, some _     => .error s!"parse: {label}: {sizeLabel} present without {addrLabel}"
 
+/-- Validate a present `DT_*ENT`-style byte-size tag against the entry size
+    consumed by the parser's fixed Elf64 readers. -/
+private def validateEntrySize (label : String) (expected : Nat) (value : Option UInt64) :
+    Except String Unit :=
+  match value with
+  | none => .ok ()
+  | some actual =>
+     if actual.toNat == expected then
+       .ok ()
+     else
+       .error s!"parse: {label}={actual.toNat}, expected {expected}"
+
+/-- Require an already-read entry-size tag when its table tag is present. -/
+private def requireEntrySize (tableLabel entryLabel : String)
+    (expected : Nat) (tablePresent : Bool) (value : Option UInt64) :
+    Except String Unit := do
+  if tablePresent && value.isNone then
+    .error s!"parse: {tableLabel} present without {entryLabel}"
+  else
+    validateEntrySize entryLabel expected value
+
 /-- Resolve every dynamic-content locating tag in one pass. Absent tags
     become `none`; malformed partial locators and duplicate singleton tags are
     errors. `DT_RPATH` is **not** consulted — see `runpath`'s docstring.
@@ -115,9 +143,12 @@ def ofTable (tab : RawDyntab) : Except String DynInfo := do
   let runpathRaw ← single? tab "DT_RUNPATH" .runpath
   let strtab ← pair? tab "DT_STRTAB/DT_STRSZ" "DT_STRTAB" "DT_STRSZ" .strtab .strsz
   let symtabRaw ← single? tab "DT_SYMTAB" .symtab
+  let symentRaw ← single? tab "DT_SYMENT" .syment
   let hashRaw ← single? tab "DT_HASH" .hash
   let rela ← pair? tab "DT_RELA/DT_RELASZ" "DT_RELA" "DT_RELASZ" .rela .relasz
+  let relaentRaw ← single? tab "DT_RELAENT" .relaent
   let jmprel ← pair? tab "DT_JMPREL/DT_PLTRELSZ" "DT_JMPREL" "DT_PLTRELSZ" .jmprel .pltrelsz
+  let pltrelRaw ← single? tab "DT_PLTREL" .pltrel
   let initArr ← pair? tab "DT_INIT_ARRAY/DT_INIT_ARRAYSZ" "DT_INIT_ARRAY"
     "DT_INIT_ARRAYSZ" .initArray .initArraySz
   let finiArr ← pair? tab "DT_FINI_ARRAY/DT_FINI_ARRAYSZ" "DT_FINI_ARRAY"
@@ -125,6 +156,19 @@ def ofTable (tab : RawDyntab) : Except String DynInfo := do
   if strtab.isNone && (needed.size != 0 || sonameRaw.isSome || runpathRaw.isSome) then
     .error "parse: dynamic string references present without DT_STRTAB/DT_STRSZ"
   else
+    requireEntrySize "DT_SYMTAB" "DT_SYMENT" RawSymSize symtabRaw.isSome symentRaw
+    requireEntrySize "DT_RELA" "DT_RELAENT" RawRelaSize rela.isSome relaentRaw
+    match pltrelRaw with
+    | none =>
+        if jmprel.isSome then
+          .error "parse: DT_JMPREL present without DT_PLTREL"
+        else
+          pure ()
+    | some actual =>
+        if actual != dtRelaValue then
+          .error s!"parse: DT_PLTREL={actual.toNat}, expected DT_RELA ({dtRelaValue.toNat})"
+        else
+          pure ()
     let symtab : Option Vaddr ←
       match symtabRaw, hashRaw with
       | none, none       => .ok none

@@ -57,22 +57,43 @@ private def buildBucket (segments : Segments) (bucketIdx : Fin segments.items.si
     if h_eq : i = bucketIdx then some ⟨r, h_eq ▸ h_in⟩
     else none
 
+private def attachedItems (segments : Segments)
+    (relaBuckets jmprelBuckets : Array (Array (Entry segments))) :
+    Array Segment :=
+  Array.ofFn fun bucketIdx : Fin segments.items.size =>
+    let seg := segments.items[bucketIdx]
+    let rB := relaBuckets[bucketIdx.val]?.getD #[]
+    let jB := jmprelBuckets[bucketIdx.val]?.getD #[]
+    Segment.withRelocs seg
+     (buildBucket segments bucketIdx rB)
+     (buildBucket segments bucketIdx jB)
+
 /-- Attach flat `DT_RELA` and `DT_JMPREL` tables to their checked PT_LOAD
     segments, preserving each segment's existing layout witnesses. -/
 def attach (segments : Segments) (rela jmprel : Array RawRela) :
-    Except String (Array Segment) := do
+    Except String Segments := do
   let relaBuckets   ← groupOne "DT_RELA" segments rela
   let jmprelBuckets ← groupOne "DT_JMPREL" segments jmprel
-  let mut acc : Array Segment := #[]
-  for h : i in [:segments.items.size] do
-    let bucketIdx : Fin segments.items.size := ⟨i, h.upper⟩
-    let seg := segments.items[bucketIdx]
-    let rB := relaBuckets[i]?.getD #[]
-    let jB := jmprelBuckets[i]?.getD #[]
-    acc := acc.push (Segment.withRelocs seg
-      (buildBucket segments bucketIdx rB)
-      (buildBucket segments bucketIdx jB))
-  return acc
+  let items := attachedItems segments relaBuckets jmprelBuckets
+  return {
+    items,
+    sorted := by
+     intro i h_i j h_j h_ij
+     have h_i' : i < segments.items.size := by
+       simpa [items, attachedItems] using h_i
+     have h_j' : j < segments.items.size := by
+       simpa [items, attachedItems] using h_j
+     simpa [items, attachedItems, Segment.withRelocs, Segment.vaddr] using
+       segments.sorted i h_i' j h_j' h_ij,
+    nonOverlap := by
+     intro i h_i j h_j h_ij
+     have h_i' : i < segments.items.size := by
+       simpa [items, attachedItems] using h_i
+     have h_j' : j < segments.items.size := by
+       simpa [items, attachedItems] using h_j
+     simpa [items, attachedItems, Segment.withRelocs, Segment.vaddr, Segment.memsz] using
+       segments.nonOverlap i h_i' j h_j' h_ij
+  }
 
 end RelocBuckets
 

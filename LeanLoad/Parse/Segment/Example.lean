@@ -95,6 +95,12 @@ private def phdrCovered? (segs : Array Segment) (phoff : FileOff) (nbytes : Nat)
   | some segs => !(phdrCovered? segs.items 0x3000 0x10)
   | none => false
 
+-- `PhdrCovered` requires file-backed bytes, not just BSS memory coverage.
+#guard
+  match checkedSegments? with
+  | some segs => !(phdrCovered? segs.items 0x1150 0x10)
+  | none => false
+
 private def callTargetInExecSeg? (segments : Segments) (entry : Vaddr) : Bool :=
   letI : Decidable (callTargetInExecSeg segments entry) := by
     unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsVaddr Segment.ContainsVaddr

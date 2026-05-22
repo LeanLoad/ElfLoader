@@ -1,61 +1,45 @@
 == 1. Discover (BFS over DT_NEEDED) ==
   main
   libfoo.so
-  libbar.so
   libc.so
+  libbar.so
   libbaz.so
 
-== 2. Parse + Elaborate (per-object Elf views) ==
+== 2. Parse (per-object checked Elf views) ==
 [0] main
-  elfType    = LeanLoad.Elaborate.ElfType.dyn
-  machine    = LeanLoad.Elaborate.Machine.x86_64
+  elfType    = LeanLoad.Parse.ElfType.dyn
+  machine    = LeanLoad.Parse.ElfMachine.x86_64
   entry      = 0x10e0
   phnum      = 10
-  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
   needed     = #[libfoo.so, libbar.so, libc.so]
   symtab     = 18 entries
   initArr    = 2 ctor(s)
   finiArr    = 1 dtor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x820 memsz=0x820 prot=r--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x41d memsz=0x41d prot=r-x  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0x1c4 memsz=0x1c4 prot=r--  rela=0  jmprel=0
-    [3] vaddr=0x000000003d48 offset=0x2d48 filesz=0x2c0 memsz=0x2c8 prot=rw-  rela=8  jmprel=11
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x820 memsz=0x820 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x41d memsz=0x41d prot={ read := true, write := false, exec := true, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0x1c4 memsz=0x1c4 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [3] vaddr=0x000000003d58 offset=0x2d58 filesz=0x2b0 memsz=0x2b8 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=8  jmprel=11
 [1] libfoo.so
-  elfType    = LeanLoad.Elaborate.ElfType.dyn
-  machine    = LeanLoad.Elaborate.Machine.x86_64
+  elfType    = LeanLoad.Parse.ElfType.dyn
+  machine    = LeanLoad.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 7
   soname     = libfoo.so
-  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
   needed     = #[libc.so]
   symtab     = 8 entries
   initArr    = 2 ctor(s)
   finiArr    = 1 dtor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x468 memsz=0x468 prot=r--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x130 memsz=0x130 prot=r-x  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=r--  rela=0  jmprel=0
-    [3] vaddr=0x000000003df8 offset=0x2df8 filesz=0x218 memsz=0x220 prot=rw-  rela=7  jmprel=1
-[2] libbar.so
-  elfType    = LeanLoad.Elaborate.ElfType.dyn
-  machine    = LeanLoad.Elaborate.Machine.x86_64
-  entry      = 0x0
-  phnum      = 7
-  soname     = libbar.so
-  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
-  needed     = #[libbaz.so, libc.so]
-  symtab     = 10 entries
-  initArr    = 2 ctor(s)
-  finiArr    = 1 dtor(s)
-  segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=r--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=r-x  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=r--  rela=0  jmprel=0
-    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=rw-  rela=7  jmprel=3
-[3] libc.so
-  elfType    = LeanLoad.Elaborate.ElfType.dyn
-  machine    = LeanLoad.Elaborate.Machine.x86_64
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x468 memsz=0x468 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x130 memsz=0x130 prot={ read := true, write := false, exec := true, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [3] vaddr=0x000000003df8 offset=0x2df8 filesz=0x218 memsz=0x220 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=7  jmprel=1
+[2] libc.so
+  elfType    = LeanLoad.Parse.ElfType.dyn
+  machine    = LeanLoad.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 9
   soname     = libc.so
@@ -63,244 +47,251 @@
   initArr    = 0 ctor(s)
   finiArr    = 0 dtor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13d08 memsz=0x13d08 prot=r--  rela=0  jmprel=0
-    [1] vaddr=0x000000014000 offset=0x14000 filesz=0x554a7 memsz=0x554a7 prot=r-x  rela=0  jmprel=0
-    [2] vaddr=0x00000006a000 offset=0x6a000 filesz=0x3527c memsz=0x3527c prot=r--  rela=0  jmprel=0
-    [3] vaddr=0x0000000a0b20 offset=0x9fb20 filesz=0x90c memsz=0x2f90 prot=rw-  rela=96  jmprel=6
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x13c30 memsz=0x13c30 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [1] vaddr=0x000000014000 offset=0x14000 filesz=0x51844 memsz=0x51844 prot={ read := true, write := false, exec := true, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [2] vaddr=0x000000066000 offset=0x66000 filesz=0x35344 memsz=0x35344 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [3] vaddr=0x00000009cb60 offset=0x9bb60 filesz=0x8cc memsz=0x2f50 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=87  jmprel=6
+[3] libbar.so
+  elfType    = LeanLoad.Parse.ElfType.dyn
+  machine    = LeanLoad.Parse.ElfMachine.x86_64
+  entry      = 0x0
+  phnum      = 7
+  soname     = libbar.so
+  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
+  needed     = #[libbaz.so, libc.so]
+  symtab     = 10 entries
+  initArr    = 2 ctor(s)
+  finiArr    = 1 dtor(s)
+  segments   (4):
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot={ read := true, write := false, exec := true, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=7  jmprel=3
 [4] libbaz.so
-  elfType    = LeanLoad.Elaborate.ElfType.dyn
-  machine    = LeanLoad.Elaborate.Machine.x86_64
+  elfType    = LeanLoad.Parse.ElfType.dyn
+  machine    = LeanLoad.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 7
   soname     = libbaz.so
-  runpath    = /home/szhong/LeanLoad/build/lib:/home/szhong/LeanLoad/build
+  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
   needed     = #[libbar.so, libc.so]
   symtab     = 10 entries
   initArr    = 2 ctor(s)
   finiArr    = 1 dtor(s)
   segments   (4):
-    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot=r--  rela=0  jmprel=0
-    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot=r-x  rela=0  jmprel=0
-    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot=r--  rela=0  jmprel=0
-    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot=rw-  rela=7  jmprel=3
+    [0] vaddr=0x000000000000 offset=0x0 filesz=0x4e8 memsz=0x4e8 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [1] vaddr=0x000000001000 offset=0x1000 filesz=0x176 memsz=0x176 prot={ read := true, write := false, exec := true, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [2] vaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
+    [3] vaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=7  jmprel=3
 
 == 3. Resolve (BFS symbol resolution across all elfs) ==
 main:
-  printf                       ←  libc.so      [sym 555 @0x6014d]
-  pthread_create               ←  libc.so      [sym 647 @0x341a0]
-  strerror                     ←  libc.so      [sym 447 @0x3e415]
-  puts                         ←  libc.so      [sym 129 @0x60470]
+  printf                       ←  libc.so      [sym 555 @0x53697]
+  pthread_create               ←  libc.so      [sym 647 @0x5e851]
+  strerror                     ←  libc.so      [sym 447 @0x1cfac]
+  puts                         ←  libc.so      [sym 129 @0x539ac]
   libbar_step                  ←  libbar.so    [sym 8 @0x1119]
-  fflush                       ←  libc.so      [sym 87 @0x5d778]
-  __stack_chk_fail             ←  libc.so      [sym 197 @0x3dfdc]
+  fflush                       ←  libc.so      [sym 87 @0x50a2c]
+  __stack_chk_fail             ←  libc.so      [sym 197 @0x1cb91]
   _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
   _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
   libfoo_print                 ←  libfoo.so    [sym 5 @0x10f9]
-  exit                         ←  libc.so      [sym 759 @0x1408c]
-  __libc_start_main            ←  libc.so      [sym 1610 @0x3ded0]
-  pthread_join                 ←  libc.so      [sym 780 @0x652b0]
-  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  exit                         ←  libc.so      [sym 759 @0x14087]
+  __libc_start_main            ←  libc.so      [sym 1610 @0x1ca9d]
+  pthread_join                 ←  libc.so      [sym 780 @0x5f29a]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x1d1e0]
 libfoo.so:
-  puts                         ←  libc.so      [sym 129 @0x60470]
-  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  puts                         ←  libc.so      [sym 129 @0x539ac]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x1d1e0]
   _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
   _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
 libbar.so:
-  printf                       ←  libc.so      [sym 555 @0x6014d]
+  printf                       ←  libc.so      [sym 555 @0x53697]
   libbaz_step                  ←  libbaz.so    [sym 8 @0x1119]
-  puts                         ←  libc.so      [sym 129 @0x60470]
-  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  puts                         ←  libc.so      [sym 129 @0x539ac]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x1d1e0]
   _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
   _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
 libbaz.so:
-  printf                       ←  libc.so      [sym 555 @0x6014d]
-  puts                         ←  libc.so      [sym 129 @0x60470]
-  __cxa_finalize               ←  libc.so      [sym 1067 @0x3e652]
+  printf                       ←  libc.so      [sym 555 @0x53697]
+  puts                         ←  libc.so      [sym 129 @0x539ac]
+  __cxa_finalize               ←  libc.so      [sym 1067 @0x1d1e0]
   libbar_step                  ←  libbar.so    [sym 8 @0x1119]
   _ITM_registerTMCloneTable    ←  <unresolved>  (weak)
   _ITM_deregisterTMCloneTable  ←  <unresolved>  (weak)
 strong missing: 0, weak missing: 8
 
 == 4. Layout (kernel-picked reservation + per-object bases) ==
-  reservation = [0x7ffffe769000, +0xb8000)
-[0] main (base=0x7ffffe769000, 4 segments)
-  vaddr=0x7ffffe769000 len=0x1000 prot=1
-  vaddr=0x7ffffe76a000 len=0x1000 prot=5
-  vaddr=0x7ffffe76b000 len=0x1000 prot=1
-  vaddr=0x7ffffe76c000 len=0x2000 prot=3
-[1] libfoo.so (base=0x7ffffe76e000, 4 segments)
-  vaddr=0x7ffffe76e000 len=0x1000 prot=1
-  vaddr=0x7ffffe76f000 len=0x1000 prot=5
-  vaddr=0x7ffffe770000 len=0x1000 prot=1
-  vaddr=0x7ffffe771000 len=0x2000 prot=3
-[2] libbar.so (base=0x7ffffe773000, 4 segments)
-  vaddr=0x7ffffe773000 len=0x1000 prot=1
-  vaddr=0x7ffffe774000 len=0x1000 prot=5
-  vaddr=0x7ffffe775000 len=0x1000 prot=1
-  vaddr=0x7ffffe776000 len=0x2000 prot=3
-[3] libc.so (base=0x7ffffe778000, 4 segments)
-  vaddr=0x7ffffe778000 len=0x14000 prot=1
-  vaddr=0x7ffffe78c000 len=0x56000 prot=5
-  vaddr=0x7ffffe7e2000 len=0x36000 prot=1
-  vaddr=0x7ffffe818000 len=0x4000 prot=3
-[4] libbaz.so (base=0x7ffffe81c000, 4 segments)
-  vaddr=0x7ffffe81c000 len=0x1000 prot=1
-  vaddr=0x7ffffe81d000 len=0x1000 prot=5
-  vaddr=0x7ffffe81e000 len=0x1000 prot=1
-  vaddr=0x7ffffe81f000 len=0x2000 prot=3
-init order: #[3, 1, 4, 2, 0]
-fini order: #[0, 2, 4, 1, 3]
+  reservation = [0x7fb9def4b000, +0xb4000)
+[0] main (base=0x7fb9def4b000, 4 segments)
+  vaddr=0x7fb9def4b000 len=0x1000 prot=1
+  vaddr=0x7fb9def4c000 len=0x1000 prot=5
+  vaddr=0x7fb9def4d000 len=0x1000 prot=1
+  vaddr=0x7fb9def4e000 len=0x2000 prot=3
+[1] libfoo.so (base=0x7fb9def50000, 4 segments)
+  vaddr=0x7fb9def50000 len=0x1000 prot=1
+  vaddr=0x7fb9def51000 len=0x1000 prot=5
+  vaddr=0x7fb9def52000 len=0x1000 prot=1
+  vaddr=0x7fb9def53000 len=0x2000 prot=3
+[2] libc.so (base=0x7fb9def55000, 4 segments)
+  vaddr=0x7fb9def55000 len=0x14000 prot=1
+  vaddr=0x7fb9def69000 len=0x52000 prot=5
+  vaddr=0x7fb9defbb000 len=0x36000 prot=1
+  vaddr=0x7fb9deff1000 len=0x4000 prot=3
+[3] libbar.so (base=0x7fb9deff5000, 4 segments)
+  vaddr=0x7fb9deff5000 len=0x1000 prot=1
+  vaddr=0x7fb9deff6000 len=0x1000 prot=5
+  vaddr=0x7fb9deff7000 len=0x1000 prot=1
+  vaddr=0x7fb9deff8000 len=0x2000 prot=3
+[4] libbaz.so (base=0x7fb9deffa000, 4 segments)
+  vaddr=0x7fb9deffa000 len=0x1000 prot=1
+  vaddr=0x7fb9deffb000 len=0x1000 prot=5
+  vaddr=0x7fb9deffc000 len=0x1000 prot=1
+  vaddr=0x7fb9deffd000 len=0x2000 prot=3
+init order: #[2, 1, 4, 3, 0]
+fini order: #[0, 3, 4, 1, 2]
 
 == 5. Reloc (planned 4/8-byte stores, per-arch formula) ==
-[0] main          type=8   seg=3  @0x7ffffe76cd48 ← 0x7ffffe76a1d0 (8B)  sym=''
-[0] main          type=8   seg=3  @0x7ffffe76cd50 ← 0x7ffffe76a1d9 (8B)  sym=''
-[0] main          type=8   seg=3  @0x7ffffe76cd58 ← 0x7ffffe76a190 (8B)  sym=''
-[0] main          type=8   seg=3  @0x7ffffe76d000 ← 0x7ffffe76d000 (8B)  sym=''
-[0] main          type=6   seg=3  @0x7ffffe76cfd8 ← 0x7ffffe7b6652 (8B)  sym='__cxa_finalize'
-[0] main          type=6   seg=3  @0x7ffffe76cfe0 ← 0x000000000000 (8B)  sym='<weak>'
-[0] main          type=6   seg=3  @0x7ffffe76cfe8 ← 0x000000000000 (8B)  sym='<weak>'
-[0] main          type=7   seg=3  @0x7ffffe76cf80 ← 0x7ffffe7d814d (8B)  sym='printf'
-[0] main          type=7   seg=3  @0x7ffffe76cf88 ← 0x7ffffe7ac1a0 (8B)  sym='pthread_create'
-[0] main          type=7   seg=3  @0x7ffffe76cf90 ← 0x7ffffe7b6415 (8B)  sym='strerror'
-[0] main          type=7   seg=3  @0x7ffffe76cf98 ← 0x7ffffe7d8470 (8B)  sym='puts'
-[0] main          type=7   seg=3  @0x7ffffe76cfa0 ← 0x7ffffe774119 (8B)  sym='libbar_step'
-[0] main          type=7   seg=3  @0x7ffffe76cfa8 ← 0x7ffffe7d5778 (8B)  sym='fflush'
-[0] main          type=7   seg=3  @0x7ffffe76cfb0 ← 0x7ffffe7b5fdc (8B)  sym='__stack_chk_fail'
-[0] main          type=7   seg=3  @0x7ffffe76cfb8 ← 0x7ffffe76f0f9 (8B)  sym='libfoo_print'
-[0] main          type=7   seg=3  @0x7ffffe76cfc0 ← 0x7ffffe78c08c (8B)  sym='exit'
-[0] main          type=7   seg=3  @0x7ffffe76cfc8 ← 0x7ffffe7b5ed0 (8B)  sym='__libc_start_main'
-[0] main          type=7   seg=3  @0x7ffffe76cfd0 ← 0x7ffffe7dd2b0 (8B)  sym='pthread_join'
-[1] libfoo.so     type=8   seg=3  @0x7ffffe771df8 ← 0x7ffffe76f0f0 (8B)  sym=''
-[1] libfoo.so     type=8   seg=3  @0x7ffffe771e00 ← 0x7ffffe76f113 (8B)  sym=''
-[1] libfoo.so     type=8   seg=3  @0x7ffffe771e08 ← 0x7ffffe76f0b0 (8B)  sym=''
-[1] libfoo.so     type=8   seg=3  @0x7ffffe772008 ← 0x7ffffe772008 (8B)  sym=''
-[1] libfoo.so     type=6   seg=3  @0x7ffffe771fd0 ← 0x7ffffe7b6652 (8B)  sym='__cxa_finalize'
-[1] libfoo.so     type=6   seg=3  @0x7ffffe771fd8 ← 0x000000000000 (8B)  sym='<weak>'
-[1] libfoo.so     type=6   seg=3  @0x7ffffe771fe0 ← 0x000000000000 (8B)  sym='<weak>'
-[1] libfoo.so     type=7   seg=3  @0x7ffffe772000 ← 0x7ffffe7d8470 (8B)  sym='puts'
-[2] libbar.so     type=8   seg=3  @0x7ffffe776de8 ← 0x7ffffe774110 (8B)  sym=''
-[2] libbar.so     type=8   seg=3  @0x7ffffe776df0 ← 0x7ffffe774159 (8B)  sym=''
-[2] libbar.so     type=8   seg=3  @0x7ffffe776df8 ← 0x7ffffe7740d0 (8B)  sym=''
-[2] libbar.so     type=8   seg=3  @0x7ffffe777018 ← 0x7ffffe777018 (8B)  sym=''
-[2] libbar.so     type=6   seg=3  @0x7ffffe776fd0 ← 0x7ffffe7b6652 (8B)  sym='__cxa_finalize'
-[2] libbar.so     type=6   seg=3  @0x7ffffe776fd8 ← 0x000000000000 (8B)  sym='<weak>'
-[2] libbar.so     type=6   seg=3  @0x7ffffe776fe0 ← 0x000000000000 (8B)  sym='<weak>'
-[2] libbar.so     type=7   seg=3  @0x7ffffe777000 ← 0x7ffffe7d814d (8B)  sym='printf'
-[2] libbar.so     type=7   seg=3  @0x7ffffe777008 ← 0x7ffffe81d119 (8B)  sym='libbaz_step'
-[2] libbar.so     type=7   seg=3  @0x7ffffe777010 ← 0x7ffffe7d8470 (8B)  sym='puts'
-[3] libc.so       type=8   seg=3  @0x7ffffe818b20 ← 0x7ffffe818b60 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818b60 ← 0x7ffffe8141d0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818ba0 ← 0x7ffffe816cda (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818ba8 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818bb0 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818bb8 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818bc0 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818bc8 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818bd0 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818bd8 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818be0 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818be8 ← 0x7ffffe816f8c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c00 ← 0x7ffffe818d48 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c08 ← 0x7ffffe818d50 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c10 ← 0x7ffffe818d58 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c18 ← 0x7ffffe818d60 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c20 ← 0x7ffffe818d88 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c28 ← 0x7ffffe818de8 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c30 ← 0x7ffffe818db0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c38 ← 0x7ffffe818d80 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c40 ← 0x7ffffe818df8 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c48 ← 0x7ffffe818d68 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c68 ← 0x7ffffe816f85 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c78 ← 0x7ffffe816dac (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c88 ← 0x7ffffe816f87 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818c98 ← 0x7ffffe816f89 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818ca8 ← 0x7ffffe816f8b (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818cb8 ← 0x7ffffe816f8d (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818cc8 ← 0x7ffffe816f8f (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818cd8 ← 0x7ffffe816f9c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818ce8 ← 0x7ffffe816faa (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818cf8 ← 0x7ffffe816fb6 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d08 ← 0x7ffffe816fc3 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d18 ← 0x7ffffe816fcf (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d30 ← 0x7ffffe7e5620 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d38 ← 0x7ffffe7e5a20 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d40 ← 0x7ffffe7e6020 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d48 ← 0x7ffffe81b9d8 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d50 ← 0x7ffffe81b9e0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d58 ← 0x7ffffe81b9f0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d60 ← 0x7ffffe81b9f4 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d68 ← 0x7ffffe81b9fc (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d70 ← 0x7ffffe816d15 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d78 ← 0x7ffffe816d24 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d80 ← 0x7ffffe81ba20 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d88 ← 0x7ffffe81ba44 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d90 ← 0x7ffffe816e1c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818d98 ← 0x7ffffe7d508a (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818da0 ← 0x7ffffe7d5fc2 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818da8 ← 0x7ffffe7d63a4 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818db0 ← 0x7ffffe81ba54 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818db8 ← 0x7ffffe7d7a6c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818dc0 ← 0x7ffffe7d7cee (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818dc8 ← 0x7ffffe816e1c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818dd0 ← 0x7ffffe8190c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818dd8 ← 0x7ffffe8191c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818de0 ← 0x7ffffe8192c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818de8 ← 0x7ffffe81ba6c (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818df0 ← 0x7ffffe81b980 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818df8 ← 0x7ffffe81ba74 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe818f70 ← 0x7ffffe818e00 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8190d8 ← 0x7ffffe7d4fce (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819108 ← 0x7ffffe7d516b (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819110 ← 0x7ffffe7d515f (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819118 ← 0x7ffffe81b958 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8191d8 ← 0x7ffffe7d4fce (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819200 ← 0x7ffffe7d508a (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819210 ← 0x7ffffe7d515f (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819218 ← 0x7ffffe81a4a8 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8192d8 ← 0x7ffffe7d4fce (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819308 ← 0x7ffffe7d5272 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819310 ← 0x7ffffe7d515f (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe819318 ← 0x7ffffe81a8c8 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193b8 ← 0x7ffffe819044 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193c0 ← 0x7ffffe7d2fc5 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193c8 ← 0x7ffffe8190c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193d0 ← 0x7ffffe8191c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193d8 ← 0x7ffffe8192c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193f0 ← 0x7ffffe81b5c0 (8B)  sym=''
-[3] libc.so       type=8   seg=3  @0x7ffffe8193f8 ← 0x7ffffe7defc6 (8B)  sym=''
-[3] libc.so       type=6   seg=3  @0x7ffffe818f60 ← 0x7ffffe81ba7c (8B)  sym='__daylight'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f68 ← 0x7ffffe81b828 (8B)  sym='__stack_chk_guard'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f78 ← 0x7ffffe81b7e0 (8B)  sym='__tzname'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f80 ← 0x7ffffe81b8b0 (8B)  sym='optarg'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f88 ← 0x7ffffe819400 (8B)  sym='opterr'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f90 ← 0x7ffffe81ba80 (8B)  sym='getdate_err'
-[3] libc.so       type=6   seg=3  @0x7ffffe818f98 ← 0x7ffffe81b820 (8B)  sym='__environ'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fa0 ← 0x7ffffe81b7e0 (8B)  sym='tzname'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fa8 ← 0x7ffffe81ba3c (8B)  sym='h_errno'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fb0 ← 0x7ffffe819404 (8B)  sym='optind'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fb8 ← 0x7ffffe81b860 (8B)  sym='__progname'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fc0 ← 0x7ffffe81ba10 (8B)  sym='__optreset'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fc8 ← 0x7ffffe81ba18 (8B)  sym='optopt'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fd0 ← 0x7ffffe81ba0c (8B)  sym='__signgam'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fd8 ← 0x7ffffe81b9c0 (8B)  sym='__timezone'
-[3] libc.so       type=6   seg=3  @0x7ffffe818fe0 ← 0x7ffffe81b858 (8B)  sym='__progname_full'
-[3] libc.so       type=7   seg=3  @0x7ffffe819000 ← 0x7ffffe7ba67a (8B)  sym='malloc'
-[3] libc.so       type=7   seg=3  @0x7ffffe819008 ← 0x7ffffe78e5c0 (8B)  sym='calloc'
-[3] libc.so       type=7   seg=3  @0x7ffffe819010 ← 0x7ffffe7bb483 (8B)  sym='realloc'
-[3] libc.so       type=7   seg=3  @0x7ffffe819018 ← 0x7ffffe7bb442 (8B)  sym='memalign'
-[3] libc.so       type=7   seg=3  @0x7ffffe819020 ← 0x7ffffe7ba683 (8B)  sym='aligned_alloc'
-[3] libc.so       type=7   seg=3  @0x7ffffe819028 ← 0x7ffffe7ba668 (8B)  sym='free'
-[4] libbaz.so     type=8   seg=3  @0x7ffffe81fde8 ← 0x7ffffe81d110 (8B)  sym=''
-[4] libbaz.so     type=8   seg=3  @0x7ffffe81fdf0 ← 0x7ffffe81d159 (8B)  sym=''
-[4] libbaz.so     type=8   seg=3  @0x7ffffe81fdf8 ← 0x7ffffe81d0d0 (8B)  sym=''
-[4] libbaz.so     type=8   seg=3  @0x7ffffe820018 ← 0x7ffffe820018 (8B)  sym=''
-[4] libbaz.so     type=6   seg=3  @0x7ffffe81ffd0 ← 0x7ffffe7b6652 (8B)  sym='__cxa_finalize'
-[4] libbaz.so     type=6   seg=3  @0x7ffffe81ffd8 ← 0x000000000000 (8B)  sym='<weak>'
-[4] libbaz.so     type=6   seg=3  @0x7ffffe81ffe0 ← 0x000000000000 (8B)  sym='<weak>'
-[4] libbaz.so     type=7   seg=3  @0x7ffffe820000 ← 0x7ffffe7d814d (8B)  sym='printf'
-[4] libbaz.so     type=7   seg=3  @0x7ffffe820008 ← 0x7ffffe7d8470 (8B)  sym='puts'
-[4] libbaz.so     type=7   seg=3  @0x7ffffe820010 ← 0x7ffffe774119 (8B)  sym='libbar_step'
-planned 20 mmaps, 20 zeros, 148 stores, 20 mprotects across 5 elfs
+[0] main          type=8   seg=3  @0x7fb9def4ed58 ← 0x7fb9def4c1d0 (8B)  sym=''
+[0] main          type=8   seg=3  @0x7fb9def4ed60 ← 0x7fb9def4c1d9 (8B)  sym=''
+[0] main          type=8   seg=3  @0x7fb9def4ed68 ← 0x7fb9def4c190 (8B)  sym=''
+[0] main          type=8   seg=3  @0x7fb9def4f000 ← 0x7fb9def4f000 (8B)  sym=''
+[0] main          type=6   seg=3  @0x7fb9def4efe8 ← 0x7fb9def721e0 (8B)  sym='__cxa_finalize'
+[0] main          type=6   seg=3  @0x7fb9def4eff0 ← 0x000000000000 (8B)  sym='<weak>'
+[0] main          type=6   seg=3  @0x7fb9def4eff8 ← 0x000000000000 (8B)  sym='<weak>'
+[0] main          type=7   seg=3  @0x7fb9def4ef90 ← 0x7fb9defa8697 (8B)  sym='printf'
+[0] main          type=7   seg=3  @0x7fb9def4ef98 ← 0x7fb9defb3851 (8B)  sym='pthread_create'
+[0] main          type=7   seg=3  @0x7fb9def4efa0 ← 0x7fb9def71fac (8B)  sym='strerror'
+[0] main          type=7   seg=3  @0x7fb9def4efa8 ← 0x7fb9defa89ac (8B)  sym='puts'
+[0] main          type=7   seg=3  @0x7fb9def4efb0 ← 0x7fb9deff6119 (8B)  sym='libbar_step'
+[0] main          type=7   seg=3  @0x7fb9def4efb8 ← 0x7fb9defa5a2c (8B)  sym='fflush'
+[0] main          type=7   seg=3  @0x7fb9def4efc0 ← 0x7fb9def71b91 (8B)  sym='__stack_chk_fail'
+[0] main          type=7   seg=3  @0x7fb9def4efc8 ← 0x7fb9def510f9 (8B)  sym='libfoo_print'
+[0] main          type=7   seg=3  @0x7fb9def4efd0 ← 0x7fb9def69087 (8B)  sym='exit'
+[0] main          type=7   seg=3  @0x7fb9def4efd8 ← 0x7fb9def71a9d (8B)  sym='__libc_start_main'
+[0] main          type=7   seg=3  @0x7fb9def4efe0 ← 0x7fb9defb429a (8B)  sym='pthread_join'
+[1] libfoo.so     type=8   seg=3  @0x7fb9def53df8 ← 0x7fb9def510f0 (8B)  sym=''
+[1] libfoo.so     type=8   seg=3  @0x7fb9def53e00 ← 0x7fb9def51113 (8B)  sym=''
+[1] libfoo.so     type=8   seg=3  @0x7fb9def53e08 ← 0x7fb9def510b0 (8B)  sym=''
+[1] libfoo.so     type=8   seg=3  @0x7fb9def54008 ← 0x7fb9def54008 (8B)  sym=''
+[1] libfoo.so     type=6   seg=3  @0x7fb9def53fd0 ← 0x7fb9def721e0 (8B)  sym='__cxa_finalize'
+[1] libfoo.so     type=6   seg=3  @0x7fb9def53fd8 ← 0x000000000000 (8B)  sym='<weak>'
+[1] libfoo.so     type=6   seg=3  @0x7fb9def53fe0 ← 0x000000000000 (8B)  sym='<weak>'
+[1] libfoo.so     type=7   seg=3  @0x7fb9def54000 ← 0x7fb9defa89ac (8B)  sym='puts'
+[2] libc.so       type=8   seg=3  @0x7fb9deff1b60 ← 0x7fb9deff1ba0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1ba0 ← 0x7fb9defed1e0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1be0 ← 0x7fb9defefd9c (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1be8 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1bf0 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1bf8 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c00 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c08 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c10 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c18 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c20 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c28 ← 0x7fb9deff004e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c40 ← 0x7fb9deff1d88 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c48 ← 0x7fb9deff1d90 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c50 ← 0x7fb9deff1d98 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c58 ← 0x7fb9deff1da0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c60 ← 0x7fb9deff1db8 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c68 ← 0x7fb9deff1de0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c70 ← 0x7fb9deff1dc0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c78 ← 0x7fb9deff1db0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c80 ← 0x7fb9deff1df0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1c88 ← 0x7fb9deff1da8 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1ca8 ← 0x7fb9deff0047 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1cb8 ← 0x7fb9defefe6e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1cc8 ← 0x7fb9deff0049 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1cd8 ← 0x7fb9deff004b (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1ce8 ← 0x7fb9deff004d (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1cf8 ← 0x7fb9deff004f (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d08 ← 0x7fb9deff0051 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d18 ← 0x7fb9deff005e (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d28 ← 0x7fb9deff006c (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d38 ← 0x7fb9deff0078 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d48 ← 0x7fb9deff0085 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d58 ← 0x7fb9deff0091 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d70 ← 0x7fb9defbe620 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d78 ← 0x7fb9defbea20 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d80 ← 0x7fb9defbf020 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d88 ← 0x7fb9deff49d8 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d90 ← 0x7fb9deff49e0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1d98 ← 0x7fb9deff49f0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1da0 ← 0x7fb9deff49f4 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1da8 ← 0x7fb9deff49fc (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1db0 ← 0x7fb9deff4a20 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1db8 ← 0x7fb9deff4a44 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1dc0 ← 0x7fb9deff4a54 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1dc8 ← 0x7fb9deff20c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1dd0 ← 0x7fb9deff21c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1dd8 ← 0x7fb9deff22c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1de0 ← 0x7fb9deff4a6c (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1de8 ← 0x7fb9deff4980 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1df0 ← 0x7fb9deff4a74 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff1f68 ← 0x7fb9deff1df8 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff20d8 ← 0x7fb9defa52b5 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2108 ← 0x7fb9defa544c (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2110 ← 0x7fb9defa5440 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2118 ← 0x7fb9deff4958 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff21d8 ← 0x7fb9defa52b5 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2200 ← 0x7fb9defa5371 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2210 ← 0x7fb9defa5440 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2218 ← 0x7fb9deff34a8 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff22d8 ← 0x7fb9defa52b5 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2308 ← 0x7fb9defa555b (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2310 ← 0x7fb9defa5440 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff2318 ← 0x7fb9deff38c8 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23b8 ← 0x7fb9deff2044 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23c0 ← 0x7fb9defa2f6a (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23c8 ← 0x7fb9deff20c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23d0 ← 0x7fb9deff21c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23d8 ← 0x7fb9deff22c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23f0 ← 0x7fb9deff45c0 (8B)  sym=''
+[2] libc.so       type=8   seg=3  @0x7fb9deff23f8 ← 0x7fb9defb75a3 (8B)  sym=''
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f58 ← 0x7fb9deff4a7c (8B)  sym='__daylight'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f60 ← 0x7fb9deff4828 (8B)  sym='__stack_chk_guard'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f70 ← 0x7fb9deff47e0 (8B)  sym='__tzname'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f78 ← 0x7fb9deff48b0 (8B)  sym='optarg'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f80 ← 0x7fb9deff2400 (8B)  sym='opterr'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f88 ← 0x7fb9deff4a80 (8B)  sym='getdate_err'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f90 ← 0x7fb9deff4820 (8B)  sym='__environ'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1f98 ← 0x7fb9deff47e0 (8B)  sym='tzname'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fa0 ← 0x7fb9deff4a3c (8B)  sym='h_errno'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fa8 ← 0x7fb9deff2404 (8B)  sym='optind'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fb0 ← 0x7fb9deff4860 (8B)  sym='__progname'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fb8 ← 0x7fb9deff4a10 (8B)  sym='__optreset'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fc0 ← 0x7fb9deff4a18 (8B)  sym='optopt'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fc8 ← 0x7fb9deff4a0c (8B)  sym='__signgam'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fd0 ← 0x7fb9deff49c0 (8B)  sym='__timezone'
+[2] libc.so       type=6   seg=3  @0x7fb9deff1fd8 ← 0x7fb9deff4858 (8B)  sym='__progname_full'
+[2] libc.so       type=7   seg=3  @0x7fb9deff2000 ← 0x7fb9def79e21 (8B)  sym='malloc'
+[2] libc.so       type=7   seg=3  @0x7fb9deff2008 ← 0x7fb9def79c79 (8B)  sym='calloc'
+[2] libc.so       type=7   seg=3  @0x7fb9deff2010 ← 0x7fb9def7bfea (8B)  sym='realloc'
+[2] libc.so       type=7   seg=3  @0x7fb9deff2018 ← 0x7fb9def7bfad (8B)  sym='memalign'
+[2] libc.so       type=7   seg=3  @0x7fb9deff2020 ← 0x7fb9def79e2a (8B)  sym='aligned_alloc'
+[2] libc.so       type=7   seg=3  @0x7fb9deff2028 ← 0x7fb9def79d44 (8B)  sym='free'
+[3] libbar.so     type=8   seg=3  @0x7fb9deff8de8 ← 0x7fb9deff6110 (8B)  sym=''
+[3] libbar.so     type=8   seg=3  @0x7fb9deff8df0 ← 0x7fb9deff6159 (8B)  sym=''
+[3] libbar.so     type=8   seg=3  @0x7fb9deff8df8 ← 0x7fb9deff60d0 (8B)  sym=''
+[3] libbar.so     type=8   seg=3  @0x7fb9deff9018 ← 0x7fb9deff9018 (8B)  sym=''
+[3] libbar.so     type=6   seg=3  @0x7fb9deff8fd0 ← 0x7fb9def721e0 (8B)  sym='__cxa_finalize'
+[3] libbar.so     type=6   seg=3  @0x7fb9deff8fd8 ← 0x000000000000 (8B)  sym='<weak>'
+[3] libbar.so     type=6   seg=3  @0x7fb9deff8fe0 ← 0x000000000000 (8B)  sym='<weak>'
+[3] libbar.so     type=7   seg=3  @0x7fb9deff9000 ← 0x7fb9defa8697 (8B)  sym='printf'
+[3] libbar.so     type=7   seg=3  @0x7fb9deff9008 ← 0x7fb9deffb119 (8B)  sym='libbaz_step'
+[3] libbar.so     type=7   seg=3  @0x7fb9deff9010 ← 0x7fb9defa89ac (8B)  sym='puts'
+[4] libbaz.so     type=8   seg=3  @0x7fb9deffdde8 ← 0x7fb9deffb110 (8B)  sym=''
+[4] libbaz.so     type=8   seg=3  @0x7fb9deffddf0 ← 0x7fb9deffb159 (8B)  sym=''
+[4] libbaz.so     type=8   seg=3  @0x7fb9deffddf8 ← 0x7fb9deffb0d0 (8B)  sym=''
+[4] libbaz.so     type=8   seg=3  @0x7fb9deffe018 ← 0x7fb9deffe018 (8B)  sym=''
+[4] libbaz.so     type=6   seg=3  @0x7fb9deffdfd0 ← 0x7fb9def721e0 (8B)  sym='__cxa_finalize'
+[4] libbaz.so     type=6   seg=3  @0x7fb9deffdfd8 ← 0x000000000000 (8B)  sym='<weak>'
+[4] libbaz.so     type=6   seg=3  @0x7fb9deffdfe0 ← 0x000000000000 (8B)  sym='<weak>'
+[4] libbaz.so     type=7   seg=3  @0x7fb9deffe000 ← 0x7fb9defa8697 (8B)  sym='printf'
+[4] libbaz.so     type=7   seg=3  @0x7fb9deffe008 ← 0x7fb9defa89ac (8B)  sym='puts'
+[4] libbaz.so     type=7   seg=3  @0x7fb9deffe010 ← 0x7fb9deff6119 (8B)  sym='libbar_step'
+planned 20 mmaps, 20 zeros, 139 stores, 20 mprotects across 5 elfs
 
 == 6. Init (DFS post-order over dep DAG) ==
 planned 8 constructor address(es), 4 destructor address(es)
@@ -317,9 +308,9 @@ planned 8 constructor address(es), 4 destructor address(es)
 [libbar] step=1
 [libbaz] step=0
 [main] pthread test start
-[main] tls=42, &tls=0x7ffffe8195dc
-[thread] tls=0, &tls=0x7ffffdf68b34
-[thread] tls=99, &tls=0x7ffffdf68b34
-[main] tls=42, &tls=0x7ffffe8195dc
+[main] tls=42, &tls=0x7fb9deff25dc
+[thread] tls=0, &tls=0x7fb9dfa36b34
+[thread] tls=99, &tls=0x7fb9dfa36b34
+[main] tls=42, &tls=0x7fb9deff25dc
 [main] pthread test completed
 [main] exit

@@ -49,6 +49,12 @@ def ofHeaders (fileSize : UInt64) (header : Ehdr) (phdrs : Array RawPhdr) :
   if header.ei_data != .lsb then
     .error s!"parse: only little-endian supported \
       (got ei_data={reprStr header.ei_data})"
+  if header.e_ehsize.toNat != EhdrSize then
+    .error s!"parse: e_ehsize={header.e_ehsize} but Elf64_Ehdr is {EhdrSize} bytes \
+      (gabi-02 § ELF Header)"
+  if header.e_phentsize.toNat != RawPhdrSize then
+    .error s!"parse: e_phentsize={header.e_phentsize} but Elf64_Phdr is {RawPhdrSize} bytes \
+      (gabi-07 § Program Header)"
   if header.e_type == .exec then
     .error s!"parse: ET_EXEC not supported — LeanLoad expects PIE \
       (ET_DYN) inputs only. Recompile with -fPIE -pie."

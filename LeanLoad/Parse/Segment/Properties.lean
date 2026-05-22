@@ -22,14 +22,14 @@ namespace LeanLoad.Parse
 -- base) and contains the ELF header + phdr table.
 -- ============================================================================
 
-/-- The PT_LOAD segment `s` covers the program-header table at file
-    offset `phoff` of byte length `nbytes`, AND its `vaddr` equals its
-    `offset` (so `runtime_addr = mainBase + phoff` is consistent with
-    the kernel's `AT_PHDR`). -/
+/-- The PT_LOAD segment `s` file-backs the program-header table at file offset
+    `phoff` of byte length `nbytes`, AND its `vaddr` equals its `offset` (so
+    `runtime_addr = mainBase + phoff` is consistent with the kernel's
+    `AT_PHDR`). -/
 def coversPhdrs (s : Segment) (phoff : FileOff) (nbytes : Nat) : Prop :=
   s.vaddr.val = s.offset.val ∧
-  s.vaddr.toNat ≤ phoff.toNat ∧
-  phoff.toNat + nbytes ≤ s.vaddr.toNat + s.memsz.toNat
+  s.offset.toNat ≤ phoff.toNat ∧
+  phoff.toNat + nbytes ≤ s.offset.toNat + s.filesz.toNat
 
 /-- Some PT_LOAD segment covers the phdr table (per `coversPhdrs`),
     or there's no phdr table to cover (`nbytes = 0`, degenerate Elf

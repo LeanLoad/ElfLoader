@@ -70,8 +70,10 @@ import LeanLoad.Parse.Segment.Properties
 import LeanLoad.Parse.Segment.Example
 import LeanLoad.Parse.Elf.Checked
 import LeanLoad.Parse.Elf.LoadMap
+import LeanLoad.Parse.Elf.LoadMap.Example
 import LeanLoad.Parse.Elf.RawImage
 import LeanLoad.Parse.Elf.Relocs
+import LeanLoad.Parse.Elf.InitFini
 import LeanLoad.Parse.Elf.Check
 import LeanLoad.Parse.Elf.Entry
 import LeanLoad.Parse.Elf.Example

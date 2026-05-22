@@ -63,5 +63,6 @@ structure Elf where
       offset-to-vaddr translation. -/
   phdrCovered :
     PhdrCovered segments.items header.e_phoff (Parse.RawPhdrSize * header.e_phnum.toNat)
+  deriving Repr
 
 end LeanLoad.Parse

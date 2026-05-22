@@ -45,7 +45,7 @@ private def initArrBytes : ByteArray := ⟨#[
   0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ]⟩
 
-/-- Hand-crafted 488-byte ET_DYN ELF used as the integration fixture.
+/-- Hand-crafted 520-byte ET_DYN ELF used as the integration fixture.
     Concatenation of every per-section fixture in file order,
     interleaved with the non-struct-typed hash + init-array sections. -/
 def fixtureBytes : ByteArray :=
@@ -59,7 +59,7 @@ def fixtureBytes : ByteArray :=
     ++ Example.dynBytes
 
 -- Total size: sum of each section's fixture bytes.
-#guard fixtureBytes.size = 0x1e8                  -- 488 bytes total
+#guard fixtureBytes.size = 0x208                  -- 520 bytes total
 
 /-- Pure counterpart to `Parse.parse`: built by running the same
     checked `parseM` over a `pureReader` of `fixtureBytes`. Returns

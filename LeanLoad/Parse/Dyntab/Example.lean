@@ -6,7 +6,7 @@ import LeanLoad.Parse.Dyntab.Info
 
 namespace LeanLoad.Parse.Example
 
-/-- 192-byte `.dynamic` fixture: 12 entries (11 real + DT_NULL
+/-- 224-byte `.dynamic` fixture: 14 entries (13 real + DT_NULL
     terminator) describing the consolidated `Parse.Elf.Example.fixtureBytes`
     layout. Dynamic-content locating tags (`DT_STRTAB` / `DT_SYMTAB` /
     …) carry vaddrs that match the corresponding content's position in
@@ -25,11 +25,15 @@ def dynBytes : ByteArray := ⟨#[
   0x0a, 0, 0, 0, 0, 0, 0, 0,    0x1f, 0, 0, 0, 0, 0, 0, 0,
   -- DT_SYMTAB → 0xd0
   0x06, 0, 0, 0, 0, 0, 0, 0,    0xd0, 0, 0, 0, 0, 0, 0, 0,
+  -- DT_SYMENT → 24 (Elf64_Sym)
+  0x0b, 0, 0, 0, 0, 0, 0, 0,    0x18, 0, 0, 0, 0, 0, 0, 0,
   -- DT_HASH → 0x100 (nchain there says symtab has 2 entries)
   0x04, 0, 0, 0, 0, 0, 0, 0,    0x00, 0x01, 0, 0, 0, 0, 0, 0,
   -- DT_RELA → 0x108 / DT_RELASZ → 24
   0x07, 0, 0, 0, 0, 0, 0, 0,    0x08, 0x01, 0, 0, 0, 0, 0, 0,
   0x08, 0, 0, 0, 0, 0, 0, 0,    0x18, 0, 0, 0, 0, 0, 0, 0,
+  -- DT_RELAENT → 24 (Elf64_Rela)
+  0x09, 0, 0, 0, 0, 0, 0, 0,    0x18, 0, 0, 0, 0, 0, 0, 0,
   -- DT_INIT_ARRAY → 0x120 / DT_INIT_ARRAYSZ → 8
   0x19, 0, 0, 0, 0, 0, 0, 0,    0x20, 0x01, 0, 0, 0, 0, 0, 0,
   0x1b, 0, 0, 0, 0, 0, 0, 0,    0x08, 0, 0, 0, 0, 0, 0, 0,
@@ -37,7 +41,7 @@ def dynBytes : ByteArray := ⟨#[
   0x00, 0, 0, 0, 0, 0, 0, 0,    0x00, 0, 0, 0, 0, 0, 0, 0
 ]⟩
 
-#guard dynBytes.size == 12 * RawDynSize  -- = 192
+#guard dynBytes.size == 14 * RawDynSize  -- = 224
 
 -- ── Lookup helpers over a manually-built `Array RawDyn` ────────────────
 -- DT_NEEDED appears three times: gabi 08 allows repetition (one entry
@@ -68,8 +72,8 @@ def dyntab? : Option RawDyntab :=
 def dyntab : RawDyntab :=
   dyntab?.get (by native_decide)
 
--- 12 entries total, including the DT_NULL terminator.
-#guard dyntab.size = 12
+-- 14 entries total, including the DT_NULL terminator.
+#guard dyntab.size = 14
 
 -- Strtab references resolve to the documented offsets.
 #guard RawDyntab.val? dyntab .needed  = some 0x01  -- "libc.so.6"
@@ -162,9 +166,9 @@ private def symtabWithoutHashTab : RawDyntab := #[
   (parseBytes? dynBytes (RawDyntab.parse 0)).isNone
 
 -- `RawDyntab.parse` short-circuits at DT_NULL even if more bytes follow:
--- here we point it at 192 bytes; DT_NULL sits at offset 176 (entry 11).
--- The returned array has 12 entries (11 real + the terminator).
+-- here we point it at 224 bytes; DT_NULL sits at offset 208 (entry 13).
+-- The returned array has 14 entries (13 real + the terminator).
 #guard
-  (parseBytes? dynBytes (RawDyntab.parse 192)).map (·.size) = some 12
+  (parseBytes? dynBytes (RawDyntab.parse 224)).map (·.size) = some 14
 
 end LeanLoad.Parse.Example
