@@ -8,7 +8,7 @@ the attached segment array.
 -/
 
 import LeanLoad.Parse.ImageView.Segment.Array
-import LeanLoad.Parse.Reloc.Raw
+import LeanLoad.Parse.Dynamic.Reloc.Raw
 
 namespace LeanLoad.Parse.Elf
 

@@ -8,7 +8,7 @@ dynamic strings, and constructor/destructor target coverage.
 -/
 
 import LeanLoad.Parse.ImageView.ElfHeader.Basic
-import LeanLoad.Parse.Symbol.Checked
+import LeanLoad.Parse.Dynamic.Symbol.Checked
 import LeanLoad.Parse.ImageView.Segment.Properties
 
 namespace LeanLoad.Parse

@@ -1,14 +1,14 @@
 /-
 Checked construction for `Parse.Elf`.
 
-This module consumes the byte staging image from `RawElf` and establishes the
+This module consumes the byte staging image from `Dynamic` and establishes the
 semantic witnesses carried by the public `LeanLoad.Parse.Elf` type.
 -/
 
 import LeanLoad.Parse.Elf.Checked
-import LeanLoad.Parse.RawElf.Basic
+import LeanLoad.Parse.Dynamic.Basic
 import LeanLoad.Parse.Elf.Relocs
-import LeanLoad.Parse.Elf.InitFini
+import LeanLoad.Parse.Dynamic.InitFini
 
 namespace LeanLoad.Parse.Elf
 
@@ -34,8 +34,8 @@ private def resolveStrtabOff? (label : String) (strtab : Strtab) :
 /-- Check a staging image: attach every rela to its checked PT_LOAD segment,
     pre-resolve every dynamic string-table reference, and bundle the final
     witness-carrying `Elf`. Header policy and PT_LOAD well-formedness are
-    already carried by `RawElf.header` and `RawElf.segments`. -/
-def checkImage (raw : RawElf) : Except String _root_.LeanLoad.Parse.Elf := do
+    already carried by `Dynamic.header` and `Dynamic.segments`. -/
+def checkImage (raw : Dynamic) : Except String _root_.LeanLoad.Parse.Elf := do
   let header := raw.header
   let segments ← RelocBuckets.attach raw.segments raw.rela raw.jmprel
   let symtab : Array Symbol ← raw.symtab.mapM (Symbol.ofRaw raw.strtab)

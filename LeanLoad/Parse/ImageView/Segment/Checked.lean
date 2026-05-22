@@ -19,7 +19,7 @@ POSIX `PROT_*`) live on `Plan.SegmentLayout`, which couples a segment with its
 chosen mmap base.
 -/
 
-import LeanLoad.Parse.Reloc.Raw
+import LeanLoad.Parse.Dynamic.Reloc.Raw
 import LeanLoad.Parse.ImageView.ProgramHeader.Basic
 
 namespace LeanLoad.Parse

@@ -33,7 +33,7 @@ wrapper lives in `Lookup.lean`.
 -/
 
 import LeanLoad.Parse.Elf.Entry
-import LeanLoad.Parse.Symbol.Checked
+import LeanLoad.Parse.Dynamic.Symbol.Checked
 
 namespace LeanLoad.Plan.Resolve
 

@@ -19,7 +19,7 @@ table, rela offset, and init_array entry.
 import LeanLoad.Parse.Elf.Entry
 import LeanLoad.Parse.ImageView.ElfHeader.Example
 import LeanLoad.Parse.ImageView.ProgramHeader.Example
-import LeanLoad.Parse.Dyntab.Example
+import LeanLoad.Parse.Dynamic.Dyntab.Example
 
 namespace LeanLoad.Parse.Elf.Example
 

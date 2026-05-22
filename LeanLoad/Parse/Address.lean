@@ -41,7 +41,7 @@ def ByteSize.toNat (s : ByteSize) : Nat := s.val.toNat
 
 /-- ELF-address range `[start, start + size)` after dynamic-table semantics have
     interpreted the raw address payload as an ELF virtual-address coordinate.
-    File-backed containment is added later by `RawElf.ImageView`. -/
+    File-backed containment is added later by `Dynamic.ImageView`. -/
 structure EaddrRange where
   start : Eaddr
   size  : ByteSize

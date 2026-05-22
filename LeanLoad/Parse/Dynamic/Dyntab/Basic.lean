@@ -4,7 +4,7 @@ array parser and by-tag lookups.
 
 Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`).
 
-`DynTag` lives in `Parse/Dyntab/Fields.lean`; this file owns the entry
+`DynTag` lives in `Parse/Dynamic/Dyntab/Fields.lean`; this file owns the entry
 shape and the `DT_NULL`-terminated table parser.
 
 The `.dynamic` array is `DT_NULL`-terminated, so it can't use the
@@ -18,9 +18,9 @@ small accessors project the dynamic-content ranges that drive later reads.
 import LeanLoad.Parse.Decode
 import LeanLoad.Parse.Deriving
 import LeanLoad.Parse.Address
-import LeanLoad.Parse.Dyntab.Fields
-import LeanLoad.Parse.Symbol.Raw
-import LeanLoad.Parse.Reloc.Raw
+import LeanLoad.Parse.Dynamic.Dyntab.Fields
+import LeanLoad.Parse.Dynamic.Symbol.Raw
+import LeanLoad.Parse.Dynamic.Reloc.Raw
 
 namespace LeanLoad.Parse
 
@@ -151,7 +151,7 @@ def symtab? (tab : Dyntab) : Except String (Option Eaddr) := do
   return symtabRaw.map Eaddr.mk
 
 /-- `DT_HASH` ELF address, when present. Its `nchain` field gives the dynamic
-    symbol count used by `RawElf` when `DT_SYMTAB` is also present. -/
+    symbol count used by `Dynamic` when `DT_SYMTAB` is also present. -/
 def hash? (tab : Dyntab) : Except String (Option Eaddr) :=
   (single? tab .hash).map (·.map Eaddr.mk)
 

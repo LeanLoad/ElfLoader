@@ -2,7 +2,7 @@
 Examples and fixture bytes for `.dynamic` parsing and projection.
 -/
 
-import LeanLoad.Parse.Dyntab.Basic
+import LeanLoad.Parse.Dynamic.Dyntab.Basic
 
 namespace LeanLoad.Parse.Example
 

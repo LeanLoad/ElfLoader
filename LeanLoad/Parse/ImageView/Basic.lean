@@ -1,8 +1,8 @@
 /-
-Checked file view used while building `RawElf`.
+Checked file view used while building `Dynamic`.
 
-Before `RawElf` exists, the reader must still follow dynamic-table ELF
-addresses to file bytes. `RawElf.ImageView` is that pre-stage capability:
+Before `Dynamic` exists, the reader must still follow dynamic-table ELF
+addresses to file bytes. `Dynamic.ImageView` is that pre-stage capability:
 header policy plus checked PT_LOAD segments, enough to turn a raw ELF-address
 range into a file-backed `EaddrRange`.
 -/

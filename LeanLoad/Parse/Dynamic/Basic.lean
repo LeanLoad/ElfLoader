@@ -1,27 +1,27 @@
 /-
 Raw ELF staging image.
 
-This module owns the byte-decoded `RawElf` stage. File offsets and ELF
+This module owns the byte-decoded `Dynamic` stage. File offsets and ELF
 addresses stay centralized here: content modules provide their parsers, while
-`RawElf.ImageView` translates dynamic-table ELF-address ranges to exact file
+`Dynamic.ImageView` translates dynamic-table ELF-address ranges to exact file
 slices.
 -/
 
 import LeanLoad.Parse.Reader
 import LeanLoad.Parse.ImageView.ElfHeader.Basic
-import LeanLoad.Parse.Strtab
-import LeanLoad.Parse.Symbol.Raw
-import LeanLoad.Parse.Symbol.SysVHash
-import LeanLoad.Parse.Reloc.Raw
+import LeanLoad.Parse.Dynamic.Strtab
+import LeanLoad.Parse.Dynamic.Symbol.Raw
+import LeanLoad.Parse.Dynamic.Symbol.SysVHash
+import LeanLoad.Parse.Dynamic.Reloc.Raw
 import LeanLoad.Parse.ImageView.ProgramHeader.Basic
-import LeanLoad.Parse.Dyntab.Basic
+import LeanLoad.Parse.Dynamic.Dyntab.Basic
 import LeanLoad.Parse.ImageView.Basic
 
 namespace LeanLoad.Parse
 
 /-- Transient byte-decoded ELF. `Elf.checkImage` immediately checks this into
     `LeanLoad.Parse.Elf`, so downstream code consumes the witnessed type. -/
-structure RawElf where
+structure Dynamic where
   header  : ElfHeader
   segments : Segments
   strtab  : Strtab
@@ -35,7 +35,7 @@ structure RawElf where
   finiArr : Array Eaddr
   deriving Repr
 
-namespace RawElf
+namespace Dynamic
 
 /-- Dynamic content after following `.dynamic` ELF-address ranges. -/
 private structure DynamicData where
@@ -147,7 +147,7 @@ private def fetchDynamicData [Monad m] (r : FileReader m)
   return { strtab, symtab, rela, jmprel, initArr, finiArr }
 
 /-- Byte-decode an ELF into the transient raw staging image. -/
-def readM [Monad m] (r : FileReader m) : ExceptT String m RawElf := do
+def readM [Monad m] (r : FileReader m) : ExceptT String m Dynamic := do
   let header ← parseAt r 0 ElfHeader.byteSize ElfHeader.parse
   let phdrs ← parseAt r header.e_phoff
                  (ProgramHeader.tableByteSize header.e_phnum.toNat)
@@ -176,6 +176,6 @@ def readM [Monad m] (r : FileReader m) : ExceptT String m RawElf := do
     initArr := c.initArr,
     finiArr := c.finiArr }
 
-end RawElf
+end Dynamic
 
 end LeanLoad.Parse
