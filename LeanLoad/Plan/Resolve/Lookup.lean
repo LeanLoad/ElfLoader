@@ -30,7 +30,7 @@ import LeanLoad.Discover.Graph
 namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
-open LeanLoad.Elaborate
+open LeanLoad.Elaborate (Elf)
 open LeanLoad.Discover (LoadGraph)
 
 /-- Resolve `name` against the loaded graph via traversal over

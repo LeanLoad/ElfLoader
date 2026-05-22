@@ -345,9 +345,8 @@ end LeanLoad.Elaborate.X86_64
 
 namespace LeanLoad.Elaborate
 
-/-- Pick the relocation formula for `machine`. Total — `Machine` is
-    a closed enum of the architectures we support. -/
-def formulaFor : Machine → Formula
+/-- Pick the relocation formula for `machine`. -/
+def formulaFor : LeanLoad.Parse.ElfMachine → Formula
   | .aarch64 => Aarch64.formula
   | .x86_64  => X86_64.formula
 

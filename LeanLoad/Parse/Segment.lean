@@ -1,5 +1,5 @@
 /-
-PT_LOAD segment — gabi-07 byte fields and invariants.
+Checked PT_LOAD segment — gabi-07 byte fields and invariants.
 
 Spec: gabi 07 (`third_party/gabi/docsrc/elf/07-pheader.rst`) § Program
 Header.
@@ -19,12 +19,10 @@ BSS bounds, POSIX `PROT_*`) live on `Plan.SegmentLayout`, which couples a
 segment with its chosen mmap base.
 -/
 
-import LeanLoad.Parse.Header.RawPhdr
 import LeanLoad.Parse.Dynamic.RawRela
+import LeanLoad.Parse.Header.Phdr
 
-namespace LeanLoad.Elaborate
-
-open LeanLoad.Parse (RawPhdr RawRela)
+namespace LeanLoad.Parse
 
 -- ============================================================================
 -- Segment permissions (gabi 07 Table: Segment Flag Bits)
@@ -119,7 +117,7 @@ private def assertProp (p : Prop) [Decidable p] (msg : String) :
   if h : p then .ok ⟨h⟩ else .error msg
 
 /-- Smart constructor: build a `Segment` from a `RawPhdr` (assumed
-    PT_LOAD by the caller — `Elaborate.elaborate` filters its input
+    PT_LOAD by the caller — the checked-ELF assembly filters its input
     array by `p_type`) and pre-located rela arrays. Decidably checks
     each gabi-07 per-segment invariant and LeanLoad's 48-bit address
     bound, failing with a typed error. -/
@@ -149,4 +147,4 @@ def Segment.ofPhdr (phdr : RawPhdr)
     fileszLeMemsz, alignPow2, alignCong, addrBound, rela, jmprel
   }
 
-end LeanLoad.Elaborate
+end LeanLoad.Parse

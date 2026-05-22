@@ -35,11 +35,11 @@ pointers + size pairs) lives in `Parse.DynInfo`.
 
 import LeanLoad.Parse.Decode
 import LeanLoad.Parse.Reader
-import LeanLoad.Parse.Header.RawEhdr
+import LeanLoad.Parse.Header.Ehdr
 import LeanLoad.Parse.Dynamic.RawStrtab
 import LeanLoad.Parse.Dynamic.RawSym
 import LeanLoad.Parse.Dynamic.RawRela
-import LeanLoad.Parse.Header.RawPhdr
+import LeanLoad.Parse.Header.Phdr
 import LeanLoad.Parse.Dynamic.RawDyn
 import LeanLoad.Parse.Dynamic.RawHash
 import LeanLoad.Parse.Dynamic.DynInfo
@@ -52,7 +52,7 @@ namespace LeanLoad.Parse
 --
 -- The phdr-array helper `vaToOffset` (virtual-address ↔ file-offset
 -- translation, used below by `parseAtVa`) lives with the type it
--- operates on, in `Parse/RawPhdr.lean`.
+-- operates on, in `Parse/Header/Phdr.lean`.
 -- ============================================================================
 
 /-- The raw byte-decode of an ELF file. Output of `parse`, input to

@@ -49,3 +49,6 @@
 [submodule "third_party/elfutils"]
 	path = third_party/elfutils
 	url = https://sourceware.org/git/elfutils.git
+[submodule "third_party/lean4-skills"]
+	path = third_party/lean4-skills
+	url = https://github.com/cameronfreer/lean4-skills.git

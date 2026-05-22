@@ -378,7 +378,7 @@ theorem cross_elf_mmapRange_disjoint (bp : BoundPlan)
     by `coversRela`'s conservative 8-byte window. -/
 theorem segment_storeRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
     (j : Fin (bp.elfAt i).segments.size) (r_offset : UInt64)
-    (h_cov : Elaborate.coversRela
+    (h_cov : Parse.coversRela
       (bp.segAt i j).segment.vaddr (bp.segAt i j).segment.memsz r_offset)
     (size : UInt64) (h_size : size.toNat ≤ 8) :
     Runtime.InRange (bp.baseAt i + r_offset) size bp.rsv.addr bp.rsv.len := by

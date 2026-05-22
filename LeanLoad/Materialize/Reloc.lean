@@ -29,12 +29,14 @@ import LeanLoad.Plan.Layout
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Safety
 import LeanLoad.Elaborate.Reloc
+import LeanLoad.Parse.Segment
 
 namespace LeanLoad.Materialize
 
 open LeanLoad
 open LeanLoad.Plan.Reloc (Entry)
-open LeanLoad.Elaborate (Elf Segment Formula FormulaInputs FormulaResult PatchSize)
+open LeanLoad.Parse (Segment)
+open LeanLoad.Elaborate (Elf Formula FormulaInputs FormulaResult PatchSize)
 
 -- ============================================================================
 -- 32-bit overflow check.

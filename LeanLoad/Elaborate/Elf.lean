@@ -9,8 +9,8 @@ returns an `Elaborate.Elf`:
     `ELFDATA2LSB`).
   - Every `DT_RELA` / `DT_JMPREL` entry located against a covering
     PT_LOAD segment, witnessed by the subtype on
-    `Elaborate.Segment.{rela, jmprel}`.
-  - Per-segment relocation grouping built into `Array Elaborate.Segment`.
+    `Parse.Segment.{rela, jmprel}`.
+  - Per-segment relocation grouping built into `Array Parse.Segment`.
   - PT_LOAD well-formedness witness (`segmentsWf : WellFormed segments`)
     carried for downstream consumers — defined in this file.
   - Symbol names pre-resolved against the dynamic string table.
@@ -28,14 +28,14 @@ a PT_LOAD.
 -/
 
 import LeanLoad.Parse.RawElf
+import LeanLoad.Parse.Symbol
+import LeanLoad.Parse.Segment
 import LeanLoad.Elaborate.Header
-import LeanLoad.Elaborate.Symbol
-import LeanLoad.Elaborate.Segment
 
 namespace LeanLoad.Elaborate
 
 open LeanLoad
-open LeanLoad.Parse (RawElf RawPhdr RawRela RawSym)
+open LeanLoad.Parse (RawElf RawPhdr RawRela RawSym ElfType ElfMachine Symbol Segment coversRela)
 
 -- ============================================================================
 -- PT_LOAD-array well-formedness — the per-pair gabi-07 invariants on
@@ -155,7 +155,7 @@ structure Elf where
   /-- Typed `e_machine` — drives per-arch relocation formula
       selection (`formulaFor`). Closed enum: only architectures
       LeanLoad supports. -/
-  machine  : Machine
+  machine  : ElfMachine
   /-- `e_entry` — process entry point virtual address. -/
   entry    : UInt64
   /-- `e_phoff` — program-header table file offset (used by Exec to
@@ -215,10 +215,10 @@ private def locateRela (segs : Array RawPhdr) (r : RawRela) :
 def elaborate (raw : RawElf) : Except String Elf := do
   if raw.header.ei_class != ELFCLASS64 then
     .error s!"elaborate: only ELFCLASS64 supported \
-      (got ei_class={raw.header.ei_class})"
+      (got ei_class={reprStr raw.header.ei_class})"
   if raw.header.ei_data != ELFDATA2LSB then
     .error s!"elaborate: only little-endian supported \
-      (got ei_data={raw.header.ei_data})"
+      (got ei_data={reprStr raw.header.ei_data})"
   let loadable := raw.phdrs.filter (·.p_type == Parse.PT_LOAD)
   -- Per-rela "tagged with its segment index" (Sigma — destructurable).
   let GEntry := Σ i : Fin loadable.size,
@@ -257,14 +257,15 @@ def elaborate (raw : RawElf) : Except String Elf := do
     | .ok seg  => segmentsAcc := segmentsAcc.push seg
     | .error e => .error s!"elaborate: segment[{i}]: {e}"
   let segments := segmentsAcc
-  let some elfType := ElfType.ofRaw raw.header.e_type
-    | .error s!"elaborate: unknown e_type={raw.header.e_type}"
+  -- `e_type` and `e_machine` are `ElfType` / `ElfMachine` already (validated
+  -- at parse via `ByteMap`). Elaborate only enforces the policy that
+  -- LeanLoad rejects ET_EXEC; the `ElfMachine` enum doesn't have an
+  -- unsupported case, so no further check is needed.
+  let elfType := raw.header.e_type
+  let machine := raw.header.e_machine
   if elfType == .exec then
     .error s!"elaborate: ET_EXEC not supported — LeanLoad expects PIE \
       (ET_DYN) inputs only. Recompile with -fPIE -pie."
-  let some machine := Machine.ofRaw raw.header.e_machine
-    | .error s!"elaborate: unsupported e_machine={raw.header.e_machine} \
-        (need 62=EM_X86_64 or 183=EM_AARCH64)"
   let symtab : Array Symbol ← raw.symtab.mapM (Symbol.ofRaw raw.strtab)
   -- `needed`/`soname`/`runpath` are already `StrtabOff` from Parse;
   -- `RawStrtab.lookup` accepts that type directly.

@@ -33,12 +33,13 @@ wrapper lives in `Lookup.lean`.
 -/
 
 import LeanLoad.Elaborate.Elf
-import LeanLoad.Elaborate.Symbol
+import LeanLoad.Parse.Symbol
 
 namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
-open LeanLoad.Elaborate
+open LeanLoad.Elaborate (Elf)
+open LeanLoad.Parse (Symbol)
 
 /-- A resolved global symbol, parameterised by the elf-array size
     `objCount`. The `Fin objCount` carries the bounds proof at the

@@ -55,19 +55,20 @@ stage re-checks it — the witness travels in the type.
 -/
 import LeanLoad.Parse.Offsets
 import LeanLoad.Parse.Reader
-import LeanLoad.Parse.Header.RawEhdr
+import LeanLoad.Parse.Header.Enums
+import LeanLoad.Parse.Header.Ehdr
 import LeanLoad.Parse.Dynamic.RawStrtab
 import LeanLoad.Parse.Dynamic.RawSym
 import LeanLoad.Parse.Dynamic.RawRela
-import LeanLoad.Parse.Header.RawPhdr
+import LeanLoad.Parse.Header.Phdr
 import LeanLoad.Parse.Dynamic.RawDyn
 import LeanLoad.Parse.Dynamic.RawHash
 import LeanLoad.Parse.Dynamic.DynInfo
+import LeanLoad.Parse.Symbol
+import LeanLoad.Parse.Segment
 import LeanLoad.Parse.RawElf
 
 import LeanLoad.Elaborate.Header
-import LeanLoad.Elaborate.Symbol
-import LeanLoad.Elaborate.Segment
 import LeanLoad.Elaborate.Reloc
 import LeanLoad.Elaborate.Elf
 

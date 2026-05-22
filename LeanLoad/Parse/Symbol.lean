@@ -1,5 +1,5 @@
 /-
-Symbol-table elaboration: typed views over `st_info` (binding) and
+Symbol-table checking: typed views over `st_info` (binding) and
 `st_shndx` (section index), and the per-symbol `Symbol` bundle that
 post-parse code consumes.
 
@@ -9,7 +9,7 @@ Table.
 Where `Parse.RawSym` carries the raw byte-fields, `Symbol` carries
 the *meaning*: `bind : SymBind`, `shndx : ShnIdx`, plus the resolved
 name and `value`. The closed `SymBind` enum rejects OS- or processor-
-specific extensions at elaboration; `ShnIdx.concrete` covers the open
+specific extensions during checking; `ShnIdx.concrete` covers the open
 range of legitimate section indices.
 
 The low nibble of `st_info` (the symbol-type field) and `st_size` are
@@ -19,7 +19,7 @@ not lifted — no consumer reads them.
 import LeanLoad.Parse.Dynamic.RawSym
 import LeanLoad.Parse.Dynamic.RawStrtab
 
-namespace LeanLoad.Elaborate
+namespace LeanLoad.Parse
 
 -- ============================================================================
 -- Typed views: each enum paired with its `ofRaw` lift.
@@ -33,7 +33,7 @@ inductive SymBind where
   deriving Repr, BEq, Inhabited
 
 /-- Lift the high nibble of `st_info`. `none` for OS- or processor-
-    specific bindings (`STB_LOOS`–`STB_HIPROC`); elaborate rejects. -/
+    specific bindings (`STB_LOOS`–`STB_HIPROC`); `Symbol.ofRaw` rejects. -/
 def SymBind.ofRaw : UInt8 → Option SymBind
   | 0 => some .local
   | 1 => some .global
@@ -66,10 +66,10 @@ def ShnIdx.ofRaw : UInt16 → ShnIdx
 #guard ShnIdx.ofRaw 5 == .concrete 5
 
 -- ============================================================================
--- Per-symbol bundle. Replaces the raw `RawSym` view post-elaboration.
+-- Per-symbol bundle. Replaces the raw `RawSym` view after checking.
 -- ============================================================================
 
-/-- A symbol, post-elaboration. Raw `st_*` byte-fields lifted into
+/-- A checked symbol. Raw `st_*` byte-fields lifted into
     typed views; `name` pre-resolved against the dynamic string table
     (`none` if `st_name` was out of range or didn't decode as UTF-8). -/
 structure Symbol where
@@ -113,8 +113,6 @@ end Symbol
 -- Fails with a typed error on unknown bind bits.
 -- ============================================================================
 
-open LeanLoad.Parse (RawSym RawStrtab)
-
 /-- Build a `Symbol` from a `RawSym` by lifting `st_info`'s binding
     nibble to `SymBind` and resolving `st_name` against `strtab`.
     Fails if the binding nibble is not in the gabi-05 named set. -/
@@ -128,4 +126,4 @@ def Symbol.ofRaw (strtab : RawStrtab) (s : RawSym) : Except String Symbol := do
            shndx := ShnIdx.ofRaw s.st_shndx
            value := s.st_value }
 
-end LeanLoad.Elaborate
+end LeanLoad.Parse

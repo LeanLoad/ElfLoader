@@ -37,12 +37,13 @@ so there's no parallel relocation tree to construct or zip later.
 import LeanLoad.Plan.Resolve
 import LeanLoad.Elaborate.Reloc
 import LeanLoad.Elaborate.Elf
+import LeanLoad.Parse.Segment
 
 namespace LeanLoad.Plan.Reloc
 
 open LeanLoad
-open LeanLoad.Parse (RawRela)
-open LeanLoad.Elaborate (Elf Segment coversRela)
+open LeanLoad.Parse (RawRela Segment coversRela)
+open LeanLoad.Elaborate (Elf)
 
 -- ============================================================================
 -- Entry — one rela's planning result. Base-free.

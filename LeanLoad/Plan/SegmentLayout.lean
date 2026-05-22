@@ -29,15 +29,15 @@ Spec: gabi 07 § Program Header (page-aligned mmap views).
 import LeanLoad.Plan.Align
 import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Resolve
-import LeanLoad.Elaborate.Segment
 import LeanLoad.Elaborate.Elf
-import LeanLoad.Parse.Header.RawPhdr
+import LeanLoad.Parse.Segment
+import LeanLoad.Parse.Header.Phdr
 
 namespace LeanLoad.Plan
 
 open LeanLoad
 open LeanLoad.Parse
-open LeanLoad.Elaborate (Elf Segment)
+open LeanLoad.Elaborate (Elf)
 open LeanLoad.Plan.Reloc (Entry)
 
 -- ============================================================================

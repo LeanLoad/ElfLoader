@@ -37,6 +37,7 @@ namespace LeanLoad.Example
 
 open LeanLoad
 open LeanLoad.Elaborate
+open LeanLoad.Parse (Symbol Segment)
 open LeanLoad.Plan
 
 -- ============================================================================
@@ -69,23 +70,29 @@ instance : Inhabited Elaborate.Elf where
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
 def synthElf
-    (elfType : Elaborate.ElfType        := .none)
+    (elfType : Parse.ElfType            := .none)
     (needed  : Array String             := #[])
-    (symtab  : Array Elaborate.Symbol   := #[])
-    (segments : Array Elaborate.Segment := #[])
+    (symtab  : Array Parse.Symbol       := #[])
+    (segments : Array Parse.Segment     := #[])
     (segmentsSorted : Sorted segments        := by decide)
     (segmentsNonOverlap : NonOverlap segments := by decide) : Elaborate.Elf :=
   { (default : Elaborate.Elf) with
     elfType, needed, symtab, segments,
-    segmentsSorted, segmentsNonOverlap }
+    segmentsSorted, segmentsNonOverlap,
+    -- `phnum = 0` keeps the phdr coverage witness vacuous even when
+    -- examples override the segment array.
+    phdrCovered := Or.inl rfl,
+    initArrInExecSeg := by decide,
+    finiArrInExecSeg := by decide }
 
 -- ============================================================================
 -- 2. Elaborate boundary: `RawElf → Except String Elf`.
 --
 -- Magic and byte-decode shape are checked at *parse* time; a
 -- malformed magic prefix never produces a `RawElf` (see the example
--- block in `Parse/Structs.lean`). The four cases below are the ones
--- `elaborate` itself enforces.
+-- block in `Parse/Header/Ehdr.lean`). The cases below are the ones
+-- `elaborate` itself enforces; unknown `e_machine` values are rejected
+-- earlier, during `RawEhdr` byte decode.
 -- ============================================================================
 
 /-- Header for a 64-bit, little-endian, x86-64, ET_DYN ELF — the
@@ -93,8 +100,8 @@ def synthElf
 private def goodHeader : Parse.RawEhdr := { (default : Parse.RawEhdr) with
   ei_class  := ELFCLASS64,
   ei_data   := ELFDATA2LSB,
-  e_type    := 3,    -- ET_DYN
-  e_machine := 62 }  -- EM_X86_64
+  e_type    := .dyn,
+  e_machine := .x86_64 }
 
 /-- Smallest `RawElf` `elaborate` can succeed on: no PT_LOAD, no
     relas, just a sane header. -/
@@ -105,18 +112,19 @@ private def emptyRawElf : Parse.RawElf := { (default : Parse.RawElf) with
 
 -- Rejection: `ei_class != ELFCLASS64` (we only support 64-bit).
 private def class32 : Parse.RawElf := { emptyRawElf with
-  header := { emptyRawElf.header with ei_class := 1 /- ELFCLASS32 -/ } }
+  header := { emptyRawElf.header with ei_class := ELFCLASS32 } }
 #guard (elaborate class32).toOption.isNone
 
 -- Rejection: big-endian (only ELFDATA2LSB supported).
 private def bigEndian : Parse.RawElf := { emptyRawElf with
-  header := { emptyRawElf.header with ei_data := 2 /- ELFDATA2MSB -/ } }
+  header := { emptyRawElf.header with ei_data := ELFDATA2MSB } }
 #guard (elaborate bigEndian).toOption.isNone
 
--- Rejection: unsupported `e_machine` (e.g. EM_RISCV = 243).
-private def riscv : Parse.RawElf := { emptyRawElf with
-  header := { emptyRawElf.header with e_machine := 243 } }
-#guard (elaborate riscv).toOption.isNone
+-- Rejection: fixed-address ET_EXEC inputs are outside LeanLoad's PIE
+-- loader model.
+private def execType : Parse.RawElf := { emptyRawElf with
+  header := { emptyRawElf.header with e_type := .exec } }
+#guard (elaborate execType).toOption.isNone
 
 -- Rejection: a rela whose offset doesn't sit inside any PT_LOAD.
 -- With no PT_LOAD entries, every rela is uncovered.
@@ -133,15 +141,15 @@ private def relaWithNoCover : Parse.RawElf := { emptyRawElf with
 -- `LeanLoad/Parse/RawElf.lean`'s integration `section Example`;
 -- here we check only that `elaborate` accepts the reassembled
 -- `RawElf` and surfaces the expected fields.
-#guard match Parse.RawElf.fixture.map elaborate with
-       | some (.ok elf) =>
+#guard match Parse.RawElf.fixture.bind elaborate with
+       | .ok elf =>
            elf.elfType    == .dyn
         && elf.machine    == .x86_64
         && elf.entry      == 0x100
         && elf.segments.size == 1                 -- single PT_LOAD
         && elf.needed.size == 1                   -- DT_NEEDED "libc.so.6"
         && elf.initArr.size == 1                  -- one ctor
-       | _ => false
+       | .error _ => false
 
 -- ============================================================================
 -- 3. Plan walkthrough.
@@ -160,28 +168,53 @@ private def resolveElfs : Array Elaborate.Elf := #[
            (symtab := #[default, undef "printf"]),
   synthElf (symtab := #[default, globalDef "printf" 0xc0ffee]) ]
 
-#guard (Resolve.resolveByName resolveElfs "printf").map (·.objectIdx.val) = some 1
-#guard (Resolve.resolveByName resolveElfs "missing")                      = none
-#guard (Resolve.buildTable    resolveElfs).missing.size                   = 0
+private def loadedObject (name : String) (elf : Elaborate.Elf) :
+    Discover.LoadedObject :=
+  { name, handle := 0, elf }
+
+private def resolveGraph : Discover.LoadGraph :=
+  { objects := #[
+      loadedObject "main" resolveElfs[0]!,
+      loadedObject "libc.so" resolveElfs[1]! ],
+    deps := #[#[1], #[]],
+    initOrder := #[⟨1, by decide⟩, ⟨0, by decide⟩],
+    sizePos := by decide,
+    namesNodup := by decide,
+    depsSize := by decide,
+    depsBounds := by decide,
+    closure := by decide,
+    initOrderSize := by decide,
+    initOrderNodup := by decide }
+
+private def emptyResolveTable (objCount : Nat) : Resolve.Table objCount :=
+  { entries := #[],
+    index := (∅ : Std.HashMap (Nat × Nat) (Resolve.Resolution objCount)) }
+
+#guard
+  (Resolve.resolveByName resolveGraph (Resolve.bfsOrder resolveGraph) "printf").map
+      (·.objectIdx.val) = some 1
+#guard
+  Resolve.resolveByName resolveGraph (Resolve.bfsOrder resolveGraph) "missing" = none
+#guard (Resolve.buildTable resolveGraph).missing.size = 0
 
 -- ---- 3b. Layout: base assignment + page-aligned stacking. ------------------
 
 /-- Synthetic PT_LOAD segment built via `Segment.ofPhdr`. Returns
     `Option` because `ofPhdr` returns `Except` for ill-formed phdrs;
     well-formed inputs always succeed. -/
-private def synthSegment? (vaddr memsz : UInt64) : Option Elaborate.Segment :=
+private def synthSegment? (vaddr memsz : UInt64) : Option Parse.Segment :=
   let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
     p_type := Parse.PT_LOAD,
     p_vaddr := vaddr, p_memsz := memsz,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Elaborate.Segment.ofPhdr phdr #[] #[]).toOption
+  (Parse.Segment.ofPhdr phdr #[] #[]).toOption
 
 -- ET_EXEC is rejected at elaborate time, so every elf reaching
 -- planning is ET_DYN. `assignBases` takes the reservation base
 -- as a parameter; production gets it from `Runtime.mmapAnon`.
 #guard
   let elfs : Array Elaborate.Elf := #[synthElf (elfType := .dyn)]
-  let rt := Resolve.buildTable elfs
+  let rt := emptyResolveTable elfs.size
   match Layout.ofElfs elfs rt with
   | .ok lp => assignBases exampleAnchor lp == #[exampleAnchor]
   | .error _ => false
@@ -212,7 +245,7 @@ private def stackingExample : Option (Array UInt64) := do
                   (segmentsSorted := sorted_singleton seg)
                   (segmentsNonOverlap := nonOverlap_singleton seg)
   let elfs := #[libElf, libElf, libElf]
-  let rt := Resolve.buildTable elfs
+  let rt := emptyResolveTable elfs.size
   match Layout.ofElfs elfs rt with
   | .ok lp => some (assignBases exampleAnchor lp)
   | .error _ => none
@@ -290,9 +323,9 @@ private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- pa
     is 1 if `hasPartialBss`, else 0; `MprotectOp` is always 1. -/
 private def slotCount (seg : Option Segment) : Option Nat :=
   seg.map fun s =>
-    let (mmap, zero, _mp) :=
+    let setup :=
       Materialize.setupSegment (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
-    (if mmap.isSome then 1 else 0) + (if zero.isSome then 1 else 0) + 1
+    (if setup.mmap.isSome then 1 else 0) + (if setup.zero.isSome then 1 else 0) + 1
 
 #guard slotCount bssOnlySeg     = some 1  -- mprotect only
 #guard slotCount fileOnlySeg    = some 2  -- mmap + mprotect
@@ -310,7 +343,7 @@ private def exampleReserve : Reserve :=
   { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
 
 example : Materialize.LoadSafe exampleReserve.addr exampleReserve.len
-    (n := 0) #[] :=
+    (#[] : Materialize.LoadOps 0) :=
   ⟨fun _ h => absurd h (by simp),
    fun _ _ hi _ _ _ _ _ _ _ _ _ _ _ => absurd hi (by simp)⟩
 

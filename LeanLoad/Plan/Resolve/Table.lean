@@ -29,7 +29,7 @@ import Std.Data.HashMap
 namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
-open LeanLoad.Elaborate
+open LeanLoad.Elaborate (Elf)
 open LeanLoad.Discover (LoadGraph)
 
 /-- Result of resolving one undef reference. Three explicit cases:

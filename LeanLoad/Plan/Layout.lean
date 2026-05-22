@@ -36,7 +36,7 @@ namespace LeanLoad.Plan
 
 open LeanLoad
 open LeanLoad.Parse
-open LeanLoad.Elaborate (Elf Segment)
+open LeanLoad.Elaborate (Elf)
 open LeanLoad.Plan.Reloc (Entry)
 
 
