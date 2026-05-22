@@ -23,7 +23,10 @@ inductive ElfClass where
   deriving Repr, BEq, DecidableEq, Inhabited
 
 instance : ByteMap ElfClass UInt8 where
-  ofRaw := ByteMap.fromCases [(1, .class32), (2, .class64)]
+  ofRaw
+  | 1 => .ok .class32
+  | 2 => .ok .class64
+  | n => .error s!"EI_CLASS: unknown value {n} (gabi 02 § ELF Identification)"
 
 /-- `EI_DATA`: byte order used by multi-byte fields. -/
 inductive ElfData where
@@ -32,7 +35,10 @@ inductive ElfData where
   deriving Repr, BEq, DecidableEq, Inhabited
 
 instance : ByteMap ElfData UInt8 where
-  ofRaw := ByteMap.fromCases [(1, .lsb), (2, .msb)]
+  ofRaw
+  | 1 => .ok .lsb
+  | 2 => .ok .msb
+  | n => .error s!"EI_DATA: unknown value {n} (gabi 02 § ELF Identification)"
 
 -- ELF version fields: `EI_VERSION` and `e_version` (gabi 02 § ELF
 -- Identification / § ELF Header). `EV_NONE = 0` is named but invalid;
@@ -44,7 +50,9 @@ inductive ElfIdentVersion where
   deriving Repr, BEq, DecidableEq, Inhabited
 
 instance : ByteMap ElfIdentVersion UInt8 where
-  ofRaw := ByteMap.fromCases [(1, .current)] -- EV_CURRENT (gabi 02 § ELF Identification)
+  ofRaw
+  | 1 => .ok .current -- EV_CURRENT (gabi 02 § ELF Identification)
+  | n => .error s!"EI_VERSION: expected EV_CURRENT=1, got {n} (gabi 02 § ELF Identification)"
 
 /-- `e_version`: ELF object file version. -/
 inductive ElfFileVersion where
@@ -52,7 +60,9 @@ inductive ElfFileVersion where
   deriving Repr, BEq, DecidableEq, Inhabited
 
 instance : ByteMap ElfFileVersion UInt32 where
-  ofRaw := ByteMap.fromCases [(1, .current)] -- EV_CURRENT (gabi 02 § ELF Header)
+  ofRaw
+  | 1 => .ok .current -- EV_CURRENT (gabi 02 § ELF Header)
+  | n => .error s!"e_version: expected EV_CURRENT=1, got {n} (gabi 02 § ELF Header)"
 
 -- Operating system / ABI selector: `EI_OSABI` (gabi Appendix B and
 -- gabi 02 § ELF Identification). Values `64..255` are arch/psABI-
@@ -116,7 +126,13 @@ inductive ElfType where
   deriving Repr, BEq, DecidableEq, Inhabited
 
 instance : ByteMap ElfType UInt16 where
-  ofRaw := ByteMap.fromCases [(0, .none), (1, .rel), (2, .exec), (3, .dyn), (4, .core)]
+  ofRaw
+  | 0 => .ok .none
+  | 1 => .ok .rel
+  | 2 => .ok .exec
+  | 3 => .ok .dyn
+  | 4 => .ok .core
+  | n => .error s!"e_type: unknown value {n} (gabi 02 § Object File Types)"
 
 -- Target ISA / psABI: `e_machine` (gabi 02 § Machine, full list in
 -- `third_party/gabi/docsrc/elf/a-emachine.rst`).
@@ -128,7 +144,11 @@ inductive ElfMachine where
   deriving Repr, BEq, DecidableEq, Inhabited
 
 instance : ByteMap ElfMachine UInt16 where
-  ofRaw := ByteMap.fromCases [(62, .x86_64), (183, .aarch64)]
+  ofRaw
+  | 62  => .ok .x86_64
+  | 183 => .ok .aarch64
+  | n   => .error s!"e_machine: unsupported value {n}; expected EM_X86_64=62 \
+      or EM_AARCH64=183 (gabi 02 § Machine)"
 
 -- Section-name string table index: `e_shstrndx` (gabi 02 § ELF
 -- Header). `SHN_UNDEF = 0` means absent; `SHN_XINDEX = 0xffff` means

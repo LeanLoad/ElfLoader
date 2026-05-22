@@ -105,15 +105,6 @@ instance : BytesDecode UInt64 := ⟨u64le⟩
 class ByteMap (α : Type) (Backing : outParam Type) [BytesDecode Backing] where
   ofRaw : Backing → Except String α
 
-/-- Build a rejecting `ByteMap.ofRaw` from a closed `(tag, value)`
-    table. Use this for gABI tables where unknown tags should fail
-    byte decode. -/
-def ByteMap.fromCases [BEq Backing] [ToString Backing]
-    (cases : List (Backing × α)) (raw : Backing) : Except String α :=
-  match cases.find? (·.1 == raw) with
-  | some (_, v) => .ok v
-  | none        => .error s!"ByteMap: unknown value {raw}"
-
 /-- `BytesDecode α` derived from `ByteMap`: decode the backing integer
     and classify it, surfacing classifier failures as parser failures. -/
 instance [BytesDecode Backing] [M : ByteMap α Backing] : BytesDecode α where
