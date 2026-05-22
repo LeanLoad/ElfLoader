@@ -103,6 +103,54 @@ instance : RawDecode DynTag UInt64 where
       else
         .ok (.reserved n)
 
+namespace DynTag
+
+/-- gABI spelling for diagnostics. Open OS/proc/reserved ranges keep their raw
+    numeric value because there is no single standard tag name. -/
+def label : DynTag → String
+  | .null             => "DT_NULL"
+  | .needed           => "DT_NEEDED"
+  | .pltrelsz         => "DT_PLTRELSZ"
+  | .pltgot           => "DT_PLTGOT"
+  | .hash             => "DT_HASH"
+  | .strtab           => "DT_STRTAB"
+  | .symtab           => "DT_SYMTAB"
+  | .rela             => "DT_RELA"
+  | .relasz           => "DT_RELASZ"
+  | .relaent          => "DT_RELAENT"
+  | .strsz            => "DT_STRSZ"
+  | .syment           => "DT_SYMENT"
+  | .init             => "DT_INIT"
+  | .fini             => "DT_FINI"
+  | .soname           => "DT_SONAME"
+  | .rpath            => "DT_RPATH"
+  | .symbolic         => "DT_SYMBOLIC"
+  | .rel              => "DT_REL"
+  | .relsz            => "DT_RELSZ"
+  | .relent           => "DT_RELENT"
+  | .pltrel           => "DT_PLTREL"
+  | .debug            => "DT_DEBUG"
+  | .textrel          => "DT_TEXTREL"
+  | .jmprel           => "DT_JMPREL"
+  | .bindNow          => "DT_BIND_NOW"
+  | .initArray        => "DT_INIT_ARRAY"
+  | .finiArray        => "DT_FINI_ARRAY"
+  | .initArraySz      => "DT_INIT_ARRAYSZ"
+  | .finiArraySz      => "DT_FINI_ARRAYSZ"
+  | .runpath          => "DT_RUNPATH"
+  | .flags            => "DT_FLAGS"
+  | .preinitArray     => "DT_PREINIT_ARRAY"
+  | .preinitArraySz   => "DT_PREINIT_ARRAYSZ"
+  | .symtabShndx      => "DT_SYMTAB_SHNDX"
+  | .osSpecific raw   => s!"DT_OS_SPECIFIC({raw.toNat})"
+  | .procSpecific raw => s!"DT_PROC_SPECIFIC({raw.toNat})"
+  | .reserved raw     => s!"DT_RESERVED({raw.toNat})"
+
+#guard DynTag.label .strtab = "DT_STRTAB"
+#guard DynTag.label .relaent = "DT_RELAENT"
+
+end DynTag
+
 /-- Values stored in `DT_PLTREL.d_un`. gABI 08 § Dynamic Array Tags says the
     value is either `DT_REL` or `DT_RELA`; LeanLoad currently accepts only
     `.rela` because `DT_JMPREL` is decoded with `Elf64_Rela`. -/

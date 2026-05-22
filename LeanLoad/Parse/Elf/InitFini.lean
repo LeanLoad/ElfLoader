@@ -15,13 +15,13 @@ open LeanLoad.Parse
 /-- Check one dynamic constructor/destructor array. Zero is accepted by
     `callTargetInExecSeg`; non-zero entries must point into an executable
     PT_LOAD segment. -/
-def checkInitFiniArray (label : String) (segments : Segments) (entries : Array Vaddr) :
+def checkInitFiniArray (label : String) (segments : Segments) (entries : Array Eaddr) :
     Except String (InitFiniArray segments) := do
   let mut checked : InitFiniArray segments := #[]
   for h : i in [:entries.size] do
     let entry := entries[i]
     let decExec : Decidable (callTargetInExecSeg segments entry) := by
-      unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsVaddr Segment.ContainsVaddr
+      unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsEaddr Segment.ContainsEaddr
       infer_instance
     match decExec with
     | .isTrue h_exec =>

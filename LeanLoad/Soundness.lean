@@ -29,7 +29,7 @@ The file is laid out bottom-up:
        · `bytes_preserved`  — every file-overlaid byte equals its
                               source-file byte.
        · `bss_zeroed`       — every byte in a PT_LOAD's
-                              `[vaddr+filesz, vaddr+memsz)` reads 0.
+                              `[eaddr+filesz, eaddr+memsz)` reads 0.
        · `relocs_applied`   — every byte in a `StoreOp`'s patch
                               window reads its LE byte.
 
@@ -668,7 +668,7 @@ theorem bytes_preserved
     · intro k' h_k' s h_s; exact h_no_store i' h_i' k' h_k' s h_s
 
 /-- **bss_zeroed** — every byte in a PT_LOAD's
-    `[vaddr + filesz, vaddr + memsz)` range reads `0`, outside
+    `[eaddr + filesz, eaddr + memsz)` range reads `0`, outside
     any later `StoreOp`'s patch window.
 
     Decomposes into three byte ranges that read 0 for different
@@ -684,7 +684,7 @@ theorem bss_zeroed
     {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
     (a : UInt64)
     -- Preconditions phrased structurally; full BoundPlan-aware form
-    -- will refine these to "a in [vaddr+filesz, vaddr+memsz) of some
+    -- will refine these to "a in [eaddr+filesz, eaddr+memsz) of some
     -- PT_LOAD segment". The disjointness story (why no mmap/zero/
     -- store touches the BSS byte) is what the future BoundPlan-aware
     -- statement will discharge; for now the three hypotheses are

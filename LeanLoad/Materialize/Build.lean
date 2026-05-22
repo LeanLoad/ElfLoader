@@ -49,7 +49,7 @@ namespace LeanLoad.Materialize
 
 open LeanLoad
 open LeanLoad.Plan (Layout ElfLayout SegmentLayout)
-open LeanLoad.Parse (Elf)
+open LeanLoad.Parse (Elf Eaddr)
 open LeanLoad.ABI (Formula)
 
 -- ============================================================================
@@ -189,7 +189,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
         rw [h_addr]
         exact bp.segment_storeRange_in_rsv i j e.r_offset e.covered
           s'.byteLen h_byteLen
-      · -- mprotectInRange — mprotect is at (base + pageVaddr, pageLength).
+      · -- mprotectInRange — mprotect is at (base + pageEaddr, pageLength).
         have ⟨h_addr, h_len⟩ := setupSegment_mprotect_eq sp handle base
         rw [show so.mprotect = setup.mprotect from rfl, h_addr, h_len]
         exact bp.segment_mprotectRange_in_rsv i j
@@ -453,27 +453,27 @@ theorem collectAddrs_mem_iff (lp : Layout objCount)
 -- ============================================================================
 
 /-- An address lives in some executable PT_LOAD of `bp` — i.e. in
-    the runtime range `[base + vaddr, base + vaddr + memsz)` of some
+    the runtime range `[base + eaddr, base + eaddr + memsz)` of some
     elf's exec segment. Phrased over the checked `Elf.segments`
     (not `SegmentLayout`s) so the witness carried by each init/fini
     entry lands directly before bridging through `ElfLayout.segmentsSegmentEq`. -/
 def InExecSeg (bp : BoundPlan) (addr : UInt64) : Prop :=
   ∃ (i : Fin bp.objCount) (j : Nat) (h : j < (bp.elfAt i).elf.segments.items.size),
     ((bp.elfAt i).elf.segments.items[j]'h).perm.exec = true ∧
-    (bp.baseAt i).toNat + ((bp.elfAt i).elf.segments.items[j]'h).vaddr.toNat ≤
+    (bp.baseAt i).toNat + ((bp.elfAt i).elf.segments.items[j]'h).eaddr.toNat ≤
       addr.toNat ∧
     addr.toNat < (bp.baseAt i).toNat +
-      ((bp.elfAt i).elf.segments.items[j]'h).vaddr.toNat +
+      ((bp.elfAt i).elf.segments.items[j]'h).eaddr.toNat +
       ((bp.elfAt i).elf.segments.items[j]'h).memsz.toNat
 
-/-- An entry inside `[vaddr, vaddr + memsz)` of some `bp.elfAt i`'s
+/-- An entry inside `[eaddr, eaddr + memsz)` of some `bp.elfAt i`'s
     `j`-th `SegmentLayout` is bounded by the page range, hence by
     `advance`, hence by the reservation. So `(base + entry).toNat =
     base.toNat + entry.toNat` doesn't wrap. -/
 private theorem base_add_entry_no_wrap (bp : BoundPlan)
     (i : Fin bp.objCount) (j : Fin (bp.elfAt i).segments.size)
-    (entry : Parse.Vaddr)
-    (h_hi : entry.toNat < (bp.segAt i j).segment.vaddr.toNat +
+    (entry : Eaddr)
+    (h_hi : entry.toNat < (bp.segAt i j).segment.eaddr.toNat +
                           (bp.segAt i j).segment.memsz.toNat) :
     (bp.baseAt i).toNat + entry.toNat < 2 ^ 64 := by
   have h_no_wrap := bp.segment_pageRange_no_wrap i j
@@ -507,18 +507,18 @@ private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
       ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).perm.exec = true := by
     simpa using h_exec
   have h_lo_bp :
-      ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).vaddr.toNat ≤
+      ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).eaddr.toNat ≤
         (Subtype.val entry).toNat := by
     simpa using h_lo
   have h_hi_bp :
       (Subtype.val entry).toNat <
-        ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).vaddr.toNat +
+        ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).eaddr.toNat +
           ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).memsz.toNat := by
     simpa using h_hi
-  have h_hi_seg : (Subtype.val entry).toNat < (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.vaddr.toNat +
+  have h_hi_seg : (Subtype.val entry).toNat < (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.eaddr.toNat +
                   (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.memsz.toNat := by
     show (Subtype.val entry).toNat <
-      ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.vaddr.toNat +
+      ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.eaddr.toNat +
       ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.memsz.toNat
     rw [h_segEq]; exact h_hi_bp
   have h_no_wrap : (bp.baseAt objectIdx).toNat + (Subtype.val entry).toNat < 2 ^ 64 :=
@@ -531,9 +531,9 @@ private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
     have h_no_wrap_val :
         (bp.bases[objectIdx.val]'objectIdx.isLt).toNat +
           (Subtype.val entry).val.toNat < 2 ^ 64 := by
-      simpa [Parse.Vaddr.toNat] using h_no_wrap'
+      simpa [Eaddr.toNat] using h_no_wrap'
     rw [h_addr_eq, UInt64.toNat_add, Nat.mod_eq_of_lt h_no_wrap_val]
-    simp [BoundPlan.baseAt, Parse.Vaddr.toNat]
+    simp [BoundPlan.baseAt, Eaddr.toNat]
   exact ⟨objectIdx, segIdx, h_segLt, h_exec_bp,
          by rw [h_addr_toNat]; omega,
          by rw [h_addr_toNat]; omega⟩

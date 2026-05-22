@@ -30,18 +30,18 @@ private def realize (bp : Materialize.BoundPlan)
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
-  let phdrNbytes : Nat := Parse.PhdrSize * mainElf.header.e_phnum.toNat
+  let phdrNbytes : Nat := Parse.ProgramHeaderSize * mainElf.header.e_phnum.toNat
   let phdrMap ← IO.ofExcept <|
     Parse.PhdrMap.ofSegments mainElf.segments mainElf.header.e_phoff phdrNbytes
   let entry  := mainBase + mainElf.header.e_entry.val
-  let phdrVa := mainBase + phdrMap.vaddr.val
+  let phdrVa := mainBase + phdrMap.eaddr.val
   Materialize.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
   ctorAddrs.forM Runtime.callCtor
   let stack ← Reserve.run stackBytes
   let phnum  := mainElf.header.e_phnum.toUInt64
-  let phent  := Parse.PhdrSize.toUInt64
+  let phent  := Parse.ProgramHeaderSize.toUInt64
   Runtime.execAndJump entry phdrVa phent phnum 0 stack.val.addr stack.val.len path
 
 /-- Right-pad a string to `objCount` chars with `c`. -/
@@ -110,7 +110,7 @@ def debug (path : String) : IO Unit := do
     for h2 : segI in [:elf.segments.items.size] do
       let seg := elf.segments.items[segI]
       let prot := reprStr seg.perm
-      IO.eprintln s!"    [{segI}] vaddr=0x{Nat.hex12 seg.vaddr.toNat} \
+      IO.eprintln s!"    [{segI}] eaddr=0x{Nat.hex12 seg.eaddr.toNat} \
         offset=0x{Nat.hex seg.offset.toNat} \
         filesz=0x{Nat.hex seg.filesz.toNat} \
         memsz=0x{Nat.hex seg.memsz.toNat} \
@@ -159,8 +159,8 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.items.size} segments)"
     let ep := lp.elfs[i]'h.upper
     for sp in ep.segments do
-      let absVa := base + sp.pageVaddr
-      IO.eprintln s!"  vaddr=0x{Nat.hex absVa.toNat} len=0x{Nat.hex sp.pageLength.toNat} prot={sp.prot}"
+      let absVa := base + sp.pageEaddr
+      IO.eprintln s!"  eaddr=0x{Nat.hex absVa.toNat} len=0x{Nat.hex sp.pageLength.toNat} prot={sp.prot}"
   IO.eprintln s!"init order: {plan.initOrder.map (·.val)}"
   IO.eprintln s!"fini order: {(plan.initOrder.map (·.val)).reverse}"
 

@@ -29,7 +29,7 @@ import LeanLoad.Plan.Layout
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Safety
 import LeanLoad.ABI.Reloc
-import LeanLoad.Parse.Segment.Checked
+import LeanLoad.Parse.ImageView.Segment.Checked
 
 namespace LeanLoad.Materialize
 

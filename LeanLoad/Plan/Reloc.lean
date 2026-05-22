@@ -23,7 +23,7 @@ Key types:
     from "weak-unresolved" diagnostically; `Materialize.bakeReloc`
     collapses both unresolved cases via `Target.symRef?`.
   • `Entry objCount seg` — parameterised by the owning `Segment` so
-    the `coversRela seg.vaddr seg.memsz r_offset` witness from
+    the `coversRela seg.eaddr seg.memsz r_offset` witness from
     `Segment.rela` / `Segment.jmprel` propagates forward into the
     planned tree. `SegmentSafe.storesInRange` reads this witness
     structurally (via `BoundPlan.segment_storeRange_in_rsv`).
@@ -37,19 +37,19 @@ so there's no parallel relocation tree to construct or zip later.
 import LeanLoad.Plan.Resolve
 import LeanLoad.ABI.Reloc
 import LeanLoad.Parse.Elf.Entry
-import LeanLoad.Parse.Segment.Checked
+import LeanLoad.Parse.ImageView.Segment.Checked
 
 namespace LeanLoad.Plan.Reloc
 
 open LeanLoad
-open LeanLoad.Parse (Elf RawRela Segment Vaddr coversRela)
+open LeanLoad.Parse (Elf RawRela Segment Eaddr coversRela)
 
 -- ============================================================================
 -- Entry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `coversRela` witness
 -- (inherited from `Segment.rela` / `Segment.jmprel`) can be
 -- preserved through planning. `SegmentSafe.storesInRange` needs
--- `r_offset + 8 ≤ seg.vaddr + seg.memsz` to discharge structurally.
+-- `r_offset + 8 ≤ seg.eaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
 
 /-- Resolution outcome for one rela's symbol reference. Three
@@ -94,16 +94,16 @@ structure Entry (objCount : Nat) (seg : Segment) where
   type     : UInt32
   /-- Segment-relative byte offset for the patch. The absolute address
       `base + r_offset` is computed at materialize time. -/
-  r_offset : Vaddr
+  r_offset : Eaddr
   /-- Addend `A` (gabi `r_addend`; bit pattern of a signed sxword). -/
   addend   : UInt64
   /-- Resolution outcome — see `Target`. -/
   target   : Target objCount
-  /-- 8-byte write window fits in `[seg.vaddr, seg.vaddr + seg.memsz)`.
+  /-- 8-byte write window fits in `[seg.eaddr, seg.eaddr + seg.memsz)`.
       Inherited from the checked `Rela.covered` field on `Segment.rela` /
       `Segment.jmprel`; preserved through `planOne` so the
       materializer can prove `StoresContained` structurally. -/
-  covered  : coversRela seg.vaddr seg.memsz r_offset
+  covered  : coversRela seg.eaddr seg.memsz r_offset
 
 -- ============================================================================
 -- Symbol target resolution. Base-free.
@@ -145,7 +145,7 @@ private def resolveTarget (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     from the parent segment. -/
 def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) (seg : Segment) (r : RawRela)
-    (h_cov : coversRela seg.vaddr seg.memsz r.r_offset) :
+    (h_cov : coversRela seg.eaddr seg.memsz r.r_offset) :
     Entry elfs.size seg :=
   let target : Target elfs.size :=
     if r.sym == 0 then .noSymbol

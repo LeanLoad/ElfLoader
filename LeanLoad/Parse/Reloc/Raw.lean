@@ -19,7 +19,7 @@ namespace LeanLoad.Parse
 
 /-- 64-bit relocation entry with explicit addend. -/
 structure RawRela where
-  r_offset : Vaddr
+  r_offset : Eaddr
   r_info   : UInt64
   r_addend : UInt64
   deriving Repr, Inhabited, BytesDecode

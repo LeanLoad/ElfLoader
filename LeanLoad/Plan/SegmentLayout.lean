@@ -6,13 +6,13 @@ page math precomputed once, stored as fields, plus the five
 per-segment invariants the materialize-stage safety proofs read by
 direct projection (`sp.pageEnd_lt`, `sp.fileOverlay_le_pageLength`, …):
 
-  • `pageEnd_lt`         — `pageVaddr + pageLength < 2^64` (no wrap).
+  • `pageEnd_lt`         — `pageEaddr + pageLength < 2^64` (no wrap).
   • `fileOverlay_le_pageLength` — `fileOverlayLen ≤ pageLength`.
-  • `vaddr_memsz_le_pageEnd`    — `vaddr + memsz ≤ pageVaddr + pageLength`
+  • `vaddr_memsz_le_pageEnd`    — `eaddr + memsz ≤ pageEaddr + pageLength`
                                   (store-window upper bound for relocs).
   • `zero_end_le_pageLength`    — `pageInset + filesz + partialBssLen ≤
                                    pageLength` (BSS-zero slot upper bound).
-  • `pageInset_eq_vaddr` — `pageVaddr + pageInset = vaddr` (lets
+  • `pageInset_eq_vaddr` — `pageEaddr + pageInset = eaddr` (lets
                            per-slot proofs rewrite to canonical form).
 
 Also carries `relocs : Array (Entry objCount segment)` — the per-segment
@@ -30,8 +30,8 @@ import LeanLoad.Plan.Align
 import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Resolve
 import LeanLoad.Parse.Elf.Entry
-import LeanLoad.Parse.Segment.Checked
-import LeanLoad.Parse.Phdr.Basic
+import LeanLoad.Parse.ImageView.Segment.Checked
+import LeanLoad.Parse.ImageView.ProgramHeader.Basic
 
 namespace LeanLoad.Plan
 
@@ -50,15 +50,15 @@ namespace SegmentLayout
 /-- `effectiveAlign` is the same alignment expression checked by
     `Segment.pageLayoutNoWrap`. -/
 private theorem pageLayoutNoWrap (s : Segment) :
-    s.vaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat < 2 ^ 64 := by
-  simpa [Segment.vaddr, Segment.memsz, Segment.align, effectiveAlign, segmentLayoutAlign]
+    s.eaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat < 2 ^ 64 := by
+  simpa [Segment.eaddr, Segment.memsz, Segment.align, effectiveAlign, segmentLayoutAlign]
     using s.pageLayoutNoWrap
 
-/-- `vaddr + memsz` doesn't wrap, given `Segment.memRange`. -/
+/-- `eaddr + memsz` doesn't wrap, given `Segment.eaddrRange`. -/
 private theorem vaddr_add_memsz_toNat (s : Segment) :
-    (s.vaddr.val + s.memsz.val).toNat = s.vaddr.toNat + s.memsz.toNat := by
-  have h_no_wrap : s.vaddr.toNat + s.memsz.toNat < 2 ^ 64 := by
-    simpa [Segment.vaddr, Segment.memsz] using s.memRange.noWrap
+    (s.eaddr.val + s.memsz.val).toNat = s.eaddr.toNat + s.memsz.toNat := by
+  have h_no_wrap : s.eaddr.toNat + s.memsz.toNat < 2 ^ 64 := by
+    simpa [Segment.eaddr, Segment.memsz] using s.eaddrRange.noWrap
   rw [UInt64.toNat_add]
   exact Nat.mod_eq_of_lt h_no_wrap
 
@@ -71,35 +71,35 @@ theorem effectiveAlign_le_succ (align : UInt64) :
     rw [h_eq]; decide
   · omega
 
-/-- `alignDown s.vaddr ea ≤ alignUp (s.vaddr + s.memsz) ea` —
+/-- `alignDown s.eaddr ea ≤ alignUp (s.eaddr + s.memsz) ea` —
     page-aligned start ≤ page-aligned end. Prerequisite for
     `pageLength`'s subtraction to be well-defined. -/
-private theorem pageVaddr_le_pageEnd_raw (s : Segment) :
-    alignDown s.vaddr.val (effectiveAlign s.align) ≤
-    alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) := by
+private theorem pageEaddr_le_pageEnd_raw (s : Segment) :
+    alignDown s.eaddr.val (effectiveAlign s.align) ≤
+    alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) := by
   have h_ea_ne : effectiveAlign s.align ≠ 0 :=
     effectiveAlign_ne_zero s.align
-  have h1 := alignDown_le s.vaddr.val (effectiveAlign s.align)
-  have h2 : s.vaddr.val ≤ s.vaddr.val + s.memsz.val := by
+  have h1 := alignDown_le s.eaddr.val (effectiveAlign s.align)
+  have h2 : s.eaddr.val ≤ s.eaddr.val + s.memsz.val := by
     rw [UInt64.le_iff_toNat_le, vaddr_add_memsz_toNat]
-    simp [Vaddr.toNat, ByteSize.toNat]
-  have h_au_no_wrap : (s.vaddr.val + s.memsz.val).toNat +
+    simp [Eaddr.toNat, ByteSize.toNat]
+  have h_au_no_wrap : (s.eaddr.val + s.memsz.val).toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := by
     rw [vaddr_add_memsz_toNat]
     exact pageLayoutNoWrap s
-  have h3 : s.vaddr.val + s.memsz.val ≤
-      alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) :=
+  have h3 : s.eaddr.val + s.memsz.val ≤
+      alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) :=
     alignUp_ge _ _ h_ea_ne h_au_no_wrap
   rw [UInt64.le_iff_toNat_le] at h1 h2 h3 ⊢
   omega
 
-/-- `(alignUp (s.vaddr + s.memsz) ea).toNat ≤ s.vaddr + s.memsz + ea`.
+/-- `(alignUp (s.eaddr + s.memsz) ea).toNat ≤ s.eaddr + s.memsz + ea`.
     Exposed for `Plan.Layout`'s `ElfLayout.ofElf` proof. -/
 theorem alignUp_vm_le (s : Segment) :
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat ≤
-    s.vaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat := by
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat ≤
+    s.eaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat := by
   have h_ea_ne : effectiveAlign s.align ≠ 0 := effectiveAlign_ne_zero s.align
-  have h_au_no_wrap : (s.vaddr.val + s.memsz.val).toNat +
+  have h_au_no_wrap : (s.eaddr.val + s.memsz.val).toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := by
     rw [vaddr_add_memsz_toNat]
     exact pageLayoutNoWrap s
@@ -107,154 +107,154 @@ theorem alignUp_vm_le (s : Segment) :
   rw [vaddr_add_memsz_toNat] at h_au_le
   exact h_au_le
 
-/-- `(alignUp (s.vaddr + s.memsz) ea).toNat < 2^64`. -/
+/-- `(alignUp (s.eaddr + s.memsz) ea).toNat < 2^64`. -/
 private theorem alignUp_vm_lt (s : Segment) :
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat < 2 ^ 64 := by
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat < 2 ^ 64 := by
   have h := alignUp_vm_le s
-  have h_no_wrap : s.vaddr.toNat + s.memsz.toNat +
+  have h_no_wrap : s.eaddr.toNat + s.memsz.toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := pageLayoutNoWrap s
   omega
 
-/-- `s.vaddr + s.memsz ≤ alignUp (s.vaddr + s.memsz) ea` (toNat). -/
+/-- `s.eaddr + s.memsz ≤ alignUp (s.eaddr + s.memsz) ea` (toNat). -/
 private theorem vm_le_alignUp_vm (s : Segment) :
-    s.vaddr.toNat + s.memsz.toNat ≤
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat := by
+    s.eaddr.toNat + s.memsz.toNat ≤
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat := by
   rw [← vaddr_add_memsz_toNat]
   apply UInt64.le_iff_toNat_le.mp
   have h_ea_ne : effectiveAlign s.align ≠ 0 := effectiveAlign_ne_zero s.align
-  have h_no_wrap : (s.vaddr.val + s.memsz.val).toNat +
+  have h_no_wrap : (s.eaddr.val + s.memsz.val).toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := by
     rw [vaddr_add_memsz_toNat]
     exact pageLayoutNoWrap s
   exact alignUp_ge _ _ h_ea_ne h_no_wrap
 
-/-- The `pageEnd - pageVaddr` UInt64 subtraction equals the Nat-level
-    difference `pageEnd.toNat - pageVaddr.toNat`.
+/-- The `pageEnd - pageEaddr` UInt64 subtraction equals the Nat-level
+    difference `pageEnd.toNat - pageEaddr.toNat`.
     Exposed for `Plan.Layout`'s `ElfLayout.ofElf` proof. -/
 theorem pageLength_toNat (s : Segment) :
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat -
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat :=
-  UInt64.toNat_sub_of_le _ _ (pageVaddr_le_pageEnd_raw s)
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat -
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat :=
+  UInt64.toNat_sub_of_le _ _ (pageEaddr_le_pageEnd_raw s)
 
-/-- `pageVaddr + pageLength = pageEnd` (in `Nat`). -/
-private theorem pageVaddr_add_pageLength_raw (s : Segment) :
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat := by
+/-- `pageEaddr + pageLength = pageEnd` (in `Nat`). -/
+private theorem pageEaddr_add_pageLength_raw (s : Segment) :
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat := by
   rw [pageLength_toNat]
-  have := UInt64.le_iff_toNat_le.mp (pageVaddr_le_pageEnd_raw s)
+  have := UInt64.le_iff_toNat_le.mp (pageEaddr_le_pageEnd_raw s)
   omega
 
-/-- The `pageVaddr + pageLength < 2^64` bound — used as
+/-- The `pageEaddr + pageLength < 2^64` bound — used as
     `SegmentLayout.pageEnd_lt`. -/
 private theorem raw_pageEnd_lt (s : Segment) :
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat < 2 ^ 64 := by
-  rw [pageVaddr_add_pageLength_raw]; exact alignUp_vm_lt s
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat < 2 ^ 64 := by
+  rw [pageEaddr_add_pageLength_raw]; exact alignUp_vm_lt s
 
-/-- The `vaddr + memsz ≤ pageVaddr + pageLength` bound — used as
+/-- The `eaddr + memsz ≤ pageEaddr + pageLength` bound — used as
     `SegmentLayout.vaddr_memsz_le_pageEnd`. -/
 private theorem raw_vaddr_memsz_le_pageEnd (s : Segment) :
-    s.vaddr.toNat + s.memsz.toNat ≤
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat := by
-  rw [pageVaddr_add_pageLength_raw]; exact vm_le_alignUp_vm s
+    s.eaddr.toNat + s.memsz.toNat ≤
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat := by
+  rw [pageEaddr_add_pageLength_raw]; exact vm_le_alignUp_vm s
 
-/-- The `pageVaddr + pageInset = vaddr` equality — used as
+/-- The `pageEaddr + pageInset = eaddr` equality — used as
     `SegmentLayout.pageInset_eq_vaddr`. -/
 private theorem raw_pageInset_eq_vaddr (s : Segment) :
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-    (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-    s.vaddr.toNat := by
-  have h_ad_le : alignDown s.vaddr.val (effectiveAlign s.align) ≤ s.vaddr.val :=
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+    (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+    s.eaddr.toNat := by
+  have h_ad_le : alignDown s.eaddr.val (effectiveAlign s.align) ≤ s.eaddr.val :=
     alignDown_le _ _
-  have h_pi_eq : (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-                 s.vaddr.toNat - (alignDown s.vaddr.val (effectiveAlign s.align)).toNat :=
+  have h_pi_eq : (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+                 s.eaddr.toNat - (alignDown s.eaddr.val (effectiveAlign s.align)).toNat :=
     UInt64.toNat_sub_of_le _ _ h_ad_le
   rw [h_pi_eq]
   have h_ad_nat := UInt64.le_iff_toNat_le.mp h_ad_le
-  simp [Vaddr.toNat] at h_ad_nat ⊢
+  simp [Eaddr.toNat] at h_ad_nat ⊢
   omega
 
-/-- `pageVaddr + fileOverlayLen ≤ pageVaddr + pageLength` (in `Nat`). -/
-private theorem pageVaddr_add_fileOverlayLen_le_pageEnd (s : Segment) :
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-    (alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+/-- `pageEaddr + fileOverlayLen ≤ pageEaddr + pageLength` (in `Nat`). -/
+private theorem pageEaddr_add_fileOverlayLen_le_pageEnd (s : Segment) :
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+    (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
               s.filesz.val) (effectiveAlign s.align)).toNat ≤
-    (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat := by
-  rw [pageVaddr_add_pageLength_raw]
+    (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat := by
+  rw [pageEaddr_add_pageLength_raw]
   have h_ea_ne : effectiveAlign s.align ≠ 0 := effectiveAlign_ne_zero s.align
   have h_filesz_le_memsz : s.filesz.toNat ≤ s.memsz.toNat :=
     s.fileszLeMemsz
   have h_layout := pageLayoutNoWrap s
   have h_ea_le := effectiveAlign_le_succ s.align
-  have h_ad_le_v : (alignDown s.vaddr.val (effectiveAlign s.align)).toNat ≤ s.vaddr.toNat :=
+  have h_ad_le_v : (alignDown s.eaddr.val (effectiveAlign s.align)).toNat ≤ s.eaddr.toNat :=
     UInt64.le_iff_toNat_le.mp (alignDown_le _ _)
-  have h_pi_eq : (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-                 s.vaddr.toNat - (alignDown s.vaddr.val (effectiveAlign s.align)).toNat := by
+  have h_pi_eq : (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+                 s.eaddr.toNat - (alignDown s.eaddr.val (effectiveAlign s.align)).toNat := by
     rw [UInt64.toNat_sub_of_le _ _ (alignDown_le _ _)]
-    simp [Vaddr.toNat]
-  have h_py_no_wrap : (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+    simp [Eaddr.toNat]
+  have h_py_no_wrap : (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
       s.filesz.toNat < 2 ^ 64 := by rw [h_pi_eq]; omega
   have h_py_eq :
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat =
-                 (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat =
+                 (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
                  s.filesz.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_py_no_wrap
   have h_y_no_wrap :
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := by
     rw [h_py_eq, h_pi_eq]; omega
-  have h_sum_no_wrap : (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat +
+  have h_sum_no_wrap : (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := by
     rw [h_py_eq, h_pi_eq]; omega
   rw [alignDown_add_alignUp_toNat _ _ _ h_ea_ne h_y_no_wrap h_sum_no_wrap]
-  have h_vf_no_wrap : s.vaddr.toNat + s.filesz.toNat < 2 ^ 64 := by omega
+  have h_vf_no_wrap : s.eaddr.toNat + s.filesz.toNat < 2 ^ 64 := by omega
   have h_combined :
-      alignDown s.vaddr.val (effectiveAlign s.align) +
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val) =
-      s.vaddr.val + s.filesz.val := by
+      alignDown s.eaddr.val (effectiveAlign s.align) +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val) =
+      s.eaddr.val + s.filesz.val := by
     have h_ad_le_raw :
-        (alignDown s.vaddr.val (effectiveAlign s.align)).toNat ≤ s.vaddr.val.toNat :=
+        (alignDown s.eaddr.val (effectiveAlign s.align)).toNat ≤ s.eaddr.val.toNat :=
       UInt64.le_iff_toNat_le.mp (alignDown_le _ _)
     have h_pi_eq_raw :
-        (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-          s.vaddr.val.toNat - (alignDown s.vaddr.val (effectiveAlign s.align)).toNat :=
+        (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+          s.eaddr.val.toNat - (alignDown s.eaddr.val (effectiveAlign s.align)).toNat :=
       UInt64.toNat_sub_of_le _ _ (alignDown_le _ _)
     have h_py_no_wrap_raw :
-        (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+        (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
           s.filesz.val.toNat < 2 ^ 64 := by
       simpa [Segment.filesz, ByteSize.toNat] using h_py_no_wrap
     have h_py_eq_raw :
-        ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat =
-          (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+        ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat =
+          (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
             s.filesz.val.toNat := by
       rw [UInt64.toNat_add]
       exact Nat.mod_eq_of_lt h_py_no_wrap_raw
-    have h_vf_no_wrap_raw : s.vaddr.val.toNat + s.filesz.val.toNat < 2 ^ 64 := by
-      simpa [Segment.vaddr, Segment.filesz, Vaddr.toNat, ByteSize.toNat] using h_vf_no_wrap
+    have h_vf_no_wrap_raw : s.eaddr.val.toNat + s.filesz.val.toNat < 2 ^ 64 := by
+      simpa [Segment.eaddr, Segment.filesz, Eaddr.toNat, ByteSize.toNat] using h_vf_no_wrap
     apply UInt64.toNat_inj.mp
     rw [UInt64.toNat_add, h_py_eq_raw, h_pi_eq_raw, UInt64.toNat_add]
     have h_inner_no_wrap_raw :
-        (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
-          (s.vaddr.val.toNat -
-              (alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+        (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
+          (s.eaddr.val.toNat -
+              (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
             s.filesz.val.toNat) < 2 ^ 64 := by
       omega
     rw [Nat.mod_eq_of_lt h_inner_no_wrap_raw, Nat.mod_eq_of_lt h_vf_no_wrap_raw]
     omega
   rw [h_combined]
-  have h_vf_eq : (s.vaddr.val + s.filesz.val).toNat = s.vaddr.toNat + s.filesz.toNat := by
+  have h_vf_eq : (s.eaddr.val + s.filesz.val).toNat = s.eaddr.toNat + s.filesz.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_vf_no_wrap
-  have h_vm_eq : (s.vaddr.val + s.memsz.val).toNat = s.vaddr.toNat + s.memsz.toNat :=
+  have h_vm_eq : (s.eaddr.val + s.memsz.val).toNat = s.eaddr.toNat + s.memsz.toNat :=
     vaddr_add_memsz_toNat s
   apply alignUp_mono_toNat _ _ _ h_ea_ne
   · rw [h_vf_eq]; omega
@@ -264,76 +264,76 @@ private theorem pageVaddr_add_fileOverlayLen_le_pageEnd (s : Segment) :
 /-- The `fileOverlayLen ≤ pageLength` bound — used as
     `SegmentLayout.fileOverlay_le_pageLength`. -/
 private theorem raw_fileOverlay_le_pageLength (s : Segment) :
-    (alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+    (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
               s.filesz.val) (effectiveAlign s.align)).toNat ≤
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat := by
-  have h := pageVaddr_add_fileOverlayLen_le_pageEnd s
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat := by
+  have h := pageEaddr_add_fileOverlayLen_le_pageEnd s
   omega
 
 /-- The `pageInset + filesz + partialBssLen ≤ pageLength` bound —
     used as `SegmentLayout.zero_end_le_pageLength`. -/
 private theorem raw_zero_end_le_pageLength (s : Segment) :
-    (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+    (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     s.filesz.toNat +
-    (alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+    (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
               s.filesz.val) (effectiveAlign s.align) -
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val)).toNat ≤
-    (alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align)).toNat := by
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val)).toNat ≤
+    (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align)).toNat := by
   -- partialBssLen = fileOverlayLen - (pageInset + filesz) in UInt64.
   -- We show pageInset + filesz ≤ fileOverlayLen (from `alignUp_ge`), so
   -- pageInset + filesz + partialBssLen = fileOverlayLen ≤ pageLength.
   have h_ea_ne : effectiveAlign s.align ≠ 0 := effectiveAlign_ne_zero s.align
-  have h_pi_eq : (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat =
-                 s.vaddr.toNat -
-                 (alignDown s.vaddr.val (effectiveAlign s.align)).toNat :=
+  have h_pi_eq : (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
+                 s.eaddr.toNat -
+                 (alignDown s.eaddr.val (effectiveAlign s.align)).toNat :=
     by
       rw [UInt64.toNat_sub_of_le _ _ (alignDown_le _ _)]
-      simp [Vaddr.toNat]
-  have h_ad_le : (alignDown s.vaddr.val (effectiveAlign s.align)).toNat ≤
-                 s.vaddr.toNat :=
+      simp [Eaddr.toNat]
+  have h_ad_le : (alignDown s.eaddr.val (effectiveAlign s.align)).toNat ≤
+                 s.eaddr.toNat :=
     UInt64.le_iff_toNat_le.mp (alignDown_le _ _)
   have h_fm : s.filesz.toNat ≤ s.memsz.toNat := by
     simpa [Segment.filesz, Segment.memsz] using s.fileszLeMemsz
   have h_layout := pageLayoutNoWrap s
   have h_ea_le_succ := effectiveAlign_le_succ s.align
   have h_pi_filesz_no_wrap :
-      (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+      (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
       s.filesz.toNat < 2 ^ 64 := by
     rw [h_pi_eq]
     have h_layout' := h_layout
     have h_fm' := h_fm
-    simp [Segment.vaddr, Segment.memsz, Segment.filesz, Vaddr.toNat, ByteSize.toNat]
+    simp [Segment.eaddr, Segment.memsz, Segment.filesz, Eaddr.toNat, ByteSize.toNat]
       at h_layout' h_fm' ⊢
     omega
   have h_pi_filesz_eq :
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat =
-      (s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)).toNat +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat =
+      (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
       s.filesz.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_pi_filesz_no_wrap
   have h_y_no_wrap :
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat +
       (effectiveAlign s.align).toNat < 2 ^ 64 := by
     rw [h_pi_filesz_eq, h_pi_eq]
     have h_layout' := h_layout
     have h_fm' := h_fm
-    simp [Segment.vaddr, Segment.memsz, Segment.filesz, Vaddr.toNat, ByteSize.toNat]
+    simp [Segment.eaddr, Segment.memsz, Segment.filesz, Eaddr.toNat, ByteSize.toNat]
       at h_layout' h_fm' ⊢
     omega
   have h_pi_filesz_le_fol :
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat ≤
-      (alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat ≤
+      (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
                 s.filesz.val) (effectiveAlign s.align)).toNat :=
     UInt64.le_iff_toNat_le.mp (alignUp_ge _ _ h_ea_ne h_y_no_wrap)
   have h_partial_eq :
-      (alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+      (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
                 s.filesz.val) (effectiveAlign s.align) -
-        ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+        ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
           s.filesz.val)).toNat =
-      (alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+      (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
                 s.filesz.val) (effectiveAlign s.align)).toNat -
-      ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat :=
+      ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) + s.filesz.val).toNat :=
     UInt64.toNat_sub_of_le _ _
       (UInt64.le_iff_toNat_le.mpr h_pi_filesz_le_fol)
   have h_fo_le_pl := raw_fileOverlay_le_pageLength s
@@ -359,11 +359,11 @@ structure SegmentLayout (objCount : Nat) where
   /-- Underlying gabi segment. Carries `rela`/`jmprel` for reloc
       planning plus range/page-layout no-wrap witnesses for proofs. -/
   segment        : Segment
-  /-- `alignDown vaddr ea` — page-aligned start. -/
-  pageVaddr      : UInt64
+  /-- `alignDown eaddr ea` — page-aligned start. -/
+  pageEaddr      : UInt64
   /-- Total page-aligned mmap length. -/
   pageLength     : UInt64
-  /-- `vaddr − pageVaddr`. Distance from page start to first useful byte. -/
+  /-- `eaddr − pageEaddr`. Distance from page start to first useful byte. -/
   pageInset      : UInt64
   /-- Page-aligned length of the file-backed overlay. Zero when `filesz = 0`. -/
   fileOverlayLen : UInt64
@@ -375,26 +375,26 @@ structure SegmentLayout (objCount : Nat) where
   partialBssLen  : UInt64
   /-- POSIX `PROT_*` bits derived from gabi `PF_*`. -/
   prot           : UInt32
-  /-- `pageVaddr + pageLength < 2^64` — the materialize-stage UInt64
+  /-- `pageEaddr + pageLength < 2^64` — the materialize-stage UInt64
       addition lifts to `Nat` without wrap. -/
-  pageEnd_lt : pageVaddr.toNat + pageLength.toNat < 2 ^ 64
+  pageEnd_lt : pageEaddr.toNat + pageLength.toNat < 2 ^ 64
   /-- The file overlay sits inside the page-aligned segment range —
       the `SegmentSafe.mmapInRange` bound. -/
   fileOverlay_le_pageLength : fileOverlayLen.toNat ≤ pageLength.toNat
   /-- The 4/8-byte write window of any rela sits inside the
       page-aligned segment range — combines with `coversRela` to
       discharge `SegmentSafe.storesInRange`. -/
-  vaddr_memsz_le_pageEnd : segment.vaddr.toNat + segment.memsz.toNat ≤
-    pageVaddr.toNat + pageLength.toNat
+  vaddr_memsz_le_pageEnd : segment.eaddr.toNat + segment.memsz.toNat ≤
+    pageEaddr.toNat + pageLength.toNat
   /-- The partial-page BSS zero slot's end sits inside the
       page-aligned segment range — the `SegmentSafe.zeroInRange`
       bound. -/
   zero_end_le_pageLength : pageInset.toNat + segment.filesz.toNat +
     partialBssLen.toNat ≤ pageLength.toNat
-  /-- The zero slot starts at `pageVaddr + pageInset = vaddr`. Lets
-      the zero slot's absolute address simplify to `base + vaddr +
+  /-- The zero slot starts at `pageEaddr + pageInset = eaddr`. Lets
+      the zero slot's absolute address simplify to `base + eaddr +
       filesz` for proofs. -/
-  pageInset_eq_vaddr : pageVaddr.toNat + pageInset.toNat = segment.vaddr.toNat
+  pageInset_eq_vaddr : pageEaddr.toNat + pageInset.toNat = segment.eaddr.toNat
   /-- Planned relocations targeting this segment, in `seg.rela ++
       seg.jmprel` order. Each entry carries its `coversRela` witness
       keyed to `segment` so `SegmentSafe.storesInRange` is
@@ -410,10 +410,10 @@ namespace SegmentLayout
 def ofSegmentCore (objCount : Nat) (s : Segment) (relocs : Array (Entry objCount s)) :
     SegmentLayout objCount :=
   let ea             := effectiveAlign s.align
-  let pageVaddr      := alignDown s.vaddr.val ea
-  let pageEnd        := alignUp (s.vaddr.val + s.memsz.val) ea
-  let pageLength     := pageEnd - pageVaddr
-  let pageInset      := s.vaddr.val - pageVaddr
+  let pageEaddr      := alignDown s.eaddr.val ea
+  let pageEnd        := alignUp (s.eaddr.val + s.memsz.val) ea
+  let pageLength     := pageEnd - pageEaddr
+  let pageInset      := s.eaddr.val - pageEaddr
   let fileOverlayLen := alignUp (pageInset + s.filesz.val) ea
   let fileOffset     := alignDown s.offset.val ea
   let partialBssLen  := fileOverlayLen - (pageInset + s.filesz.val)
@@ -421,7 +421,7 @@ def ofSegmentCore (objCount : Nat) (s : Segment) (relocs : Array (Entry objCount
     (if s.perm.read  then (1 : UInt32) else 0) |||
     (if s.perm.write then (2 : UInt32) else 0) |||
     (if s.perm.exec  then (4 : UInt32) else 0)
-  { segment := s, pageVaddr, pageLength, pageInset,
+  { segment := s, pageEaddr, pageLength, pageInset,
     fileOverlayLen, fileOffset, partialBssLen, prot,
     pageEnd_lt := raw_pageEnd_lt s,
     fileOverlay_le_pageLength := raw_fileOverlay_le_pageLength s,
@@ -437,15 +437,15 @@ def ofSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
   ofSegmentCore elfs.size s (Reloc.planSegment elfs rt objectIdx s)
 
 /-- One past the last byte of the mmap'd range, base-relative. -/
-def pageEndAddr (sp : SegmentLayout objCount) : UInt64 := sp.pageVaddr + sp.pageLength
+def pageEndAddr (sp : SegmentLayout objCount) : UInt64 := sp.pageEaddr + sp.pageLength
 
-/-- `pageEndAddr.toNat = pageVaddr.toNat + pageLength.toNat` — the
+/-- `pageEndAddr.toNat = pageEaddr.toNat + pageLength.toNat` — the
     `pageEnd_lt` invariant rules out wrap. Saves the inline
     `UInt64.toNat_add` + `mod_eq_of_lt` ritual every per-slot
     `Materialize` proof would otherwise duplicate. -/
 theorem pageEndAddr_toNat (sp : SegmentLayout objCount) :
-    sp.pageEndAddr.toNat = sp.pageVaddr.toNat + sp.pageLength.toNat := by
-  show (sp.pageVaddr + sp.pageLength).toNat = _
+    sp.pageEndAddr.toNat = sp.pageEaddr.toNat + sp.pageLength.toNat := by
+  show (sp.pageEaddr + sp.pageLength).toNat = _
   rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt sp.pageEnd_lt
 
 /-- True when the segment has any file-backed bytes. -/
@@ -460,26 +460,26 @@ def hasPartialBss (sp : SegmentLayout objCount) : Bool := sp.partialBssLen > 0
 -- downstream `simp`-based reasoning.
 -- ============================================================================
 
-@[simp] theorem ofSegmentCore_pageVaddr (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_pageEaddr (objCount : Nat) (s : Segment)
     (relocs : Array (Entry objCount s)) :
-    (ofSegmentCore objCount s relocs).pageVaddr =
-      alignDown s.vaddr.val (effectiveAlign s.align) := rfl
+    (ofSegmentCore objCount s relocs).pageEaddr =
+      alignDown s.eaddr.val (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_pageLength (objCount : Nat) (s : Segment)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).pageLength =
-      alignUp (s.vaddr.val + s.memsz.val) (effectiveAlign s.align) -
-      alignDown s.vaddr.val (effectiveAlign s.align) := rfl
+      alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
+      alignDown s.eaddr.val (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_pageInset (objCount : Nat) (s : Segment)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).pageInset =
-      s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align) := rfl
+      s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_fileOverlayLen (objCount : Nat) (s : Segment)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).fileOverlayLen =
-      alignUp ((s.vaddr.val - alignDown s.vaddr.val (effectiveAlign s.align)) +
+      alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
                s.filesz.val) (effectiveAlign s.align) := rfl
 
 @[simp] theorem ofSegmentCore_partialBssLen (objCount : Nat) (s : Segment)

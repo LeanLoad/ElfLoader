@@ -44,16 +44,16 @@ stage re-checks it — the witness travels in the type.
     image to `LoadOps.apply fs lo Memory.zero`. The substrate the
     three target soundness theorems (`bytes_preserved`,
     `bss_zeroed`, `relocs_applied`) consume.
--/
+ -/
 import LeanLoad.Parse.Address
 import LeanLoad.Parse.Reader
-import LeanLoad.Parse.Ehdr.Ident
-import LeanLoad.Parse.Ehdr.Fields
-import LeanLoad.Parse.Ehdr.Basic
-import LeanLoad.Parse.Ehdr.Example
-import LeanLoad.Parse.Phdr.Fields
-import LeanLoad.Parse.Phdr.Basic
-import LeanLoad.Parse.Phdr.Example
+import LeanLoad.Parse.ImageView.ElfHeader.Ident
+import LeanLoad.Parse.ImageView.ElfHeader.Fields
+import LeanLoad.Parse.ImageView.ElfHeader.Basic
+import LeanLoad.Parse.ImageView.ElfHeader.Example
+import LeanLoad.Parse.ImageView.ProgramHeader.Fields
+import LeanLoad.Parse.ImageView.ProgramHeader.Basic
+import LeanLoad.Parse.ImageView.ProgramHeader.Example
 import LeanLoad.Parse.Dyntab.Fields
 import LeanLoad.Parse.Dyntab.Basic
 import LeanLoad.Parse.Dyntab.Example
@@ -63,14 +63,14 @@ import LeanLoad.Parse.Symbol.Checked
 import LeanLoad.Parse.Symbol.SysVHash
 import LeanLoad.Parse.Reloc.Raw
 import LeanLoad.ABI.Reloc
-import LeanLoad.Parse.Segment.Checked
-import LeanLoad.Parse.Segment.Array
-import LeanLoad.Parse.Segment.Properties
-import LeanLoad.Parse.Segment.Example
+import LeanLoad.Parse.ImageView.Segment.Checked
+import LeanLoad.Parse.ImageView.Segment.Array
+import LeanLoad.Parse.ImageView.Segment.Properties
+import LeanLoad.Parse.ImageView.Segment.Example
 import LeanLoad.Parse.Elf.Checked
-import LeanLoad.Parse.Elf.LoadMap
-import LeanLoad.Parse.Elf.LoadMap.Example
-import LeanLoad.Parse.Elf.RawImage
+import LeanLoad.Parse.ImageView.Basic
+import LeanLoad.Parse.ImageView.Example
+import LeanLoad.Parse.RawElf.Basic
 import LeanLoad.Parse.Elf.Relocs
 import LeanLoad.Parse.Elf.InitFini
 import LeanLoad.Parse.Elf.Check

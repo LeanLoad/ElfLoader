@@ -76,12 +76,12 @@ theorem UInt64.toNat_max (a b : UInt64) :
     exact (Nat.max_eq_left h_le).symm
 
 /-- Page-aligned segment ranges are sorted: each one's `pageEndAddr`
-    is ≤ the next one's `pageVaddr`. Base-free; translation
+    is ≤ the next one's `pageEaddr`. Base-free; translation
     invariant. Same shape as `Parse.Sorted`, but on the
     page-aligned ranges. -/
 def Sorted (segs : Array (SegmentLayout n)) : Prop :=
   ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
-    i < j → segs[i].pageEndAddr ≤ segs[j].pageVaddr
+    i < j → segs[i].pageEndAddr ≤ segs[j].pageEaddr
 
 instance (segs : Array (SegmentLayout n)) : Decidable (Sorted segs) := by
   unfold Sorted; infer_instance

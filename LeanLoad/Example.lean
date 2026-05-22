@@ -55,7 +55,7 @@ private def exampleFileSize : UInt64 := 0x100000
     about; production code always goes through `Parse.parse`. -/
 instance : Inhabited Elf where
   default :=
-    { header := { (default : Ehdr) with
+    { header := { (default : ElfHeader) with
         e_type := .none, e_machine := .x86_64,
         e_entry := 0, e_phoff := 0, e_phnum := 0 },
       symtab := #[], needed := #[],
@@ -70,7 +70,7 @@ def synthElf
     (symtab  : Array Parse.Symbol       := #[])
     (segments : Parse.Segments          := Segments.empty) : Elf :=
   { (default : Elf) with
-    header := { (default : Ehdr) with
+    header := { (default : ElfHeader) with
       e_type := elfType, e_machine := .x86_64,
       e_entry := 0, e_phoff := 0, e_phnum := 0 },
     needed, symtab,
@@ -147,10 +147,10 @@ private def emptyResolveTable (objCount : Nat) : Resolve.Table objCount :=
 /-- Synthetic PT_LOAD segment built via `Segment.ofPhdr`. Returns
     `Option` because `ofPhdr` returns `Except` for ill-formed phdrs;
     well-formed inputs always succeed. -/
-private def synthSegment? (vaddr : Parse.Vaddr) (memsz : Parse.ByteSize) : Option Parse.Segment :=
-  let phdr : Parse.Phdr := { (default : Parse.Phdr) with
+private def synthSegment? (eaddr : Eaddr) (memsz : ByteSize) : Option Parse.Segment :=
+  let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
     p_type := .load,
-    p_vaddr := vaddr, p_memsz := memsz,
+    p_vaddr := eaddr, p_memsz := memsz,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
   (Parse.Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
 
@@ -186,7 +186,7 @@ private def singletonSegments (seg : Segment) : Segments :=
     nonOverlap := nonOverlap_singleton seg }
 
 -- Stacking: each `.dyn` lib has a 0x2000-byte span (one PT_LOAD at
--- vaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
+-- eaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
 -- alignUp 0x2000 0x1000 = 0x2000`. So three libs get
 -- exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000.
 private def stackingExample : Option (Array UInt64) := do
@@ -204,16 +204,16 @@ private def stackingExample : Option (Array UInt64) := do
 -- 4. Realize plan: `SegmentLayout` views and `Array MemoryOp` shapes.
 --
 -- `SegmentLayout` is the base-free loader view of a segment; absolute
--- addresses come from `base + sp.pageVaddr` at materialize time.
+-- addresses come from `base + sp.pageEaddr` at materialize time.
 -- ============================================================================
 
 -- ---- 4a. SegmentLayout view: base-free page math. ----------------------------
 
-/-- A 0x2000-byte BSS-only segment at vaddr 0 (page-aligned). With
+/-- A 0x2000-byte BSS-only segment at eaddr 0 (page-aligned). With
     `filesz = 0` and `memsz = 0x2000`, this is two pages of pure BSS
     with no file backing. -/
 private def bssOnlySeg : Option Segment :=
-  let phdr : Parse.Phdr := { (default : Parse.Phdr) with
+  let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
     p_type := .load,
     p_vaddr := 0, p_memsz := 0x2000,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
@@ -222,9 +222,9 @@ private def bssOnlySeg : Option Segment :=
 private def bssOnlyPlan : Option (SegmentLayout 0) :=
   bssOnlySeg.map (fun s => SegmentLayout.ofSegmentCore 0 s #[])
 
--- The plan's mmap'd range is `[pageVaddr, pageVaddr + pageLength)`,
--- absolute addresses computed as `base + pageVaddr`.
-#guard bssOnlyPlan.map (·.pageVaddr)   = some 0
+-- The plan's mmap'd range is `[pageEaddr, pageEaddr + pageLength)`,
+-- absolute addresses computed as `base + pageEaddr`.
+#guard bssOnlyPlan.map (·.pageEaddr)   = some 0
 #guard bssOnlyPlan.map (·.pageLength)  = some 0x2000
 
 -- BSS-only: no file backing — the underlying object reservation
@@ -254,10 +254,10 @@ private def dummyHandle : Runtime.File := default
 
 /-- A more general synth helper that lets us vary `filesz` to land in
     each profile. -/
-private def synthSeg? (vaddr : Parse.Vaddr) (memsz filesz : Parse.ByteSize) : Option Segment :=
-  let phdr : Parse.Phdr := { (default : Parse.Phdr) with
+private def synthSeg? (eaddr : Eaddr) (memsz filesz : ByteSize) : Option Segment :=
+  let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
     p_type := .load,
-    p_vaddr := vaddr, p_memsz := memsz,
+    p_vaddr := eaddr, p_memsz := memsz,
     p_filesz := filesz, p_offset := 0, p_align := 0x1000 }
   (Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
 

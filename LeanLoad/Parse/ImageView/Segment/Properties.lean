@@ -9,12 +9,12 @@ ordering/disjointness invariants. This file owns the remaining checked-ELF
 coverage predicates: phdr-table coverage and init/fini-array target coverage.
 -/
 
-import LeanLoad.Parse.Segment.Array
+import LeanLoad.Parse.ImageView.Segment.Array
 
 namespace LeanLoad.Parse
 
 -- ============================================================================
--- Phdr mapping — when the runtime emits `AT_PHDR`, a PT_LOAD segment must
+-- ProgramHeader mapping — when the runtime emits `AT_PHDR`, a PT_LOAD segment must
 -- file-back the program-header table. The value is computed by translating
 -- `e_phoff` through the covering segment, not by assuming `p_vaddr = p_offset`.
 -- ============================================================================
@@ -26,7 +26,7 @@ def coversPhdrs (s : Segment) (phoff : FileOff) (nbytes : Nat) : Prop :=
   phoff.toNat + nbytes ≤ s.offset.toNat + s.filesz.toNat
 
 /-- Checked phdr-table mapping for `AT_PHDR`. This carries the segment index
-    needed to translate the table's file offset into its loaded virtual address. -/
+    needed to translate the table's file offset into its loaded ELF address. -/
 inductive PhdrMap (segments : Segments) (phoff : FileOff) (nbytes : Nat) where
   | empty (isEmpty : nbytes = 0)
   | mapped (index : Fin segments.items.size)
@@ -37,11 +37,11 @@ namespace PhdrMap
 
 /-- Virtual address of the program-header table in the loaded image, relative to
     the object's base. For `phnum = 0`, `AT_PHDR` is unused and this returns 0. -/
-def vaddr {segments : Segments} {phoff : FileOff} {nbytes : Nat}
-    (m : PhdrMap segments phoff nbytes) : Vaddr :=
+def eaddr {segments : Segments} {phoff : FileOff} {nbytes : Nat}
+    (m : PhdrMap segments phoff nbytes) : Eaddr :=
   match m with
   | .empty _ => 0
-  | .mapped index _ => segments.items[index].vaddrOfFileOff phoff
+  | .mapped index _ => segments.items[index].eaddrOfFileOff phoff
 
 /-- Build a checked phdr-table mapping by searching the checked PT_LOAD array. -/
 def ofSegments (segments : Segments) (phoff : FileOff) (nbytes : Nat) :
@@ -66,16 +66,16 @@ end PhdrMap
 -- Ctor / dtor address coverage — every non-zero entry in
 -- `DT_INIT_ARRAY` / `DT_FINI_ARRAY` is a callable function. For ET_DYN
 -- (the only kind LeanLoad supports) the entry is a base-relative
--- virtual address; it must live inside an executable PT_LOAD or
+-- ELF address; it must live inside an executable PT_LOAD or
 -- calling it segfaults at runtime. Validated during parse so a
 -- corrupt binary fails loud during parse.
 -- ============================================================================
 
-/-- A function pointer (relative vaddr) is either zero (skip — gabi
+/-- A function pointer (relative eaddr) is either zero (skip — gabi
     leaves zero entries unspecified, but glibc/musl treat them as
     no-ops) or lives inside an executable PT_LOAD's
-    `[vaddr, vaddr + memsz)`. -/
-def callTargetInExecSeg (segments : Segments) (entry : Vaddr) : Prop :=
+    `[eaddr, eaddr + memsz)`. -/
+def callTargetInExecSeg (segments : Segments) (entry : Eaddr) : Prop :=
   entry.val = 0 ∨ Segments.ExecAddr segments entry
 
 end LeanLoad.Parse

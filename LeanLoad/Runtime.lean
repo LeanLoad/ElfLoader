@@ -103,11 +103,11 @@ def pread (f : File) (offset : UInt64) (len : UInt64) : IO ByteArray := do
 -- `Zero.run` / `Store.run` / `MprotectOp.run` / `Reserve.run`).
 -- ============================================================================
 
-/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap at `vaddr`.
-    Replaces whatever was at `[vaddr, vaddr+len)` (intentionally — in
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap at `eaddr`.
+    Replaces whatever was at `[eaddr, eaddr+len)` (intentionally — in
     our design that's the kernel-picked anon reservation). -/
 @[extern "leanload_mmap_file"]
-private opaque mmapFileFd (fd : UInt32) (vaddr : UInt64) (len : UInt64)
+private opaque mmapFileFd (fd : UInt32) (eaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
 /-- Kernel-picked anon mapping. `mmap(NULL, len, PROT_READ |

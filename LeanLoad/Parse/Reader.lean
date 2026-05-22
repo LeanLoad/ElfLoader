@@ -93,14 +93,20 @@ end FileSlice
 
 /-- Read a file range and carry the exact-length witness forward to
     the parser boundary. -/
+def readSliceAt [Monad m] (r : FileReader m)
+    {off : FileOff} {len : ByteSize} (span : FileRange r.fileSize off len) :
+    ExceptT String m (FileSlice r.fileSize off len) := do
+  let bytes ← (r.read off len span : m ByteArray)
+  match FileSlice.ofBytes span bytes with
+  | .ok slice => pure slice
+  | .error e  => throw e
+
+/-- Check a raw file range against the observed file size, then read it. -/
 def readSlice [Monad m] (r : FileReader m)
     (off : FileOff) (len : ByteSize) : ExceptT String m (FileSlice r.fileSize off len) := do
   if h : off.toNat + len.toNat ≤ r.fileSize.toNat then
     let span : FileRange r.fileSize off len := { inFile := h }
-    let bytes ← (r.read off len span : m ByteArray)
-    match FileSlice.ofBytes span bytes with
-    | .ok slice => pure slice
-    | .error e  => throw e
+    readSliceAt r span
   else
     throw s!"read at file offset 0x{off.toNat} requested {len.toNat} bytes, \
       past file size {r.fileSize.toNat}"
@@ -112,6 +118,15 @@ def readSlice [Monad m] (r : FileReader m)
 def parseAt [Monad m] (r : FileReader m)
     (off : FileOff) (len : ByteSize) (parser : Parser α) : ExceptT String m α := do
   let slice ← readSlice r off len
+  match Parser.run slice.bytes parser with
+  | .ok v    => pure v
+  | .error e => throw e
+
+/-- Decode bytes from an already-checked file range. -/
+def parseAtFileRange [Monad m] (r : FileReader m)
+    {off : FileOff} {len : ByteSize} (span : FileRange r.fileSize off len)
+    (parser : Parser α) : ExceptT String m α := do
+  let slice ← readSliceAt r span
   match Parser.run slice.bytes parser with
   | .ok v    => pure v
   | .error e => throw e

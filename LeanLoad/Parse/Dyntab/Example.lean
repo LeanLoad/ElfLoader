@@ -101,11 +101,13 @@ private def okEq [BEq α] (actual : Except String α) (expected : α) : Bool :=
 #guard dyntab.needed = #[(0x01 : StrtabOff)]
 #guard okEq dyntab.soname? (some (0x12 : StrtabOff))
 #guard okEq dyntab.runpath? (some (0x1b : StrtabOff))  -- DT_RUNPATH present
-#guard okEq dyntab.strtab? (some ({ start := (0xb0 : Vaddr), size := 31 } : VaddrSpan))
-#guard okEq dyntab.symtabHash? (some ((0xd0 : Vaddr), (0x100 : Vaddr)))
-#guard okEq dyntab.rela? (some ({ start := (0x108 : Vaddr), size := 24 } : VaddrSpan))
+#guard okEq dyntab.strtab? (some ({ start := (0xb0 : Eaddr), size := 31 } : EaddrRange))
+#guard okEq dyntab.symtab? (some (0xd0 : Eaddr))
+#guard okEq dyntab.hash? (some (0x100 : Eaddr))
+#guard okEq dyntab.rela? (some ({ start := (0x108 : Eaddr), size := 24 } : EaddrRange))
 #guard okEq dyntab.jmprel? none
-#guard okEq dyntab.initArr? (some ({ start := (0x120 : Vaddr), size := 8 } : VaddrSpan))
+#guard okEq dyntab.pltrel? none
+#guard okEq dyntab.initArr? (some ({ start := (0x120 : Eaddr), size := 8 } : EaddrRange))
 #guard okEq dyntab.finiArr? none
 
 -- `DT_RPATH` is intentionally not consulted: a table with only
@@ -140,14 +142,14 @@ private def partialRelaTab : Dyntab := #[
   | .ok _    => false
   | .error _ => true
 
-private def symtabWithoutHashTab : Dyntab := #[
+private def symtabWithoutSymentTab : Dyntab := #[
   { d_tag := .strtab, d_un := 0x1000 },
   { d_tag := .strsz,  d_un := 0x20 },
   { d_tag := .symtab, d_un := 0x2000 },
   { d_tag := .null,   d_un := 0 } ]
 
 #guard
-  match symtabWithoutHashTab.symtabHash? with
+  match symtabWithoutSymentTab.symtab? with
   | .ok _    => false
   | .error _ => true
 

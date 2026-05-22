@@ -94,19 +94,19 @@ abbrev LoadOps (objCount : Nat) := Array (ElfOps objCount)
     `mprotect` flips to final perms. -/
 def setupSegment (sp : SegmentLayout objCount) (handle : Runtime.File)
     (base : UInt64) : SegmentSetup :=
-  let absVaddr := base + sp.pageVaddr
+  let absEaddr := base + sp.pageEaddr
   { mmap :=
       if sp.hasFileBacked then
-        some { handle, addr := absVaddr, len := sp.fileOverlayLen,
+        some { handle, addr := absEaddr, len := sp.fileOverlayLen,
                prot := sp.prot ||| Runtime.PROT_WRITE,
                offset := sp.fileOffset }
       else none
     zero :=
       if sp.hasPartialBss then
-        some { addr := absVaddr + sp.pageInset + sp.segment.filesz.val,
+        some { addr := absEaddr + sp.pageInset + sp.segment.filesz.val,
                len := sp.partialBssLen }
       else none
-    mprotect := { addr := absVaddr, len := sp.pageLength, prot := sp.prot } }
+    mprotect := { addr := absEaddr, len := sp.pageLength, prot := sp.prot } }
 
 -- ============================================================================
 -- `setupSegment` characterisation. The three slot positions are simple
@@ -115,11 +115,11 @@ def setupSegment (sp : SegmentLayout objCount) (handle : Runtime.File)
 -- `BoundPlan.segment_*_in_rsv` theorem directly.
 -- ============================================================================
 
-/-- The mmap slot, when present, sits at `base + sp.pageVaddr` of
+/-- The mmap slot, when present, sits at `base + sp.pageEaddr` of
     length `sp.fileOverlayLen`. -/
 theorem setupSegment_mmap_eq (sp : SegmentLayout objCount) (handle : Runtime.File)
     (base : UInt64) (m : MmapOp) (h : (setupSegment sp handle base).mmap = some m) :
-    m.addr = base + sp.pageVaddr ∧ m.len = sp.fileOverlayLen := by
+    m.addr = base + sp.pageEaddr ∧ m.len = sp.fileOverlayLen := by
   unfold setupSegment at h
   simp only at h
   by_cases h_fb : sp.hasFileBacked
@@ -129,11 +129,11 @@ theorem setupSegment_mmap_eq (sp : SegmentLayout objCount) (handle : Runtime.Fil
   · rw [if_neg h_fb] at h; cases h
 
 /-- The zero slot, when present, sits at
-    `base + sp.pageVaddr + sp.pageInset + sp.segment.filesz.val` of length
+    `base + sp.pageEaddr + sp.pageInset + sp.segment.filesz.val` of length
     `sp.partialBssLen`. -/
 theorem setupSegment_zero_eq (sp : SegmentLayout objCount) (handle : Runtime.File)
     (base : UInt64) (z : ZeroOp) (h : (setupSegment sp handle base).zero = some z) :
-    z.addr = base + sp.pageVaddr + sp.pageInset + sp.segment.filesz.val ∧
+    z.addr = base + sp.pageEaddr + sp.pageInset + sp.segment.filesz.val ∧
     z.len = sp.partialBssLen := by
   unfold setupSegment at h
   simp only at h
@@ -143,11 +143,11 @@ theorem setupSegment_zero_eq (sp : SegmentLayout objCount) (handle : Runtime.Fil
     rw [← h_eq]; exact ⟨rfl, rfl⟩
   · rw [if_neg h_pb] at h; cases h
 
-/-- The mprotect slot always sits at `base + sp.pageVaddr` of length
+/-- The mprotect slot always sits at `base + sp.pageEaddr` of length
     `sp.pageLength`. -/
 theorem setupSegment_mprotect_eq (sp : SegmentLayout objCount) (handle : Runtime.File)
     (base : UInt64) :
-    (setupSegment sp handle base).mprotect.addr = base + sp.pageVaddr ∧
+    (setupSegment sp handle base).mprotect.addr = base + sp.pageEaddr ∧
     (setupSegment sp handle base).mprotect.len = sp.pageLength := by
   exact ⟨rfl, rfl⟩
 

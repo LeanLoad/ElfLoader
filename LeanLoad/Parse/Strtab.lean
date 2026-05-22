@@ -11,7 +11,7 @@ decode failure.
 
 The lookup-offset parameter is typed `StrtabOff` (see
 `Parse/Address.lean`) — a distinct nominal wrapper over `UInt64`.
-That makes accidental confusion with a `Vaddr` or file offset a
+That makes accidental confusion with a `Eaddr` or file offset a
 type error rather than a silent runtime mis-read.
 -/
 

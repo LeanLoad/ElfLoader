@@ -5,7 +5,7 @@ Spec: gabi 07 (`third_party/gabi/docsrc/elf/07-pheader.rst`) § Program
 Header.
 
 Carried as struct fields:
-  - the originating `Phdr` plus a witness that it is `PT_LOAD`,
+  - the originating `ProgramHeader` plus a witness that it is `PT_LOAD`,
   - gabi-07 per-segment invariants (`fileszLeMemsz`, `alignPow2`,
     `alignCong`),
   - typed memory/file range witnesses and the page-layout no-wrap bound that
@@ -20,31 +20,31 @@ chosen mmap base.
 -/
 
 import LeanLoad.Parse.Reloc.Raw
-import LeanLoad.Parse.Phdr.Basic
+import LeanLoad.Parse.ImageView.ProgramHeader.Basic
 
 namespace LeanLoad.Parse
 
 -- ============================================================================
 -- coversRela — segment-relative containment witness for a rela's
 -- 8-byte write window. Pure gabi: bounds the offset relative to
--- `[vaddr, vaddr + memsz)`.
+-- `[eaddr, eaddr + memsz)`.
 -- ============================================================================
 
 /-- The segment's memory range fully contains an 8-byte write window
     starting at `r_offset`. Conservatively reserves 8 bytes. -/
-def coversRela (vaddr : Vaddr) (memsz : ByteSize) (r_offset : Vaddr) : Prop :=
-  vaddr.toNat ≤ r_offset.toNat ∧
-  r_offset.toNat + 8 ≤ vaddr.toNat + memsz.toNat
+def coversRela (eaddr : Eaddr) (memsz : ByteSize) (r_offset : Eaddr) : Prop :=
+  eaddr.toNat ≤ r_offset.toNat ∧
+  r_offset.toNat + 8 ≤ eaddr.toNat + memsz.toNat
 
-instance (vaddr : Vaddr) (memsz : ByteSize) (r_offset : Vaddr) :
-    Decidable (coversRela vaddr memsz r_offset) := by
+instance (eaddr : Eaddr) (memsz : ByteSize) (r_offset : Eaddr) :
+    Decidable (coversRela eaddr memsz r_offset) := by
   unfold coversRela; infer_instance
 
 /-- A checked relocation whose 8-byte write window is contained in the segment
-    range `[vaddr, vaddr + memsz)`. -/
-structure Rela (vaddr : Vaddr) (memsz : ByteSize) where
+    range `[eaddr, eaddr + memsz)`. -/
+structure Rela (eaddr : Eaddr) (memsz : ByteSize) where
   raw     : RawRela
-  covered : coversRela vaddr memsz raw.r_offset
+  covered : coversRela eaddr memsz raw.r_offset
   deriving Repr
 
 -- ============================================================================
@@ -52,14 +52,14 @@ structure Rela (vaddr : Vaddr) (memsz : ByteSize) where
 -- live on `Plan.SegmentLayout`.
 -- ============================================================================
 
-/-- A PT_LOAD program header's virtual memory range
+/-- A PT_LOAD program header's ELF-address memory range
     `[p_vaddr, p_vaddr + p_memsz)` does not wrap UInt64. -/
-structure Segment.MemRange (phdr : Phdr) where
+structure Segment.EaddrRange (phdr : ProgramHeader) where
   noWrap : phdr.p_vaddr.toNat + phdr.p_memsz.toNat < 2 ^ 64
 
 /-- A PT_LOAD program header's file-backed byte range
     `[p_offset, p_offset + p_filesz)` is contained in the source file. -/
-structure Segment.FileImageRange (fileSize : UInt64) (phdr : Phdr) where
+structure Segment.FileImageRange (fileSize : UInt64) (phdr : ProgramHeader) where
   inFile : phdr.p_offset.toNat + phdr.p_filesz.toNat ≤ fileSize.toNat
 
 /-- A PT_LOAD segment: gabi-07 byte fields, the gabi per-segment
@@ -68,14 +68,14 @@ structure Segment.FileImageRange (fileSize : UInt64) (phdr : Phdr) where
 structure Segment where
   /-- Observed size of the file this segment came from. -/
   fileSize : UInt64
-  /-- Source program-header row. Its fields stay typed as `Vaddr`,
+  /-- Source program-header row. Its fields stay typed as `Eaddr`,
       `FileOff`, and `ByteSize`; projections below expose those typed
       fields without duplicating data. -/
-  phdr   : Phdr
+  phdr   : ProgramHeader
   /-- This checked segment is backed by a `PT_LOAD` phdr. -/
   isLoad : phdr.p_type = .load
   /-- Virtual memory range `[p_vaddr, p_vaddr + p_memsz)`. -/
-  memRange : Segment.MemRange phdr
+  eaddrRange : Segment.EaddrRange phdr
   /-- File-backed range `[p_offset, p_offset + p_filesz)`. -/
   fileRange : Segment.FileImageRange fileSize phdr
   /-- gabi 07: `p_filesz ≤ p_memsz`. -/
@@ -97,8 +97,8 @@ structure Segment where
 
 namespace Segment
 
-/-- gabi `p_vaddr` — virtual address in process memory. -/
-@[simp] def vaddr (s : Segment) : Vaddr := s.phdr.p_vaddr
+/-- gabi `p_vaddr` — ELF address in process memory. -/
+@[simp] def eaddr (s : Segment) : Eaddr := s.phdr.p_vaddr
 
 /-- gabi `p_memsz` — total memory size in process. -/
 @[simp] def memsz (s : Segment) : ByteSize := s.phdr.p_memsz
@@ -110,29 +110,29 @@ namespace Segment
 @[simp] def offset (s : Segment) : FileOff := s.phdr.p_offset
 
 /-- gabi `p_flags`, already decoded to named RWX bits. -/
-def perm (s : Segment) : PhdrFlags := s.phdr.p_flags
+def perm (s : Segment) : ProgramHeaderFlags := s.phdr.p_flags
 
 /-- gabi `p_align`. -/
 @[simp] def align (s : Segment) : UInt64 := s.phdr.p_align
 
-/-- The segment memory image contains the half-open virtual-address range
+/-- The segment memory image contains the half-open ELF-address range
     `[addr, addr + len)`. -/
-def ContainsVaddrRange (s : Segment) (addr : Vaddr) (len : ByteSize) : Prop :=
-  s.vaddr.toNat ≤ addr.toNat ∧
-  addr.toNat + len.toNat ≤ s.vaddr.toNat + s.memsz.toNat
+def ContainsEaddrRange (s : Segment) (addr : Eaddr) (len : ByteSize) : Prop :=
+  s.eaddr.toNat ≤ addr.toNat ∧
+  addr.toNat + len.toNat ≤ s.eaddr.toNat + s.memsz.toNat
 
-instance (s : Segment) (addr : Vaddr) (len : ByteSize) :
-    Decidable (ContainsVaddrRange s addr len) := by
-  unfold ContainsVaddrRange; infer_instance
+instance (s : Segment) (addr : Eaddr) (len : ByteSize) :
+    Decidable (ContainsEaddrRange s addr len) := by
+  unfold ContainsEaddrRange; infer_instance
 
-/-- The segment memory image contains this virtual address. -/
-def ContainsVaddr (s : Segment) (addr : Vaddr) : Prop :=
-  s.vaddr.toNat ≤ addr.toNat ∧
-  addr.toNat < s.vaddr.toNat + s.memsz.toNat
+/-- The segment memory image contains this ELF address. -/
+def ContainsEaddr (s : Segment) (addr : Eaddr) : Prop :=
+  s.eaddr.toNat ≤ addr.toNat ∧
+  addr.toNat < s.eaddr.toNat + s.memsz.toNat
 
-instance (s : Segment) (addr : Vaddr) :
-    Decidable (ContainsVaddr s addr) := by
-  unfold ContainsVaddr; infer_instance
+instance (s : Segment) (addr : Eaddr) :
+    Decidable (ContainsEaddr s addr) := by
+  unfold ContainsEaddr; infer_instance
 
 /-- The segment's file-backed image contains the half-open file range
     `[off, off + len)`. -/
@@ -144,28 +144,28 @@ instance (s : Segment) (off : FileOff) (len : ByteSize) :
     Decidable (ContainsFileRange s off len) := by
   unfold ContainsFileRange; infer_instance
 
-/-- The segment's file-backed image contains the half-open virtual-address range
+/-- The segment's file-backed image contains the half-open ELF-address range
     `[addr, addr + len)`. Dynamic pointers must satisfy this stronger property:
     reading bytes from a BSS-only part of `p_memsz` is invalid. -/
-def ContainsFileBackedVaddrRange (s : Segment) (addr : Vaddr) (len : ByteSize) : Prop :=
-  s.vaddr.toNat ≤ addr.toNat ∧
-  addr.toNat + len.toNat ≤ s.vaddr.toNat + s.filesz.toNat
+def ContainsFileBackedEaddrRange (s : Segment) (addr : Eaddr) (len : ByteSize) : Prop :=
+  s.eaddr.toNat ≤ addr.toNat ∧
+  addr.toNat + len.toNat ≤ s.eaddr.toNat + s.filesz.toNat
 
-instance (s : Segment) (addr : Vaddr) (len : ByteSize) :
-    Decidable (ContainsFileBackedVaddrRange s addr len) := by
-  unfold ContainsFileBackedVaddrRange; infer_instance
+instance (s : Segment) (addr : Eaddr) (len : ByteSize) :
+    Decidable (ContainsFileBackedEaddrRange s addr len) := by
+  unfold ContainsFileBackedEaddrRange; infer_instance
 
-/-- File offset corresponding to a virtual address inside the segment's
-    file-backed image. The `ContainsFileBackedVaddrRange` witness is carried by
+/-- File offset corresponding to a ELF address inside the segment's
+    file-backed image. The `ContainsFileBackedEaddrRange` witness is carried by
     callers that need this formula to be semantically valid. -/
-def fileOffOfVaddr (s : Segment) (addr : Vaddr) : FileOff :=
-  ⟨s.offset.val + (addr.val - s.vaddr.val)⟩
+def fileOffOfEaddr (s : Segment) (addr : Eaddr) : FileOff :=
+  ⟨s.offset.val + (addr.val - s.eaddr.val)⟩
 
-/-- Virtual address corresponding to a file offset inside the segment's
+/-- ELF address corresponding to a file offset inside the segment's
     file-backed image. Callers carry the file-backed containment witness that
     makes this translation meaningful. -/
-def vaddrOfFileOff (s : Segment) (off : FileOff) : Vaddr :=
-  ⟨s.vaddr.val + (off.val - s.offset.val)⟩
+def eaddrOfFileOff (s : Segment) (off : FileOff) : Eaddr :=
+  ⟨s.eaddr.val + (off.val - s.offset.val)⟩
 
 /-- Keep a checked segment's established byte-layout witnesses while attaching
     the relocations that parse located inside its memory range. -/
@@ -185,10 +185,10 @@ private def assertProp (p : Prop) [Decidable p] (msg : String) :
     Except String (PLift p) :=
   if h : p then .ok ⟨h⟩ else .error msg
 
-/-- Smart constructor: build a `Segment` from a `Phdr` and pre-located rela
+/-- Smart constructor: build a `Segment` from a `ProgramHeader` and pre-located rela
     arrays. Decidably checks each gabi-07 per-segment invariant plus the
     memory/file/page-layout no-wrap witnesses, failing with a typed error. -/
-def Segment.ofPhdr (phdr : Phdr) (fileSize : UInt64)
+def Segment.ofPhdr (phdr : ProgramHeader) (fileSize : UInt64)
     (rela jmprel : Array (Rela phdr.p_vaddr phdr.p_memsz)) :
     Except String Segment := do
   let ⟨isLoad⟩ ← assertProp (phdr.p_type = .load)
@@ -219,7 +219,7 @@ def Segment.ofPhdr (phdr : Phdr) (fileSize : UInt64)
        0x{(segmentLayoutAlign phdr.p_align).toNat})"
   return {
     fileSize, phdr, isLoad,
-    memRange := { noWrap := memNoWrap },
+    eaddrRange := { noWrap := memNoWrap },
     fileRange := { inFile := fileInBounds },
     fileszLeMemsz, alignPow2, alignCong, pageLayoutNoWrap, rela, jmprel
   }

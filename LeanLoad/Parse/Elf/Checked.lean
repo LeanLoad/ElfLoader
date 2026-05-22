@@ -7,9 +7,9 @@ header policy, segment well-formedness, relocation containment, resolved
 dynamic strings, and constructor/destructor target coverage.
 -/
 
-import LeanLoad.Parse.Ehdr.Basic
+import LeanLoad.Parse.ImageView.ElfHeader.Basic
 import LeanLoad.Parse.Symbol.Checked
-import LeanLoad.Parse.Segment.Properties
+import LeanLoad.Parse.ImageView.Segment.Properties
 
 namespace LeanLoad.Parse
 
@@ -18,7 +18,7 @@ namespace Elf
 /-- A constructor/destructor function pointer that is zero or targets an
     executable PT_LOAD in `segments`. -/
 abbrev InitFiniEntry (segments : Segments) :=
-  { entry : Vaddr // callTargetInExecSeg segments entry }
+  { entry : Eaddr // callTargetInExecSeg segments entry }
 
 /-- `DT_INIT_ARRAY` / `DT_FINI_ARRAY` entries. The array is ELF-owned
     because call order is table order, while each entry carries the
@@ -38,10 +38,10 @@ end Elf
     `segments.map (·.phdr)`), `dyn` (no post-parse consumer), and `strtab`
     (consumed at parse time to pre-resolve symbol and DT_NEEDED names). -/
 structure Elf where
-  /-- Parsed ELF header. `Ehdr` is already semantically typed: magic,
+  /-- Parsed ELF header. `ElfHeader` is already semantically typed: magic,
       identifiers, `e_type`, `e_machine`, addresses, and sentinels are decoded
       to parse-layer field types. -/
-  header   : Ehdr
+  header   : ElfHeader
   symtab   : Array Symbol
   needed   : Array String
   soname   : Option String

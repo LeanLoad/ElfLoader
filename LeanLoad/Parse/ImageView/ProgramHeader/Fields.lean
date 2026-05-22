@@ -1,7 +1,7 @@
 /-
-Typed fields for `Phdr`.
+Typed fields for `ProgramHeader`.
 
-`p_type` is decoded into a range-aware `PhdrType`; `p_flags` is decoded
+`p_type` is decoded into a range-aware `ProgramHeaderType`; `p_flags` is decoded
 into the named gABI permission bits plus OS/proc-specific masks.
 
 Spec: `third_party/gabi/docsrc/elf/07-pheader.rst`.
@@ -19,7 +19,7 @@ namespace LeanLoad.Parse
     `PT_TLS`, reserves `PT_LOOS..PT_HIOS` for OS-specific semantics,
     and reserves `PT_LOPROC..PT_HIPROC` for processor-specific
     semantics. Other values are reserved for future use. -/
-inductive PhdrType where
+inductive ProgramHeaderType where
   | null
   | load
   | dynamic
@@ -33,7 +33,7 @@ inductive PhdrType where
   | reserved (raw : UInt32)
   deriving Repr, BEq, DecidableEq, Inhabited
 
-instance : RawDecode PhdrType UInt32 where
+instance : RawDecode ProgramHeaderType UInt32 where
   ofRaw
   | 0 => .ok .null
   | 1 => .ok .load
@@ -52,7 +52,7 @@ instance : RawDecode PhdrType UInt32 where
         .ok (.reserved n)
 
 /-- gABI 07 § Program Header: segment flag bitmask (`p_flags`). -/
-structure PhdrFlags where
+structure ProgramHeaderFlags where
   read : Bool
   write : Bool
   exec : Bool
@@ -62,7 +62,7 @@ structure PhdrFlags where
   procSpecific : UInt32
   deriving Repr, BEq, DecidableEq, Inhabited
 
-namespace PhdrFlags
+namespace ProgramHeaderFlags
 
 def PF_X : UInt32 := 0x1       -- Execute (gABI 07 § Segment Permissions)
 def PF_W : UInt32 := 0x2       -- Write (gABI 07 § Segment Permissions)
@@ -71,21 +71,21 @@ def PF_MASKOS : UInt32 := 0x0ff00000   -- gABI 07 § Segment Permissions
 def PF_MASKPROC : UInt32 := 0xf0000000 -- gABI 07 § Segment Permissions
 
 /-- Decode `p_flags`. Bits outside the gABI RWX/OS/proc masks are intentionally ignored. -/
-def ofRaw (flags : UInt32) : PhdrFlags :=
+def ofRaw (flags : UInt32) : ProgramHeaderFlags :=
   { read := (flags &&& PF_R) != 0
     write := (flags &&& PF_W) != 0
     exec := (flags &&& PF_X) != 0
     osSpecific := flags &&& PF_MASKOS
     procSpecific := flags &&& PF_MASKPROC }
 
-instance : RawDecode PhdrFlags UInt32 where
-  ofRaw flags := .ok (PhdrFlags.ofRaw flags)
+instance : RawDecode ProgramHeaderFlags UInt32 where
+  ofRaw flags := .ok (ProgramHeaderFlags.ofRaw flags)
 
 #guard ofRaw 0x5 = { read := true, write := false, exec := true,
                      osSpecific := 0, procSpecific := 0 }
 #guard (ofRaw PF_MASKOS).osSpecific = PF_MASKOS
 #guard (ofRaw PF_MASKPROC).procSpecific = PF_MASKPROC
 
-end PhdrFlags
+end ProgramHeaderFlags
 
 end LeanLoad.Parse

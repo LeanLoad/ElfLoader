@@ -50,7 +50,7 @@ open LeanLoad.Parse (Elf)
 def mockElf (soname : Option String := some "anon")
     (runpath : Option String := none)
     (needed : Array String := #[]) : Elf := {
-  header   := { (default : Parse.Ehdr) with
+  header   := { (default : Parse.ElfHeader) with
     e_type := .dyn
     e_machine := .x86_64
     e_entry := 0

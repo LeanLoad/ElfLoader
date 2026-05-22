@@ -1,5 +1,5 @@
 /-
-Typed ELF identification (`e_ident`) fields for `Ehdr`.
+Typed ELF identification (`e_ident`) fields for `ElfHeader`.
 
 Each typed field has a `RawDecode` from its on-disk byte. Closed tables
 fail on unknown codes during byte decode; open ranges preserve raw

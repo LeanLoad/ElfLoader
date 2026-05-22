@@ -1,12 +1,12 @@
 /-
 Checked construction for `Parse.Elf`.
 
-This module consumes the byte staging image from `Elf.RawImage` and establishes the
+This module consumes the byte staging image from `RawElf` and establishes the
 semantic witnesses carried by the public `LeanLoad.Parse.Elf` type.
 -/
 
 import LeanLoad.Parse.Elf.Checked
-import LeanLoad.Parse.Elf.RawImage
+import LeanLoad.Parse.RawElf.Basic
 import LeanLoad.Parse.Elf.Relocs
 import LeanLoad.Parse.Elf.InitFini
 
@@ -33,11 +33,11 @@ private def resolveStrtabOff? (label : String) (strtab : Strtab) :
 
 /-- Check a staging image: attach every rela to its checked PT_LOAD segment,
     pre-resolve every dynamic string-table reference, and bundle the final
-    witness-carrying `Elf`. Header policy and PT_LOAD well-formedness were
-    already established by `LoadMap`. -/
-def checkImage (raw : RawImage) : Except String _root_.LeanLoad.Parse.Elf := do
-  let header := raw.loadMap.header
-  let segments ← RelocBuckets.attach raw.loadMap.segments raw.rela raw.jmprel
+    witness-carrying `Elf`. Header policy and PT_LOAD well-formedness are
+    already carried by `RawElf.header` and `RawElf.segments`. -/
+def checkImage (raw : RawElf) : Except String _root_.LeanLoad.Parse.Elf := do
+  let header := raw.header
+  let segments ← RelocBuckets.attach raw.segments raw.rela raw.jmprel
   let symtab : Array Symbol ← raw.symtab.mapM (Symbol.ofRaw raw.strtab)
   let needed : Array String ← raw.needed.mapM (resolveStrtabOff "DT_NEEDED" raw.strtab)
   let soname ← resolveStrtabOff? "DT_SONAME" raw.strtab raw.soname

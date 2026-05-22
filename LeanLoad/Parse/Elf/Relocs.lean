@@ -7,7 +7,7 @@ window. This module owns that sigma-heavy bucketing; `Elf.Check` just consumes
 the attached segment array.
 -/
 
-import LeanLoad.Parse.Elf.LoadMap
+import LeanLoad.Parse.ImageView.Segment.Array
 import LeanLoad.Parse.Reloc.Raw
 
 namespace LeanLoad.Parse.Elf
@@ -83,7 +83,7 @@ def attach (segments : Segments) (rela jmprel : Array RawRela) :
        simpa [items, attachedItems] using h_i
      have h_j' : j < segments.items.size := by
        simpa [items, attachedItems] using h_j
-     simpa [items, attachedItems, Segment.withRelocs, Segment.vaddr] using
+     simpa [items, attachedItems, Segment.withRelocs, Segment.eaddr] using
        segments.sorted i h_i' j h_j' h_ij,
     nonOverlap := by
      intro i h_i j h_j h_ij
@@ -91,7 +91,7 @@ def attach (segments : Segments) (rela jmprel : Array RawRela) :
        simpa [items, attachedItems] using h_i
      have h_j' : j < segments.items.size := by
        simpa [items, attachedItems] using h_j
-     simpa [items, attachedItems, Segment.withRelocs, Segment.vaddr, Segment.memsz] using
+     simpa [items, attachedItems, Segment.withRelocs, Segment.eaddr, Segment.memsz] using
        segments.nonOverlap i h_i' j h_j' h_ij
   }
 

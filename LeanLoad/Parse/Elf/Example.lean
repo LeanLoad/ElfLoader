@@ -3,22 +3,22 @@ Integration example for `Parse/Elf`.
 
 The fixture here demonstrates cross-section coordination: PT_DYNAMIC's
 `p_offset` matches the dynamic table's actual position, DT_STRTAB's
-`d_un` matches the strtab's vaddr, DT_HASH's `nchain` matches the
+`d_un` matches the strtab's eaddr, DT_HASH's `nchain` matches the
 symtab's entry count, and so on.
 
 Crucially, `fixture` exercises the same checked `parseM` that
 production uses. Only the `FileReader` instance changes (`pureReader`
 vs `Runtime.fileReader`); section offsets are discovered via
-the checked `LoadMap` over the parsed phdrs.
+the checked `ImageView` over the parsed phdrs.
 
 The fixture is also engineered to satisfy checked-parse gabi-07 checks:
-the lone PT_LOAD has `vaddr = offset = 0` and file-backs every dynamic
+the lone PT_LOAD has `eaddr = offset = 0` and file-backs every dynamic
 table, rela offset, and init_array entry.
 -/
 
 import LeanLoad.Parse.Elf.Entry
-import LeanLoad.Parse.Ehdr.Example
-import LeanLoad.Parse.Phdr.Example
+import LeanLoad.Parse.ImageView.ElfHeader.Example
+import LeanLoad.Parse.ImageView.ProgramHeader.Example
 import LeanLoad.Parse.Dyntab.Example
 
 namespace LeanLoad.Parse.Elf.Example
@@ -89,7 +89,7 @@ def fixture : Except String _root_.LeanLoad.Parse.Elf :=
 -- The checked segment view preserves the PT_LOAD identity layout.
 #guard match fixture with
   | .ok r =>
-       (r.segments.items[0]?.map (fun s => s.vaddr == 0 && s.offset == 0) == some true)
+       (r.segments.items[0]?.map (fun s => s.eaddr == 0 && s.offset == 0) == some true)
     && r.header.e_entry == 0x100
   | .error _ => false
 

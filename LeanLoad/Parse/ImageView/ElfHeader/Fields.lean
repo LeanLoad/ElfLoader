@@ -1,5 +1,5 @@
 /-
-Typed fields for `Ehdr` outside `e_ident`.
+Typed fields for `ElfHeader` outside `e_ident`.
 
 Each typed field has a `RawDecode` from its on-disk integer code.
 Closed tables fail on unknown codes during byte decode; sentinel-carrying

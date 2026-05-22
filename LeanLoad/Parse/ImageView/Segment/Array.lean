@@ -8,7 +8,7 @@ whole PT_LOAD array.
 Spec: gabi 07 (`third_party/gabi/docsrc/elf/07-pheader.rst`) § Program Loading.
 -/
 
-import LeanLoad.Parse.Segment.Checked
+import LeanLoad.Parse.ImageView.Segment.Checked
 
 namespace LeanLoad.Parse
 
@@ -16,7 +16,7 @@ namespace LeanLoad.Parse
 -- PT_LOAD-array well-formedness — the per-pair gabi-07 invariants on
 -- `Array Segment`. Per-segment invariants are validated by `Segment.ofPhdr`.
 --
--- Spec: gabi 07 § Program Loading. These are *spec-level* (gabi vaddr/memsz
+-- Spec: gabi 07 § Program Loading. These are *spec-level* (gabi eaddr/memsz
 -- ordering); page-aligned non-overlap is a separate runtime check via
 -- `Plan.SegmentLayout` over `SegmentLayout`s.
 -- ============================================================================
@@ -26,13 +26,13 @@ namespace Segments
 /-- gabi 07 § Program Loading: PT_LOAD entries appear in `p_vaddr` order. -/
 def Sorted (segs : Array Segment) : Prop :=
   ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
-    i < j → segs[i].vaddr.toNat ≤ segs[j].vaddr.toNat
+    i < j → segs[i].eaddr.toNat ≤ segs[j].eaddr.toNat
 
 /-- *De facto*, not gabi-mandated: PT_LOAD `[p_vaddr, p_vaddr + p_memsz)`
     ranges are pairwise disjoint. -/
 def NonOverlap (segs : Array Segment) : Prop :=
   ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
-    i < j → segs[i].vaddr.toNat + segs[i].memsz.toNat ≤ segs[j].vaddr.toNat
+    i < j → segs[i].eaddr.toNat + segs[i].memsz.toNat ≤ segs[j].eaddr.toNat
 
 end Segments
 
@@ -46,12 +46,12 @@ structure Segments where
 
 namespace Segments
 
-/-- A virtual-address range contained in one checked segment satisfying `need`
+/-- A ELF-address range contained in one checked segment satisfying `need`
     (for example, executable or readable). -/
-structure VaddrRangeIn (segments : Segments) (need : Segment → Prop)
-    (addr : Vaddr) (len : ByteSize) where
+structure EaddrRangeIn (segments : Segments) (need : Segment → Prop)
+    (addr : Eaddr) (len : ByteSize) where
   index    : Fin segments.items.size
-  contains : Segment.ContainsVaddrRange segments.items[index] addr len
+  contains : Segment.ContainsEaddrRange segments.items[index] addr len
   permits  : need segments.items[index]
   deriving Repr
 
@@ -63,39 +63,39 @@ structure FileRangeIn (segments : Segments) (need : Segment → Prop)
   permits  : need segments.items[index]
   deriving Repr
 
-/-- A virtual-address range that is backed by file bytes in one checked segment
+/-- A ELF-address range that is backed by file bytes in one checked segment
     satisfying `need`. Dynamic-table pointers use this rather than plain memory
     containment so they cannot point into BSS. -/
-structure FileBackedVaddrRangeIn (segments : Segments) (need : Segment → Prop)
-    (addr : Vaddr) (len : ByteSize) where
+structure FileBackedEaddrRangeIn (segments : Segments) (need : Segment → Prop)
+    (addr : Eaddr) (len : ByteSize) where
   index    : Fin segments.items.size
-  contains : Segment.ContainsFileBackedVaddrRange segments.items[index] addr len
+  contains : Segment.ContainsFileBackedEaddrRange segments.items[index] addr len
   permits  : need segments.items[index]
   deriving Repr
 
 /-- Point membership in one checked segment satisfying `need`. Kept as an
     `abbrev` so legacy existential proofs can still destruct it directly. -/
-abbrev ContainsVaddr (segments : Segments) (need : Segment → Prop) (addr : Vaddr) : Prop :=
+abbrev ContainsEaddr (segments : Segments) (need : Segment → Prop) (addr : Eaddr) : Prop :=
   ∃ i, ∃ h : i < segments.items.size,
-    need (segments.items[i]'h) ∧ Segment.ContainsVaddr (segments.items[i]'h) addr
+    need (segments.items[i]'h) ∧ Segment.ContainsEaddr (segments.items[i]'h) addr
 
-abbrev ExecAddr (segments : Segments) (addr : Vaddr) : Prop :=
-  ContainsVaddr segments (fun s => s.perm.exec) addr
+abbrev ExecAddr (segments : Segments) (addr : Eaddr) : Prop :=
+  ContainsEaddr segments (fun s => s.perm.exec) addr
 
-abbrev ReadVaddrRange (segments : Segments) (addr : Vaddr) (len : ByteSize) :=
-  VaddrRangeIn segments (fun s => s.perm.read) addr len
+abbrev ReadEaddrRange (segments : Segments) (addr : Eaddr) (len : ByteSize) :=
+  EaddrRangeIn segments (fun s => s.perm.read) addr len
 
-abbrev ExecVaddrRange (segments : Segments) (addr : Vaddr) (len : ByteSize) :=
-  VaddrRangeIn segments (fun s => s.perm.exec) addr len
+abbrev ExecEaddrRange (segments : Segments) (addr : Eaddr) (len : ByteSize) :=
+  EaddrRangeIn segments (fun s => s.perm.exec) addr len
 
 abbrev ReadFileRange (segments : Segments) (off : FileOff) (len : ByteSize) :=
   FileRangeIn segments (fun s => s.perm.read) off len
 
-abbrev AnyFileBackedVaddrRange (segments : Segments) (addr : Vaddr) (len : ByteSize) :=
-  FileBackedVaddrRangeIn segments (fun _ => True) addr len
+abbrev AnyFileBackedEaddrRange (segments : Segments) (addr : Eaddr) (len : ByteSize) :=
+  FileBackedEaddrRangeIn segments (fun _ => True) addr len
 
-abbrev ReadFileBackedVaddrRange (segments : Segments) (addr : Vaddr) (len : ByteSize) :=
-  FileBackedVaddrRangeIn segments (fun s => s.perm.read) addr len
+abbrev ReadFileBackedEaddrRange (segments : Segments) (addr : Eaddr) (len : ByteSize) :=
+  FileBackedEaddrRangeIn segments (fun s => s.perm.read) addr len
 
 /-- Empty checked segment array. Useful for tests and synthetic Elfs. -/
 def empty : Segments :=

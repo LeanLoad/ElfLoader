@@ -2,46 +2,46 @@
 Examples for checked PT_LOAD segments and checked segment arrays.
 -/
 
-import LeanLoad.Parse.Segment.Properties
+import LeanLoad.Parse.ImageView.Segment.Properties
 
 namespace LeanLoad.Parse.Example
 
 private def exampleFileSize : UInt64 := 0x4000
 
-private def execPhdr : Phdr :=
-  { (default : Phdr) with
+private def execProgramHeader : ProgramHeader :=
+  { (default : ProgramHeader) with
     p_type := .load,
-    p_flags := PhdrFlags.ofRaw 0x5, -- R|X
+    p_flags := ProgramHeaderFlags.ofRaw 0x5, -- R|X
     p_offset := 0,
     p_vaddr := 0,
     p_filesz := 0x200,
     p_memsz := 0x200,
     p_align := 0x1000 }
 
-private def dataPhdr : Phdr :=
-  { (default : Phdr) with
+private def dataProgramHeader : ProgramHeader :=
+  { (default : ProgramHeader) with
     p_type := .load,
-    p_flags := PhdrFlags.ofRaw 0x6, -- R|W
+    p_flags := ProgramHeaderFlags.ofRaw 0x6, -- R|W
     p_offset := 0x1000,
     p_vaddr := 0x1000,
     p_filesz := 0x100,
     p_memsz := 0x200,
     p_align := 0x1000 }
 
-private def overlapPhdr : Phdr :=
-  { (default : Phdr) with
+private def overlapProgramHeader : ProgramHeader :=
+  { (default : ProgramHeader) with
     p_type := .load,
-    p_flags := PhdrFlags.ofRaw 0x4, -- R
+    p_flags := ProgramHeaderFlags.ofRaw 0x4, -- R
     p_offset := 0x100,
     p_vaddr := 0x100,
     p_filesz := 0x10,
     p_memsz := 0x10,
     p_align := 0x100 }
 
-private def shiftedPhdr : Phdr :=
-  { (default : Phdr) with
+private def shiftedProgramHeader : ProgramHeader :=
+  { (default : ProgramHeader) with
     p_type := .load,
-    p_flags := PhdrFlags.ofRaw 0x4, -- R
+    p_flags := ProgramHeaderFlags.ofRaw 0x4, -- R
     p_offset := 0x2000,
     p_vaddr := 0x3000,
     p_filesz := 0x100,
@@ -49,18 +49,18 @@ private def shiftedPhdr : Phdr :=
     p_align := 0x1000 }
 
 private def execSeg? : Option Segment :=
-  match Segment.ofPhdr execPhdr exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[] with
   | .ok seg => some seg
   | .error _ => none
 
 #guard
   match execSeg? with
-  | some s => s.perm.read && s.perm.exec && !s.perm.write && s.vaddr == 0
+  | some s => s.perm.read && s.perm.exec && !s.perm.write && s.eaddr == 0
   | none => false
 
 private def checkedSegments? : Option Segments :=
-  match Segment.ofPhdr execPhdr exampleFileSize #[] #[],
-      Segment.ofPhdr dataPhdr exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[],
+      Segment.ofPhdr dataProgramHeader exampleFileSize #[] #[] with
   | .ok execSeg, .ok dataSeg =>
       match Segments.ofArray #[execSeg, dataSeg] with
       | .ok segs => some segs
@@ -71,8 +71,8 @@ private def checkedSegments? : Option Segments :=
 
 -- `Segments.ofArray` rejects unsorted PT_LOAD arrays.
 #guard
-  match Segment.ofPhdr execPhdr exampleFileSize #[] #[],
-      Segment.ofPhdr dataPhdr exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[],
+      Segment.ofPhdr dataProgramHeader exampleFileSize #[] #[] with
   | .ok execSeg, .ok dataSeg =>
       match Segments.ofArray #[dataSeg, execSeg] with
       | .error _ => true
@@ -81,8 +81,8 @@ private def checkedSegments? : Option Segments :=
 
 -- `Segments.ofArray` rejects overlapping sorted PT_LOAD arrays.
 #guard
-  match Segment.ofPhdr execPhdr exampleFileSize #[] #[],
-      Segment.ofPhdr overlapPhdr exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[],
+      Segment.ofPhdr overlapProgramHeader exampleFileSize #[] #[] with
   | .ok execSeg, .ok overlapSeg =>
       match Segments.ofArray #[execSeg, overlapSeg] with
       | .error _ => true
@@ -90,7 +90,7 @@ private def checkedSegments? : Option Segments :=
   | _, _ => false
 
 private def shiftedSegments? : Option Segments :=
-  match Segment.ofPhdr shiftedPhdr exampleFileSize #[] #[] with
+  match Segment.ofPhdr shiftedProgramHeader exampleFileSize #[] #[] with
   | .ok seg =>
       match Segments.ofArray #[seg] with
       | .ok segs => some segs
@@ -119,23 +119,23 @@ private def phdrMapped? (segments : Segments) (phoff : FileOff) (nbytes : Nat) :
   | none => false
 
 -- Non-identity `p_offset`/`p_vaddr` phdr coverage is accepted, and the checked
--- map records the translated virtual address used for `AT_PHDR`.
+-- map records the translated ELF address used for `AT_PHDR`.
 #guard
   match shiftedSegments? with
   | some segs =>
       match PhdrMap.ofSegments segs 0x2040 0x20 with
-      | .ok m    => m.vaddr == 0x3040
+      | .ok m    => m.eaddr == 0x3040
       | .error _ => false
   | none => false
 
-private def callTargetInExecSeg? (segments : Segments) (entry : Vaddr) : Bool :=
+private def callTargetInExecSeg? (segments : Segments) (entry : Eaddr) : Bool :=
   letI : Decidable (callTargetInExecSeg segments entry) := by
-    unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsVaddr Segment.ContainsVaddr
+    unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsEaddr Segment.ContainsEaddr
     infer_instance
   if _ : callTargetInExecSeg segments entry then true else false
 
-private def containsVaddrRange? (s : Segment) (addr : Vaddr) (len : ByteSize) : Bool :=
-  if _ : Segment.ContainsVaddrRange s addr len then true else false
+private def containsEaddrRange? (s : Segment) (addr : Eaddr) (len : ByteSize) : Bool :=
+  if _ : Segment.ContainsEaddrRange s addr len then true else false
 
 private def containsFileRange? (s : Segment) (off : FileOff) (len : ByteSize) : Bool :=
   if _ : Segment.ContainsFileRange s off len then true else false
@@ -151,9 +151,9 @@ private def containsFileRange? (s : Segment) (off : FileOff) (len : ByteSize) : 
 #guard
   match execSeg? with
   | some s =>
-      containsVaddrRange? s 0x10 0x8 &&
+      containsEaddrRange? s 0x10 0x8 &&
       containsFileRange? s 0x10 0x8 &&
-      !(containsVaddrRange? s 0x1ff 0x8)
+      !(containsEaddrRange? s 0x1ff 0x8)
   | none => false
 
 end LeanLoad.Parse.Example

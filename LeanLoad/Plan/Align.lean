@@ -146,7 +146,7 @@ private theorem alignUp_add_aligned_nat (d x ea : Nat) (h_pos : 0 < ea)
 
 /-- `alignDown x ea + alignUp y ea = alignUp ((alignDown x ea) + y) ea`,
     in `toNat` (no-wrap precondition). The shift identity for the
-    file-overlay bound: `alignDown vaddr ea` is aligned, so adding it
+    file-overlay bound: `alignDown eaddr ea` is aligned, so adding it
     pulls into the `alignUp`. -/
 theorem alignDown_add_alignUp_toNat (x y align : UInt64)
     (h_align_ne : align ≠ 0)

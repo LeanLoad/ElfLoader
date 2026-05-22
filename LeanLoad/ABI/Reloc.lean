@@ -21,7 +21,7 @@ to write). Parse only sees `r_info` as bytes.
 -/
 
 import LeanLoad.Parse.Reloc.Raw
-import LeanLoad.Parse.Ehdr.Fields
+import LeanLoad.Parse.ImageView.ElfHeader.Fields
 
 -- ============================================================================
 -- `r_info` bit-field accessors — unpack the packed `(sym, type)`
@@ -73,7 +73,7 @@ structure FormulaInputs where
   addend   : UInt64
   /-- `B` — base of the object containing the relocation site. -/
   base     : UInt64
-  /-- `P` — virtual address being relocated. -/
+  /-- `P` — ELF address being relocated. -/
   place    : UInt64
   deriving Repr
 
