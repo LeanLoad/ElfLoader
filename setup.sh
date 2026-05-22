@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# One-shot setup: system C toolchain, elan (Lean toolchain manager),
-# and the build-dep submodules. The exact Lean version is pinned in
-# `lean-toolchain` and elan installs it on first `lake` invocation.
+# One-shot setup for the C toolchain, elan, and build dependencies.
+# Lean is pinned by `lean-toolchain`; elan installs it on first `lake` run.
 #
-# Reference submodules (gabi, x86-64-ABI, lean4, ELFSage, etc.) are
-# documentation/spec sources and are NOT init'd by default — they're
-# multi-GB and only needed when actively cross-checking the spec.
-# Run `git submodule update --init --recursive` manually if you want
-# the full set.
+# Large reference/spec submodules are skipped by default. Run
+# `git submodule update --init --recursive` if you need them.
 set -euxo pipefail
 cd "$(dirname "$0")"
 
