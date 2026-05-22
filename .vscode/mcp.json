@@ -5,6 +5,11 @@
 			"args": [
 				"lean-lsp-mcp"
 			],
+			"env": {
+				"PATH": "${userHome}/.elan/bin:${userHome}/.local/bin:${env:PATH}",
+				"LEAN_PROJECT_PATH": "${workspaceFolder}",
+				"LEAN_LOG_LEVEL": "NONE"
+			},
 			"type": "stdio"
 		}
 	},
