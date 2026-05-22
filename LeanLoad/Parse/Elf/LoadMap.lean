@@ -29,20 +29,10 @@ instance : Inhabited LoadMap where
 
 namespace LoadMap
 
-/-- Translate a dynamic-table virtual-address range through a checked PT_LOAD.
-    The range must be file-backed (`p_filesz`), not merely memory-backed
-    (`p_memsz`), because the parser is about to read bytes from the ELF file. -/
-structure MappedVaddr (map : LoadMap) (va : Vaddr) (len : ByteSize) where
-  range    : Segments.AnyFileBackedVaddrRange map.segments va len
-  off      : FileOff
-  off_eq   : off = (map.segments.items[range.index]).fileOffOfVaddr va
-  deriving Repr
-
-/-- Validate header policy and PT_LOAD invariants before any dynamic pointer is
-    followed. This pushes parse facts earlier than the final checked-ELF
-    construction, so dynamic reads consume witnessed load-map state. -/
-def ofHeaders (fileSize : UInt64) (header : Ehdr) (phdrs : Array RawPhdr) :
-    Except String LoadMap := do
+/-- Validate ELF header policy and the fixed Elf64 record sizes that the byte
+    readers use. The size checks come from gabi 02 § ELF Header (`Elf64_Ehdr`)
+    and gabi 07 § Program Header (`Elf64_Phdr`). -/
+def checkHeader (header : Ehdr) : Except String Unit := do
   if header.ei_class != .class64 then
     .error s!"parse: only ELFCLASS64 supported \
       (got ei_class={reprStr header.ei_class})"
@@ -58,6 +48,23 @@ def ofHeaders (fileSize : UInt64) (header : Ehdr) (phdrs : Array RawPhdr) :
   if header.e_type == .exec then
     .error s!"parse: ET_EXEC not supported — LeanLoad expects PIE \
       (ET_DYN) inputs only. Recompile with -fPIE -pie."
+  return ()
+
+/-- Translate a dynamic-table virtual-address range through a checked PT_LOAD.
+    The range must be file-backed (`p_filesz`), not merely memory-backed
+    (`p_memsz`), because the parser is about to read bytes from the ELF file. -/
+structure MappedVaddr (map : LoadMap) (va : Vaddr) (len : ByteSize) where
+  range    : Segments.AnyFileBackedVaddrRange map.segments va len
+  off      : FileOff
+  off_eq   : off = (map.segments.items[range.index]).fileOffOfVaddr va
+  deriving Repr
+
+/-- Validate header policy and PT_LOAD invariants before any dynamic pointer is
+    followed. This pushes parse facts earlier than the final checked-ELF
+    construction, so dynamic reads consume witnessed load-map state. -/
+def ofHeaders (fileSize : UInt64) (header : Ehdr) (phdrs : Array RawPhdr) :
+    Except String LoadMap := do
+  checkHeader header
   let loadable := phdrs.filter (·.p_type == .load)
   let mut segmentsAcc : Array Segment := #[]
   for h : i in [:loadable.size] do

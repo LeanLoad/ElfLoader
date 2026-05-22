@@ -64,6 +64,9 @@ private def parseAtVa [Monad m] (r : FileReader m) (loadMap : LoadMap)
 /-- Stage 1: read direct-file-offset data (`ehdr`, phdrs, `.dynamic`). -/
 private def readHeaders [Monad m] (r : FileReader m) : ExceptT String m RawHeaders := do
   let header ← parseAt r 0 Ehdr.byteSize Ehdr.parse
+  match LoadMap.checkHeader header with
+  | .ok ()   => pure ()
+  | .error e => throw e
   let phdrs ← parseAt r header.e_phoff
                  (RawPhdr.tableByteSize header.e_phnum.toNat)
                  (RawPhdr.parseTable header.e_phnum.toNat)

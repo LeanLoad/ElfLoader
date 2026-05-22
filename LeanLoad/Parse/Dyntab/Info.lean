@@ -13,9 +13,10 @@ RawDyntab → DynInfo → layer-3 reads` pipeline.
 
 DynInfo is parse-internal: it is not exposed on `Elf` (the raw
 `.dynamic` array is not carried past checked parse). Projection is strict:
-duplicate singleton tags and half-present `(DT_X, DT_XSZ)` locators are
-parse errors, not `none`. Each field's resolved value either flows directly
-into a checked `Elf` field or drives a layer-3 read.
+duplicate singleton tags, half-present `(DT_X, DT_XSZ)` locators, and
+entry-size tags that disagree with LeanLoad's Elf64 readers are parse errors,
+not `none`. Each field's resolved value either flows directly into a checked
+`Elf` field or drives a layer-3 read.
 
 The raw `d_un : UInt64` values are wrapped into three semantic kinds at
 this boundary:
@@ -32,6 +33,10 @@ this boundary:
   • **byte size** (`strtab.2`, `rela.2`, `jmprel.2`, `initArr.2`,
     `finiArr.2`) — content length in bytes; entry count derives from
     `size / entrySize`.
+
+  • **entry-size discriminator** (`DT_SYMENT`, `DT_RELAENT`, `DT_PLTREL`) —
+    validates that dynamic symbol, rela, and PLT relocation readers are using
+    the Elf64/Rela layouts advertised by the file.
 
 `DT_RPATH` is **intentionally not honoured** (gabi 08 deprecates it;
 `Discover/IO.lean` and `Runtime.c` refuse to honour it too). `runpath`
