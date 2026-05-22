@@ -11,9 +11,9 @@ production uses. Only the `FileReader` instance changes (`pureReader`
 vs `Runtime.fileReader`); section offsets are discovered via
 the checked `LoadMap` over the parsed phdrs.
 
-The fixture is also engineered to satisfy checked-parse gabi-07
-checks: the lone PT_LOAD has `vaddr = offset = 0` and covers the phdr
-table, every rela offset, and every init_array entry.
+The fixture is also engineered to satisfy checked-parse gabi-07 checks:
+the lone PT_LOAD has `vaddr = offset = 0` and file-backs every dynamic
+table, rela offset, and init_array entry.
 -/
 
 import LeanLoad.Parse.Elf.Entry

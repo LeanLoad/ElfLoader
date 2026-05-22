@@ -62,8 +62,7 @@ def mockElf (soname : Option String := some "anon")
   runpath
   segments := Parse.Segments.empty
   initArr  := #[]
-  finiArr  := #[]
-  phdrCovered := Or.inl (by simp) }
+  finiArr  := #[] }
 
 -- ============================================================================
 -- TestStore — in-memory `path → Elf` map. Mirrors what the production

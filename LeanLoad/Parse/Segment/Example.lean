@@ -38,6 +38,16 @@ private def overlapPhdr : RawPhdr :=
     p_memsz := 0x10,
     p_align := 0x100 }
 
+private def shiftedPhdr : RawPhdr :=
+  { (default : RawPhdr) with
+    p_type := .load,
+    p_flags := PhdrFlags.ofRaw 0x4, -- R
+    p_offset := 0x2000,
+    p_vaddr := 0x3000,
+    p_filesz := 0x100,
+    p_memsz := 0x100,
+    p_align := 0x1000 }
+
 private def execSeg? : Option Segment :=
   match Segment.ofPhdr execPhdr exampleFileSize #[] #[] with
   | .ok seg => some seg
@@ -79,26 +89,43 @@ private def checkedSegments? : Option Segments :=
       | .ok _ => false
   | _, _ => false
 
-private def phdrCovered? (segs : Array Segment) (phoff : FileOff) (nbytes : Nat) : Bool :=
-  letI : Decidable (PhdrCovered segs phoff nbytes) := by
-    unfold PhdrCovered coversPhdrs
-    infer_instance
-  if _ : PhdrCovered segs phoff nbytes then true else false
+private def shiftedSegments? : Option Segments :=
+  match Segment.ofPhdr shiftedPhdr exampleFileSize #[] #[] with
+  | .ok seg =>
+      match Segments.ofArray #[seg] with
+      | .ok segs => some segs
+      | .error _ => none
+  | .error _ => none
+
+private def phdrMapped? (segments : Segments) (phoff : FileOff) (nbytes : Nat) : Bool :=
+  match PhdrMap.ofSegments segments phoff nbytes with
+  | .ok _    => true
+  | .error _ => false
 
 #guard
   match checkedSegments? with
-  | some segs => phdrCovered? segs.items 0x40 0x80
+  | some segs => phdrMapped? segs 0x40 0x80
   | none => false
 
 #guard
   match checkedSegments? with
-  | some segs => !(phdrCovered? segs.items 0x3000 0x10)
+  | some segs => !(phdrMapped? segs 0x3000 0x10)
   | none => false
 
--- `PhdrCovered` requires file-backed bytes, not just BSS memory coverage.
+-- `PhdrMap` requires file-backed bytes, not just BSS memory coverage.
 #guard
   match checkedSegments? with
-  | some segs => !(phdrCovered? segs.items 0x1150 0x10)
+  | some segs => !(phdrMapped? segs 0x1150 0x10)
+  | none => false
+
+-- Non-identity `p_offset`/`p_vaddr` phdr coverage is accepted, and the checked
+-- map records the translated virtual address used for `AT_PHDR`.
+#guard
+  match shiftedSegments? with
+  | some segs =>
+      match PhdrMap.ofSegments segs 0x2040 0x20 with
+      | .ok m    => m.vaddr == 0x3040
+      | .error _ => false
   | none => false
 
 private def callTargetInExecSeg? (segments : Segments) (entry : Vaddr) : Bool :=

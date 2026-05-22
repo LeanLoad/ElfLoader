@@ -6,11 +6,11 @@ import LeanLoad.Parse.Phdr.Raw
 
 namespace LeanLoad.Parse.Example
 
-/-- 112-byte program-header fixture: one PT_LOAD covering the full
-    520-byte file at `vaddr = offset = 0` (the convention every real
-    linker uses so `AT_PHDR` calculations work without offset→vaddr
-    translation), plus one PT_DYNAMIC pointing at the dynamic section at
-    offset 0x128. Coordinated with `Elf.Example.fixtureBytes`. -/
+/-- 112-byte program-header fixture: one PT_LOAD covering the full 520-byte file
+    at `vaddr = offset = 0` (the normal linker shape, though checked parse can
+    translate non-identity `p_offset`/`p_vaddr` pairs), plus one PT_DYNAMIC
+    pointing at the dynamic section at offset 0x128. Coordinated with
+    `Elf.Example.fixtureBytes`. -/
 def phdrBytes : ByteArray := ⟨#[
   -- Phdr[0]: PT_LOAD covering [0..0x208] ────────────────────────────────
   0x01, 0x00, 0x00, 0x00,                           -- p_type   = PT_LOAD

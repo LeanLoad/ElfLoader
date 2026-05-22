@@ -149,6 +149,12 @@ instance (s : Segment) (addr : Vaddr) (len : ByteSize) :
 def fileOffOfVaddr (s : Segment) (addr : Vaddr) : FileOff :=
   ⟨s.offset.val + (addr.val - s.vaddr.val)⟩
 
+/-- Virtual address corresponding to a file offset inside the segment's
+    file-backed image. Callers carry the file-backed containment witness that
+    makes this translation meaningful. -/
+def vaddrOfFileOff (s : Segment) (off : FileOff) : Vaddr :=
+  ⟨s.vaddr.val + (off.val - s.offset.val)⟩
+
 /-- Keep a checked segment's established byte-layout witnesses while attaching
     the relocations that parse located inside its memory range. -/
 def withRelocs (s : Segment)

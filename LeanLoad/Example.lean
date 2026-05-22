@@ -61,9 +61,7 @@ instance : Inhabited Elf where
       symtab := #[], needed := #[],
       soname := Option.none, runpath := Option.none,
       segments := Segments.empty,
-      initArr := #[], finiArr := #[],
-      -- `phnum = 0` ⇒ `nbytes = 0`, the vacuous-true branch.
-      phdrCovered := Or.inl rfl }
+      initArr := #[], finiArr := #[] }
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
 def synthElf
@@ -77,10 +75,7 @@ def synthElf
       e_entry := 0, e_phoff := 0, e_phnum := 0 },
     needed, symtab,
     segments,
-    initArr := #[], finiArr := #[],
-    -- `phnum = 0` keeps the phdr coverage witness vacuous even when
-    -- examples override the segment array.
-    phdrCovered := Or.inl rfl }
+    initArr := #[], finiArr := #[] }
 
 -- ============================================================================
 -- 2. Checked parse boundary.

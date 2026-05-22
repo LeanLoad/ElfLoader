@@ -14,29 +14,53 @@ import LeanLoad.Parse.Segment.Array
 namespace LeanLoad.Parse
 
 -- ============================================================================
--- Phdr coverage — a PT_LOAD segment maps the program-header table to
--- the loaded image at virtual address `phoff`. Requires `vaddr =
--- offset` for the covering segment so `mainBase + phoff` equals the
--- runtime `AT_PHDR` without an offset→vaddr translation. By gabi-07
--- convention the first PT_LOAD has both at 0 (or the same aligned
--- base) and contains the ELF header + phdr table.
+-- Phdr mapping — when the runtime emits `AT_PHDR`, a PT_LOAD segment must
+-- file-back the program-header table. The value is computed by translating
+-- `e_phoff` through the covering segment, not by assuming `p_vaddr = p_offset`.
 -- ============================================================================
 
 /-- The PT_LOAD segment `s` file-backs the program-header table at file offset
-    `phoff` of byte length `nbytes`, AND its `vaddr` equals its `offset` (so
-    `runtime_addr = mainBase + phoff` is consistent with the kernel's
-    `AT_PHDR`). -/
+    `phoff` of byte length `nbytes`. -/
 def coversPhdrs (s : Segment) (phoff : FileOff) (nbytes : Nat) : Prop :=
-  s.vaddr.val = s.offset.val ∧
   s.offset.toNat ≤ phoff.toNat ∧
   phoff.toNat + nbytes ≤ s.offset.toNat + s.filesz.toNat
 
-/-- Some PT_LOAD segment covers the phdr table (per `coversPhdrs`),
-    or there's no phdr table to cover (`nbytes = 0`, degenerate Elf
-    with `phnum = 0` — `AT_PHDR` is unused in that case). Bounded
-    `∃` so it's decidable via `Nat.decidableBExLT`. -/
-def PhdrCovered (segs : Array Segment) (phoff : FileOff) (nbytes : Nat) : Prop :=
-  nbytes = 0 ∨ ∃ i, ∃ _ : i < segs.size, coversPhdrs segs[i] phoff nbytes
+/-- Checked phdr-table mapping for `AT_PHDR`. This carries the segment index
+    needed to translate the table's file offset into its loaded virtual address. -/
+inductive PhdrMap (segments : Segments) (phoff : FileOff) (nbytes : Nat) where
+  | empty (isEmpty : nbytes = 0)
+  | mapped (index : Fin segments.items.size)
+      (covers : coversPhdrs segments.items[index] phoff nbytes)
+  deriving Repr
+
+namespace PhdrMap
+
+/-- Virtual address of the program-header table in the loaded image, relative to
+    the object's base. For `phnum = 0`, `AT_PHDR` is unused and this returns 0. -/
+def vaddr {segments : Segments} {phoff : FileOff} {nbytes : Nat}
+    (m : PhdrMap segments phoff nbytes) : Vaddr :=
+  match m with
+  | .empty _ => 0
+  | .mapped index _ => segments.items[index].vaddrOfFileOff phoff
+
+/-- Build a checked phdr-table mapping by searching the checked PT_LOAD array. -/
+def ofSegments (segments : Segments) (phoff : FileOff) (nbytes : Nat) :
+    Except String (PhdrMap segments phoff nbytes) := Id.run do
+  if h_empty : nbytes = 0 then
+    return .ok (.empty h_empty)
+  for h : i in [:segments.items.size] do
+    let index : Fin segments.items.size := ⟨i, h.upper⟩
+    let decCovers : Decidable (coversPhdrs segments.items[index] phoff nbytes) := by
+      unfold coversPhdrs
+      infer_instance
+    match decCovers with
+    | .isTrue h_covers => return .ok (.mapped index h_covers)
+    | .isFalse _ => pure ()
+  return .error s!"phdr table at file offset \
+    0x{phoff.toNat} (size {nbytes}) is not file-backed by any PT_LOAD; \
+    AT_PHDR cannot be computed"
+
+end PhdrMap
 
 -- ============================================================================
 -- Ctor / dtor address coverage — every non-zero entry in

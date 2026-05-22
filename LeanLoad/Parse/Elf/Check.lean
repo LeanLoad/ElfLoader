@@ -43,24 +43,12 @@ def checkImage (raw : RawImage) : Except String _root_.LeanLoad.Parse.Elf := do
     | some off => do
         let s ← resolveStrtabOff "DT_RUNPATH" raw.strtab off
         pure (some s)
-  let phdr_nbytes : Nat := Parse.RawPhdrSize * header.e_phnum.toNat
-  let decPhdr : Decidable (PhdrCovered segments.items header.e_phoff phdr_nbytes) := by
-    unfold PhdrCovered coversPhdrs
-    infer_instance
-  match decPhdr with
-  | .isTrue h_phdr =>
-    let initArr ← checkInitFiniArray "DT_INIT_ARRAY" segments raw.initArr
-    let finiArr ← checkInitFiniArray "DT_FINI_ARRAY" segments raw.finiArr
-    return {
-      header,
-      symtab,
-      needed, soname, runpath, segments,
-      initArr, finiArr,
-      phdrCovered := h_phdr }
-  | .isFalse _ =>
-    .error s!"parse: phdr table at file offset \
-      0x{header.e_phoff.toNat} (size {phdr_nbytes}) is not covered \
-      by any PT_LOAD with vaddr=offset; AT_PHDR cannot be computed as \
-      mainBase + phoff"
+  let initArr ← checkInitFiniArray "DT_INIT_ARRAY" segments raw.initArr
+  let finiArr ← checkInitFiniArray "DT_FINI_ARRAY" segments raw.finiArr
+  return {
+    header,
+    symtab,
+    needed, soname, runpath, segments,
+    initArr, finiArr }
 
 end LeanLoad.Parse.Elf

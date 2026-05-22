@@ -4,8 +4,7 @@ Materialize.
 
 `Elf` carries the loader-facing facts established during checked parse:
 header policy, segment well-formedness, relocation containment, resolved
-dynamic strings, constructor/destructor target coverage, and program-header
-table coverage.
+dynamic strings, and constructor/destructor target coverage.
 -/
 
 import LeanLoad.Parse.Ehdr.Raw
@@ -56,13 +55,6 @@ structure Elf where
   /-- `DT_FINI_ARRAY` entries — dtors, walked backward on exit. Each entry is
       zero or targets an executable PT_LOAD in `segments`. -/
   finiArr  : Elf.InitFiniArray segments
-  /-- The program-header table is mapped to the loaded image at virtual address
-      `header.e_phoff` — i.e. some PT_LOAD with `vaddr = offset` covers
-      `[e_phoff, e_phoff + e_phnum × RawPhdrSize)`. Lets `Main.realize` pass
-      `mainBase + e_phoff` as `AT_PHDR` to `execAndJump` without
-      offset-to-vaddr translation. -/
-  phdrCovered :
-    PhdrCovered segments.items header.e_phoff (Parse.RawPhdrSize * header.e_phnum.toNat)
   deriving Repr
 
 end LeanLoad.Parse
