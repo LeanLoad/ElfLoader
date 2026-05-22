@@ -25,9 +25,6 @@
 [submodule "third_party/veil"]
 	path = third_party/veil
 	url = https://github.com/verse-lab/veil.git
-[submodule "third_party/lean4"]
-	path = third_party/lean4
-	url = https://github.com/leanprover/lean4.git
 [submodule "third_party/VeriLoad"]
 	path = third_party/VeriLoad
 	url = https://github.com/ShawnZhong/VeriLoad.git
