@@ -10,6 +10,8 @@ Base-free.
 assume a positive alignment without adding a precondition.
 -/
 
+import LeanLoad.Parse.Address
+
 namespace LeanLoad.Plan
 
 -- ============================================================================
@@ -149,7 +151,7 @@ private theorem alignUp_add_aligned_nat (d x ea : Nat) (h_pos : 0 < ea)
 theorem alignDown_add_alignUp_toNat (x y align : UInt64)
     (h_align_ne : align ≠ 0)
     (h_y_no_wrap : y.toNat + align.toNat < 2 ^ 64)
-    (h_sum_no_wrap : x.toNat + y.toNat + align.toNat < 2 ^ 64) :
+    (h_sum_no_wrap : (alignDown x align).toNat + y.toNat + align.toNat < 2 ^ 64) :
     (alignDown x align).toNat + (alignUp y align).toNat =
     (alignUp ((alignDown x align) + y) align).toNat := by
   have h_align_pos : 0 < align.toNat := toNat_pos_of_ne_zero h_align_ne
@@ -240,24 +242,13 @@ theorem alignUp_ge (x align : UInt64)
 /-- Effective alignment: `align`, with `0` lifted to `1` so every
     page-arithmetic def is total. -/
 def effectiveAlign (align : UInt64) : UInt64 :=
-  if align == 0 then 1 else align
+  LeanLoad.Parse.segmentLayoutAlign align
 
 theorem effectiveAlign_ne_zero (align : UInt64) :
     effectiveAlign align ≠ 0 := by
-  unfold effectiveAlign
+  change (if align == 0 then (1 : UInt64) else align) ≠ 0
   split
   · decide
   · intro h; rename_i hne; apply hne; simp [h]
-
-theorem ea_no_wrap (vaddr memsz align : UInt64)
-    (h_addr : vaddr.toNat + memsz.toNat + align.toNat < 2 ^ 48) :
-    vaddr.toNat + memsz.toNat + (effectiveAlign align).toNat < 2^64 := by
-  have h_2_48 : (2:Nat)^48 + 1 < 2^64 := by decide
-  unfold effectiveAlign
-  split <;> rename_i h
-  · have : align.toNat = 0 := by simp at h; rw [h]; rfl
-    have h_one : (1 : UInt64).toNat = 1 := rfl
-    rw [h_one]; omega
-  · omega
 
 end LeanLoad.Plan

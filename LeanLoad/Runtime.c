@@ -2,11 +2,11 @@
  * kernel. Counterpart to `LeanLoad/Runtime.lean`.
  *
  * Two topic groups:
- *   1. IO ops — file ops + memory ops. `FileHandle` is a transparent
- *      `uint32_t` fd; lifetime is process-bounded (we never close;
- *      the loaded program inherits the fd table when `exec_run`
- *      switches stack). All addresses cross the boundary as
- *      `uint64_t`.
+ *   1. IO ops — file ops + memory ops. Lean's `Runtime.File` carries a
+ *      transparent `uint32_t` fd plus the regular-file size captured by
+ *      `fstat(2)`. Lifetime is process-bounded (we never close; the
+ *      loaded program inherits the fd table when `exec_run` switches
+ *      stack). All addresses cross the boundary as `uint64_t`.
  *   2. Control transfer — `leanload_exec_run` builds the
  *      kernel-`exec`-style stack and switches SP. Doesn't return.
  *
@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Wrap a C string as a `lean_io_result_mk_error`. */
@@ -82,7 +83,7 @@ static int leanload_search_path_list(const char *list,
  *      same. (DT_RUNPATH; DT_RPATH is deprecated, not honoured.)
  *   4. Else return `none`.
  *
- * Returns `IO (Option FileHandle)` — the open fd, or `none` if no
+ * Returns `IO (Option UInt32)` — the open fd, or `none` if no
  * candidate existed. Lean derives the canonical dedup key from
  * `DT_SONAME` (read after parse) — no path needed back from C.
  * Open errors propagate as `none`; the BFS surfaces them with the
@@ -120,10 +121,22 @@ LEAN_EXPORT lean_object * leanload_open_by_name(
         /* Option.none = ctor 0, no fields = lean_box(0). */
         return lean_io_result_mk_ok(lean_box(0));
     }
-    /* Option.some FileHandle = ctor 1, one field. */
+    /* Option.some UInt32 = ctor 1, one field. */
     lean_object * some = lean_alloc_ctor(1, 1, 0);
     lean_ctor_set(some, 0, lean_box_uint32((uint32_t)fd));
     return lean_io_result_mk_ok(some);
+}
+
+/* Return the observed regular-file size for an open fd. */
+LEAN_EXPORT lean_object * leanload_file_size(uint32_t fd, lean_object * /* w */) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) {
+        return leanload_io_err(strerror(errno));
+    }
+    if (!S_ISREG(st.st_mode) || st.st_size < 0) {
+        return leanload_io_err("open file is not a regular file with a nonnegative size");
+    }
+    return lean_io_result_mk_ok(lean_box_uint64((uint64_t)st.st_size));
 }
 
 /* `pread(2)` exactly `len` bytes at `offset` into a fresh ByteArray.

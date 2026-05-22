@@ -1,5 +1,5 @@
 /-
-Relocation formulas — gabi-06 abstract `(S, A, B, P)` inputs, the
+ABI relocation formulas — gabi-06 abstract `(S, A, B, P)` inputs, the
 per-arch tables, and the per-`e_machine` dispatcher.
 
 Three sections, layered:
@@ -15,13 +15,13 @@ Three sections, layered:
 3. **Dispatch** — `formulaFor` selects the per-arch formula by
    `e_machine` (gabi 02 § ELF Identification).
 
-These types are the *interpretive* layer over `Parse.RawRela` — they
-say what a relocation type code *means* (which formula to apply,
-what width to write). Parse only sees `r_info` as bytes.
+These types are the *interpretive* ABI layer over `Parse.RawRela` — they
+say what a relocation type code *means* (which formula to apply, what width
+to write). Parse only sees `r_info` as bytes.
 -/
 
-import LeanLoad.Parse.Dynamic.RawRela
-import LeanLoad.Elaborate.Header
+import LeanLoad.Parse.Reloc.Raw
+import LeanLoad.Parse.Ehdr.Fields
 
 -- ============================================================================
 -- `r_info` bit-field accessors — unpack the packed `(sym, type)`
@@ -54,7 +54,7 @@ end LeanLoad.Parse.RawRela
 -- Abstract relocation types — gabi 06 § Relocation.
 -- ============================================================================
 
-namespace LeanLoad.Elaborate
+namespace LeanLoad.ABI
 
 /-- Width of a relocation write: ELF dynamic relocations write either
     a 32-bit or a 64-bit value at the target. Encoding the choice as
@@ -88,7 +88,7 @@ structure FormulaResult where
     on `e_machine`. -/
 abbrev Formula := UInt32 → FormulaInputs → Option FormulaResult
 
-end LeanLoad.Elaborate
+end LeanLoad.ABI
 
 -- ============================================================================
 -- AArch64 dynamic relocations.
@@ -108,9 +108,9 @@ end LeanLoad.Elaborate
 -- completeness; in practice the linker emits them with `A = 0`.
 -- ============================================================================
 
-namespace LeanLoad.Elaborate.Aarch64
+namespace LeanLoad.ABI.Aarch64
 
-open LeanLoad.Elaborate
+open LeanLoad.ABI
 
 def R_AARCH64_NONE      : UInt32 := 0
 def R_AARCH64_ABS64     : UInt32 := 257
@@ -212,7 +212,7 @@ theorem formula_some_isNamed {ty : UInt32} {inp : FormulaInputs}
   rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3, if_neg h4, if_neg h5] at h
   cases h
 
-end LeanLoad.Elaborate.Aarch64
+end LeanLoad.ABI.Aarch64
 
 -- ============================================================================
 -- x86-64 dynamic relocations.
@@ -237,9 +237,9 @@ end LeanLoad.Elaborate.Aarch64
 -- `R_X86_64_32` truncates to 32 bits.
 -- ============================================================================
 
-namespace LeanLoad.Elaborate.X86_64
+namespace LeanLoad.ABI.X86_64
 
-open LeanLoad.Elaborate
+open LeanLoad.ABI
 
 def R_X86_64_NONE      : UInt32 := 0
 def R_X86_64_64        : UInt32 := 1
@@ -337,17 +337,17 @@ theorem formula_some_isNamed {ty : UInt32} {inp : FormulaInputs}
   rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3, if_neg h4, if_neg h5] at h
   cases h
 
-end LeanLoad.Elaborate.X86_64
+end LeanLoad.ABI.X86_64
 
 -- ============================================================================
 -- Per-`e_machine` dispatch.
 -- ============================================================================
 
-namespace LeanLoad.Elaborate
+namespace LeanLoad.ABI
 
 /-- Pick the relocation formula for `machine`. -/
 def formulaFor : LeanLoad.Parse.ElfMachine → Formula
   | .aarch64 => Aarch64.formula
   | .x86_64  => X86_64.formula
 
-end LeanLoad.Elaborate
+end LeanLoad.ABI

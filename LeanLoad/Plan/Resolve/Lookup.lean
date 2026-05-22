@@ -30,7 +30,7 @@ import LeanLoad.Discover.Graph
 namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
-open LeanLoad.Elaborate (Elf)
+open LeanLoad.Parse (Elf)
 open LeanLoad.Discover (LoadGraph)
 
 /-- Resolve `name` against the loaded graph via traversal over
@@ -75,7 +75,7 @@ theorem resolveByName_provider_defines {g : LoadGraph}
     (h : resolveByName g order name = some ref) :
     (g.objects[ref.objectIdx].elf.symtab[ref.symIdx]'(resolveByName_lt_size h)).isGlobalDef = true ∧
     (g.objects[ref.objectIdx].elf.symtab[ref.symIdx]'(resolveByName_lt_size h)).name
-        = some name := by
+        = name := by
   have h' := h
   unfold resolveByName at h'
   obtain ⟨_idx, _h_mem, h_f⟩ := Array.exists_of_findSome?_eq_some h'

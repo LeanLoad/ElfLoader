@@ -6,11 +6,11 @@ edge cases for *that* unit. This file covers *integration* across
 stages plus boundary-rejection cases that span more than one file:
 
   1. `Inhabited Elf` and `synthElf` — fixtures used below. Production
-     never builds an `Elf` without going through `elaborate`; these
-     synthesize partial Elfs for the compile-time `#guard`s.
+     never builds an `Elf` without going through checked `Parse.parse`;
+     these synthesize partial Elfs for the compile-time `#guard`s.
 
-  2. **Elaborate boundary** — `RawElf → Except String Elf`. The
-     rejection paths a malformed binary takes through `elaborate`.
+  2. **Checked parse boundary** — synthetic ELF bytes accepted by
+     `Parse.parseM`, surfacing the checked `Elf` fields.
 
   3. **Plan walkthrough** — symbol resolution (`Plan/Resolve`),
      base assignment (`Plan/Layout`), and the `SegmentLayout` view
@@ -31,13 +31,12 @@ driven readability.
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Materialize.Build
-import LeanLoad.Elaborate.Elf
+import LeanLoad.Parse.Elf.Example
 
 namespace LeanLoad.Example
 
 open LeanLoad
-open LeanLoad.Elaborate
-open LeanLoad.Parse (Symbol Segment)
+open LeanLoad.Parse
 open LeanLoad.Plan
 
 -- ============================================================================
@@ -49,104 +48,55 @@ open LeanLoad.Plan
     returned by `Runtime.mmapAnonAlloc`. -/
 private def exampleAnchor : UInt64 := 0x80000000
 
+private def exampleFileSize : UInt64 := 0x100000
+
 /-- Default `Elf` — empty in every dimension. Used only by tests that
     synthesize an `Elf` and override the few fields the test cares
-    about; production code always goes through `elaborate`. -/
-instance : Inhabited Elaborate.Elf where
+    about; production code always goes through `Parse.parse`. -/
+instance : Inhabited Elf where
   default :=
-    { elfType := .none, machine := .x86_64,
-      entry := 0, phoff := 0, phnum := 0,
+    { header := { (default : Ehdr) with
+        e_type := .none, e_machine := .x86_64,
+        e_entry := 0, e_phoff := 0, e_phnum := 0 },
       symtab := #[], needed := #[],
       soname := Option.none, runpath := Option.none,
+      segments := Segments.empty,
       initArr := #[], finiArr := #[],
-      segments := #[],
-      segmentsSorted := by decide,
-      segmentsNonOverlap := by decide,
       -- `phnum = 0` ⇒ `nbytes = 0`, the vacuous-true branch.
-      phdrCovered := Or.inl rfl
-      -- Empty init/fini array — vacuously every entry is in some exec seg.
-      initArrInExecSeg := by decide
-      finiArrInExecSeg := by decide }
+      phdrCovered := Or.inl rfl }
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
 def synthElf
     (elfType : Parse.ElfType            := .none)
     (needed  : Array String             := #[])
     (symtab  : Array Parse.Symbol       := #[])
-    (segments : Array Parse.Segment     := #[])
-    (segmentsSorted : Sorted segments        := by decide)
-    (segmentsNonOverlap : NonOverlap segments := by decide) : Elaborate.Elf :=
-  { (default : Elaborate.Elf) with
-    elfType, needed, symtab, segments,
-    segmentsSorted, segmentsNonOverlap,
+    (segments : Parse.Segments          := Segments.empty) : Elf :=
+  { (default : Elf) with
+    header := { (default : Ehdr) with
+      e_type := elfType, e_machine := .x86_64,
+      e_entry := 0, e_phoff := 0, e_phnum := 0 },
+    needed, symtab,
+    segments,
+    initArr := #[], finiArr := #[],
     -- `phnum = 0` keeps the phdr coverage witness vacuous even when
     -- examples override the segment array.
-    phdrCovered := Or.inl rfl,
-    initArrInExecSeg := by decide,
-    finiArrInExecSeg := by decide }
+    phdrCovered := Or.inl rfl }
 
 -- ============================================================================
--- 2. Elaborate boundary: `RawElf → Except String Elf`.
---
--- Magic and byte-decode shape are checked at *parse* time; a
--- malformed magic prefix never produces a `RawElf` (see the example
--- block in `Parse/Header/Ehdr.lean`). The cases below are the ones
--- `elaborate` itself enforces; unknown `e_machine` values are rejected
--- earlier, during `RawEhdr` byte decode.
+-- 2. Checked parse boundary.
 -- ============================================================================
-
-/-- Header for a 64-bit, little-endian, x86-64, ET_DYN ELF — the
-    minimum that lets `elaborate` past the header sanity gates. -/
-private def goodHeader : Parse.RawEhdr := { (default : Parse.RawEhdr) with
-  ei_class  := ELFCLASS64,
-  ei_data   := ELFDATA2LSB,
-  e_type    := .dyn,
-  e_machine := .x86_64 }
-
-/-- Smallest `RawElf` `elaborate` can succeed on: no PT_LOAD, no
-    relas, just a sane header. -/
-private def emptyRawElf : Parse.RawElf := { (default : Parse.RawElf) with
-  header := goodHeader }
-
-#guard (elaborate emptyRawElf).toOption.isSome
-
--- Rejection: `ei_class != ELFCLASS64` (we only support 64-bit).
-private def class32 : Parse.RawElf := { emptyRawElf with
-  header := { emptyRawElf.header with ei_class := ELFCLASS32 } }
-#guard (elaborate class32).toOption.isNone
-
--- Rejection: big-endian (only ELFDATA2LSB supported).
-private def bigEndian : Parse.RawElf := { emptyRawElf with
-  header := { emptyRawElf.header with ei_data := ELFDATA2MSB } }
-#guard (elaborate bigEndian).toOption.isNone
-
--- Rejection: fixed-address ET_EXEC inputs are outside LeanLoad's PIE
--- loader model.
-private def execType : Parse.RawElf := { emptyRawElf with
-  header := { emptyRawElf.header with e_type := .exec } }
-#guard (elaborate execType).toOption.isNone
-
--- Rejection: a rela whose offset doesn't sit inside any PT_LOAD.
--- With no PT_LOAD entries, every rela is uncovered.
-private def relaWithNoCover : Parse.RawElf := { emptyRawElf with
-  rela := #[{ r_offset := 0xdeadbeef, r_info := 0, r_addend := 0 }] }
-#guard (elaborate relaWithNoCover).toOption.isNone
 
 -- Real-world acceptance: the 488-byte hand-crafted ELF fixture
--- (`Parse.RawElf.fixtureBytes` → `Parse.RawElf.fixture`) is a
+-- (`Parse.Elf.Example.fixtureBytes` → `Parse.Elf.Example.fixture`) is a
 -- library-shaped ET_DYN with strtab, symtab, DT_HASH, rela,
 -- init_array, and a 12-entry dynamic table — engineered to satisfy
--- every gabi-07 segment + per-elf invariant `elaborate` enforces.
--- The byte layout and the parse-side `#guard`s live in
--- `LeanLoad/Parse/RawElf.lean`'s integration `section Example`;
--- here we check only that `elaborate` accepts the reassembled
--- `RawElf` and surfaces the expected fields.
-#guard match Parse.RawElf.fixture.bind elaborate with
+-- every checked-parse invariant.
+#guard match Parse.Elf.Example.fixture with
        | .ok elf =>
-           elf.elfType    == .dyn
-        && elf.machine    == .x86_64
-        && elf.entry      == 0x100
-        && elf.segments.size == 1                 -- single PT_LOAD
+           elf.header.e_type    == .dyn
+        && elf.header.e_machine == .x86_64
+        && elf.header.e_entry   == 0x100
+        && elf.segments.items.size == 1           -- single PT_LOAD
         && elf.needed.size == 1                   -- DT_NEEDED "libc.so.6"
         && elf.initArr.size == 1                  -- one ctor
        | .error _ => false
@@ -158,19 +108,19 @@ private def relaWithNoCover : Parse.RawElf := { emptyRawElf with
 -- ---- 3a. Symbol resolution: main refs `printf`, libc defines it. -----------
 
 private def globalDef (name : String) (value : UInt64) : Symbol :=
-  { name := some name, bind := .global, shndx := .concrete 1, value }
+  { name, bind := .global, shndx := .concrete 1, value }
 
 private def undef (name : String) : Symbol :=
-  { name := some name, bind := .global, shndx := .undef, value := 0 }
+  { name, bind := .global, shndx := .undef, value := 0 }
 
-private def resolveElfs : Array Elaborate.Elf := #[
+private def resolveElfs : Array Elf := #[
   synthElf (needed := #["libc.so"])
            (symtab := #[default, undef "printf"]),
   synthElf (symtab := #[default, globalDef "printf" 0xc0ffee]) ]
 
-private def loadedObject (name : String) (elf : Elaborate.Elf) :
+private def loadedObject (name : String) (elf : Elf) :
     Discover.LoadedObject :=
-  { name, handle := 0, elf }
+  { name, handle := (default : Runtime.File), elf }
 
 private def resolveGraph : Discover.LoadGraph :=
   { objects := #[
@@ -179,7 +129,7 @@ private def resolveGraph : Discover.LoadGraph :=
     deps := #[#[1], #[]],
     initOrder := #[⟨1, by decide⟩, ⟨0, by decide⟩],
     sizePos := by decide,
-    namesNodup := by decide,
+    namesNodup := by native_decide,
     depsSize := by decide,
     depsBounds := by decide,
     closure := by decide,
@@ -202,21 +152,21 @@ private def emptyResolveTable (objCount : Nat) : Resolve.Table objCount :=
 /-- Synthetic PT_LOAD segment built via `Segment.ofPhdr`. Returns
     `Option` because `ofPhdr` returns `Except` for ill-formed phdrs;
     well-formed inputs always succeed. -/
-private def synthSegment? (vaddr memsz : UInt64) : Option Parse.Segment :=
+private def synthSegment? (vaddr : Parse.Vaddr) (memsz : Parse.ByteSize) : Option Parse.Segment :=
   let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
-    p_type := Parse.PT_LOAD,
+    p_type := .load,
     p_vaddr := vaddr, p_memsz := memsz,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Parse.Segment.ofPhdr phdr #[] #[]).toOption
+  (Parse.Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
 
--- ET_EXEC is rejected at elaborate time, so every elf reaching
+-- ET_EXEC is rejected during checked parse, so every elf reaching
 -- planning is ET_DYN. `assignBases` takes the reservation base
 -- as a parameter; production gets it from `Runtime.mmapAnon`.
 #guard
-  let elfs : Array Elaborate.Elf := #[synthElf (elfType := .dyn)]
+  let elfs : Array Elf := #[synthElf (elfType := .dyn)]
   let rt := emptyResolveTable elfs.size
   match Layout.ofElfs elfs rt with
-  | .ok lp => assignBases exampleAnchor lp == #[exampleAnchor]
+  | .ok lp => (assignBases exampleAnchor lp).toArray == #[exampleAnchor]
   | .error _ => false
 
 -- A single-segment array's `Sorted` and `NonOverlap` predicates are
@@ -224,16 +174,21 @@ private def synthSegment? (vaddr memsz : UInt64) : Option Parse.Segment :=
 -- proofs since `synthElf`'s `by decide` defaults can't discharge a
 -- type containing a free `Segment` variable.
 private theorem sorted_singleton (seg : Segment) :
-    Elaborate.Sorted #[seg] := by
+    Segments.Sorted #[seg] := by
   intro i hi j hj h_ij
   simp at hi hj
   omega
 
 private theorem nonOverlap_singleton (seg : Segment) :
-    Elaborate.NonOverlap #[seg] := by
+    Segments.NonOverlap #[seg] := by
   intro i hi j hj h_ij
   simp at hi hj
   omega
+
+private def singletonSegments (seg : Segment) : Segments :=
+  { items := #[seg],
+    sorted := sorted_singleton seg,
+    nonOverlap := nonOverlap_singleton seg }
 
 -- Stacking: each `.dyn` lib has a 0x2000-byte span (one PT_LOAD at
 -- vaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
@@ -241,13 +196,11 @@ private theorem nonOverlap_singleton (seg : Segment) :
 -- exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000.
 private def stackingExample : Option (Array UInt64) := do
   let seg ← synthSegment? 0 0x2000
-  let libElf := synthElf (elfType := .dyn) (segments := #[seg])
-                  (segmentsSorted := sorted_singleton seg)
-                  (segmentsNonOverlap := nonOverlap_singleton seg)
+  let libElf := synthElf (elfType := .dyn) (segments := singletonSegments seg)
   let elfs := #[libElf, libElf, libElf]
   let rt := emptyResolveTable elfs.size
   match Layout.ofElfs elfs rt with
-  | .ok lp => some (assignBases exampleAnchor lp)
+  | .ok lp => some ((assignBases exampleAnchor lp).toArray)
   | .error _ => none
 
 #guard stackingExample = some #[exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000]
@@ -266,10 +219,10 @@ private def stackingExample : Option (Array UInt64) := do
     with no file backing. -/
 private def bssOnlySeg : Option Segment :=
   let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
-    p_type := Parse.PT_LOAD,
+    p_type := .load,
     p_vaddr := 0, p_memsz := 0x2000,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Segment.ofPhdr phdr #[] #[]).toOption
+  (Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
 
 private def bssOnlyPlan : Option (SegmentLayout 0) :=
   bssOnlySeg.map (fun s => SegmentLayout.ofSegmentCore 0 s #[])
@@ -300,18 +253,18 @@ private def bssOnlyPlan : Option (SegmentLayout 0) :=
 --   file+partial      (partial-page BSS):      [mmapFile, zeroout, mprotect]    (3)
 --   file+both         (partial + full-page):   [mmapFile, zeroout, mprotect]    (3)
 --
--- `FileHandle` is just a `UInt32` (transparent), so tests construct
--- one with any number; the kernel rejects invalid fds at the syscall.
-private def dummyHandle : Runtime.FileHandle := 0
+-- Tests only inspect the planned slots; they never run the mmap, so a dummy
+-- file is enough.
+private def dummyHandle : Runtime.File := default
 
 /-- A more general synth helper that lets us vary `filesz` to land in
     each profile. -/
-private def synthSeg? (vaddr memsz filesz : UInt64) : Option Segment :=
+private def synthSeg? (vaddr : Parse.Vaddr) (memsz filesz : Parse.ByteSize) : Option Segment :=
   let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
-    p_type := Parse.PT_LOAD,
+    p_type := .load,
     p_vaddr := vaddr, p_memsz := memsz,
     p_filesz := filesz, p_offset := 0, p_align := 0x1000 }
-  (Segment.ofPhdr phdr #[] #[]).toOption
+  (Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
 
 private def fileOnlySeg     : Option Segment := synthSeg? 0 0x1000 0x1000  -- file fills page
 private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- partial-page BSS only
@@ -345,6 +298,6 @@ private def exampleReserve : Reserve :=
 example : Materialize.LoadSafe exampleReserve.addr exampleReserve.len
     (#[] : Materialize.LoadOps 0) :=
   ⟨fun _ h => absurd h (by simp),
-   fun _ _ hi _ _ _ _ _ _ _ _ _ _ _ => absurd hi (by simp)⟩
+   fun _ _ hi _ _ _ _ _ _ _ _ _ _ => absurd hi (by simp)⟩
 
 end LeanLoad.Example

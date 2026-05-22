@@ -15,7 +15,7 @@ has its own `BytesDecode` instance (typically also derived).
 
 Used by every struct under `LeanLoad/Parse/` whose parser is a
 left-to-right sequence of fixed-width field decodes. Pre/post
-checks ride in via field *types* (e.g. `RawEhdr`'s magic prefix is
+checks ride in via field *types* (e.g. `Ehdr`'s magic prefix is
 a `Magic [0x7f, 0x45, 0x4c, 0x46]` field, whose own `BytesDecode`
 instance verifies the bytes); the derived parent stays mechanical.
 -/

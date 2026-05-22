@@ -2,9 +2,8 @@
 LeanLoad CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is
-glue that ties the pure core (`Parse` + `Elaborate` + `Plan`) and
-the materialize stage (`Materialize`) to the IO layer
-(`Runtime`, `Discover.IO`).
+glue that ties the pure core (`Parse` + `Plan`) and the materialize
+stage (`Materialize`) to the IO layer (`Runtime`, `Discover.IO`).
 
 The IO bookend `realize` (below) is a thin wrapper:
 `Materialize.safe` runs the decidable safety check over the
@@ -18,7 +17,6 @@ import LeanLoad
 namespace Main
 
 open LeanLoad
-open LeanLoad.Elaborate (Elf)
 
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024
@@ -37,9 +35,9 @@ private def realize (bp : Materialize.BoundPlan)
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
   let stack ← Reserve.run stackBytes
-  let entry  := mainBase + mainElf.entry
-  let phdrVa := mainBase + mainElf.phoff
-  let phnum  := mainElf.phnum.toUInt64
+  let entry  := mainBase + mainElf.header.e_entry.val
+  let phdrVa := mainBase + mainElf.header.e_phoff.val
+  let phnum  := mainElf.header.e_phnum.toUInt64
   let phent  := Parse.RawPhdrSize.toUInt64
   Runtime.execAndJump entry phdrVa phent phnum 0 stack.val.addr stack.val.len path
 
@@ -89,15 +87,15 @@ def debug (path : String) : IO Unit := do
   for obj in g.objects do
     IO.eprintln s!"  {obj.name}"
 
-  IO.eprintln "\n== 2. Parse + Elaborate (per-object Elf views) =="
+  IO.eprintln "\n== 2. Parse (per-object checked Elf views) =="
   for h : i in [:g.objects.size] do
     let obj := g.objects[i]
     let elf := obj.elf
     IO.eprintln s!"[{i}] {obj.name}"
-    IO.eprintln s!"  elfType    = {repr elf.elfType}"
-    IO.eprintln s!"  machine    = {repr elf.machine}"
-    IO.eprintln s!"  entry      = 0x{Nat.hex elf.entry.toNat}"
-    IO.eprintln s!"  phnum      = {elf.phnum}"
+    IO.eprintln s!"  elfType    = {repr elf.header.e_type}"
+    IO.eprintln s!"  machine    = {repr elf.header.e_machine}"
+    IO.eprintln s!"  entry      = 0x{Nat.hex elf.header.e_entry.toNat}"
+    IO.eprintln s!"  phnum      = {elf.header.e_phnum}"
     if let some sn := elf.soname  then IO.eprintln s!"  soname     = {sn}"
     if let some rp := elf.runpath then IO.eprintln s!"  runpath    = {rp}"
     if !elf.needed.isEmpty then
@@ -105,10 +103,10 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"  symtab     = {elf.symtab.size} entries"
     IO.eprintln s!"  initArr    = {elf.initArr.size} ctor(s)"
     IO.eprintln s!"  finiArr    = {elf.finiArr.size} dtor(s)"
-    IO.eprintln s!"  segments   ({elf.segments.size}):"
-    for h2 : segI in [:elf.segments.size] do
-      let seg := elf.segments[segI]
-      let prot := toString seg.perm
+    IO.eprintln s!"  segments   ({elf.segments.items.size}):"
+    for h2 : segI in [:elf.segments.items.size] do
+      let seg := elf.segments.items[segI]
+      let prot := reprStr seg.perm
       IO.eprintln s!"    [{segI}] vaddr=0x{Nat.hex12 seg.vaddr.toNat} \
         offset=0x{Nat.hex seg.offset.toNat} \
         filesz=0x{Nat.hex seg.filesz.toNat} \
@@ -155,7 +153,7 @@ def debug (path : String) : IO Unit := do
   for h : i in [:bp.objCount] do
     let base := bases[i]'h.upper
     let obj := plan.graph.objects[i]
-    IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.size} segments)"
+    IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.items.size} segments)"
     let ep := lp.elfs[i]'h.upper
     for sp in ep.segments do
       let absVa := base + sp.pageVaddr
@@ -183,8 +181,8 @@ def debug (path : String) : IO Unit := do
             match elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?) with
             | none     => 0
             | some sym => provBase + sym.value
-        let inputs : Elaborate.FormulaInputs :=
-          { symValue, addend := entry.addend, base, place := base + entry.r_offset }
+        let inputs : ABI.FormulaInputs :=
+          { symValue, addend := entry.addend, base, place := base + (entry.r_offset.val) }
         match formula entry.type inputs with
         | none     => pure ()
         | some res =>
@@ -196,7 +194,7 @@ def debug (path : String) : IO Unit := do
                 |>.bind (·.name)).getD "?"
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
-          IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + entry.r_offset).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
+          IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + (entry.r_offset.val)).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
   let witnessed ← IO.ofExcept (Materialize.build bp)
   let lo := witnessed.val
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \

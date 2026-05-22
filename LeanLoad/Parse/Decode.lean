@@ -17,7 +17,7 @@ Three layers, all in the `LeanLoad.Parse` namespace:
 
 Endianness is fixed to little-endian — gabi 02 § ELF Identification
 allows either, but LeanLoad targets x86-64 / AArch64 (both LE); the
-`ei_data` semantic check rejects big-endian inputs at `elaborate`.
+`ei_data` semantic check rejects big-endian inputs during checked parse.
 -/
 
 namespace LeanLoad.Parse
@@ -97,17 +97,17 @@ instance : BytesDecode UInt16 := ⟨u16le⟩
 instance : BytesDecode UInt32 := ⟨u32le⟩
 instance : BytesDecode UInt64 := ⟨u64le⟩
 
-/-- Semantic mapping from an on-disk integer to a typed field.
+/-- Semantic decoding from an on-disk scalar to a typed field.
 
     Closed enums return an error for unknown values; open namespaces
     and sentinel-carrying fields can classify every raw value, possibly
     as a raw payload case. -/
-class ByteMap (α : Type) (Backing : outParam Type) [BytesDecode Backing] where
+class RawDecode (α : Type) (Backing : outParam Type) [BytesDecode Backing] where
   ofRaw : Backing → Except String α
 
-/-- `BytesDecode α` derived from `ByteMap`: decode the backing integer
+/-- `BytesDecode α` derived from `RawDecode`: decode the backing scalar
     and classify it, surfacing classifier failures as parser failures. -/
-instance [BytesDecode Backing] [M : ByteMap α Backing] : BytesDecode α where
+instance [BytesDecode Backing] [M : RawDecode α Backing] : BytesDecode α where
   decode := do
     let raw : Backing ← BytesDecode.decode
     match M.ofRaw raw with
@@ -128,14 +128,33 @@ structure Magic (bs : List UInt8) where deriving Inhabited, Repr
 instance (bs : List UInt8) : BytesDecode (Magic bs) :=
   ⟨do expect bs.toArray; return {}⟩
 
-/-- Decode `count` consecutive `α`-entries starting at file offset
-    `offset`, using the `BytesDecode α` instance for each. -/
-def decodeArray (offset count : Nat) [BytesDecode α] : Parser (Array α) := do
-  seek offset
+/-- Decode `count` consecutive `α` entries from the current cursor,
+    using the `BytesDecode α` instance for each. -/
+def decodeArray (count : Nat) [BytesDecode α] : Parser (Array α) := do
   let mut entries : Array α := Array.mkEmpty count
   for _ in [:count] do
     entries := entries.push (← BytesDecode.decode)
   return entries
+
+/-- Run an arbitrary parser over a whole byte buffer, returning `none`
+    on parse failure. Intended for examples and `#guard`s; production
+    code should use `Parser.run`/`parseAt` so it can preserve error
+    messages. -/
+def parseBytes? (bytes : ByteArray) (parser : Parser α) : Option α :=
+  (Parser.run bytes parser).toOption
+
+/-- Run the `BytesDecode` instance for `α` over a whole byte buffer,
+    returning `none` on parse failure. Intended for examples and
+    `#guard`s; production code should use `Parser.run`/`parseAt` so it
+    can preserve error messages. -/
+def decodeBytes? [BytesDecode α] (bytes : ByteArray) : Option α :=
+  parseBytes? bytes (BytesDecode.decode : Parser α)
+
+/-- Run `decodeArray` from offset 0 over a whole byte buffer, returning
+    `none` on parse failure. Intended for examples and `#guard`s. -/
+def decodeArrayBytes? [BytesDecode α] (bytes : ByteArray) (count : Nat) :
+    Option (Array α) :=
+  parseBytes? bytes (decodeArray (α := α) count)
 
 section Example
 #guard (Parser.run (ByteArray.mk #[0x12]) u8).toOption == some 0x12

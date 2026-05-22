@@ -10,16 +10,32 @@ toolchain emits names. Returns `none` on out-of-range offset or
 decode failure.
 
 The lookup-offset parameter is typed `StrtabOff` (see
-`Parse/Offsets.lean`) — a distinct nominal wrapper over `UInt64`.
+`Parse/Address.lean`) — a distinct nominal wrapper over `UInt64`.
 That makes accidental confusion with a `Vaddr` or file offset a
 type error rather than a silent runtime mis-read.
 -/
 
-import LeanLoad.Parse.Offsets
+import LeanLoad.Parse.Address
+import LeanLoad.Parse.Decode
 
 namespace LeanLoad.Parse
 
 abbrev RawStrtab := ByteArray
+
+instance : Repr RawStrtab where
+  reprPrec tab prec := reprPrec tab.data prec
+
+namespace RawStrtab
+
+/-- Empty string table when `DT_STRTAB`/`DT_STRSZ` is absent. Any nonzero
+    string reference will fail later through `StrtabEntry.ofOff`. -/
+def empty : RawStrtab := ByteArray.mk #[]
+
+/-- Parse a string table: preserve bytes exactly. gabi 04 string tables have
+    no fixed-width record structure; offsets are validated by `lookup`. -/
+def parse : Parser RawStrtab := buffer
+
+end RawStrtab
 
 /-- Read the null-terminated string at `offset` in `tab`. Returns
     `none` if `offset` is past the end or if the bytes don't decode
@@ -34,8 +50,28 @@ def RawStrtab.lookup (tab : RawStrtab) (offset : StrtabOff) : Option String :=
     let endIdx := tab.findIdx? (· == 0) o |>.getD tab.size
     String.fromUTF8? (tab.extract o endIdx)
 
+/-- A string-table offset resolved against a concrete string table.
+    `value` is the decoded string and `lookup_eq` witnesses that the
+    offset is valid for this table under LeanLoad's UTF-8
+    interpretation of gabi 04 string-table bytes. -/
+structure StrtabEntry (tab : RawStrtab) where
+  off       : StrtabOff
+  value     : String
+  lookup_eq : RawStrtab.lookup tab off = some value
+
+namespace StrtabEntry
+
+/-- Resolve an offset into a witnessed string-table entry. -/
+def ofOff (tab : RawStrtab) (off : StrtabOff) : Except String (StrtabEntry tab) :=
+  match h : RawStrtab.lookup tab off with
+  | some value => .ok { off, value, lookup_eq := h }
+  | none       =>
+      .error s!"invalid strtab offset 0x{off.toNat} (strtab size {tab.size})"
+
+end StrtabEntry
+
 /-- 32-byte string-table fixture holding four NUL-terminated names.
-    Coordinated with the consolidated `Parse.RawElf.fixtureBytes`: the
+    Coordinated with the consolidated `Parse.Elf.Example.fixtureBytes`: the
     consumed entries are pointed at by `DT_NEEDED` (→ "libc.so.6"),
     `DT_SONAME` (→ "mylib.so"), `DT_RUNPATH` (→ "lib"), and
     `RawSym.fixtureBytes`'s second symbol's `st_name` (→ "printf").
@@ -72,6 +108,11 @@ open RawStrtab
 #guard lookup fixtureBytes (0x12 : StrtabOff) = some "mylib.so"
 #guard lookup fixtureBytes (0x1b : StrtabOff) = some "lib"
 
+#guard
+  match StrtabEntry.ofOff fixtureBytes (0x0b : StrtabOff) with
+  | .ok e    => e.value == "printf"
+  | .error _ => false
+
 -- Mid-string offsets: gabi allows them (the trailing suffix is a valid
 -- entry too — the NUL ends *any* lookup starting before it).
 #guard lookup fixtureBytes (0x04 : StrtabOff) = some "c.so.6"
@@ -79,6 +120,11 @@ open RawStrtab
 -- ── Out-of-range / past-end ─────────────────────────────────────────
 #guard lookup fixtureBytes (32 : StrtabOff) = none   -- exactly at size
 #guard lookup fixtureBytes (99 : StrtabOff) = none   -- way past
+
+#guard
+  match StrtabEntry.ofOff fixtureBytes (32 : StrtabOff) with
+  | .ok _    => false
+  | .error _ => true
 
 end Example
 

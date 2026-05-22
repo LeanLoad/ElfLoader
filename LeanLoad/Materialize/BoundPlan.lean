@@ -73,8 +73,8 @@ abbrev elfAt (bp : BoundPlan) (i : Fin bp.objCount) : Plan.ElfLayout bp.objCount
 abbrev baseAt (bp : BoundPlan) (i : Fin bp.objCount) : UInt64 :=
   bp.bases[i]
 
-/-- `i`-th elf's open file handle (held until process exit). -/
-abbrev handleAt (bp : BoundPlan) (i : Fin bp.objCount) : Runtime.FileHandle :=
+/-- `i`-th elf's open file (held until process exit). -/
+abbrev handleAt (bp : BoundPlan) (i : Fin bp.objCount) : Runtime.File :=
   (bp.graph.objects[i.val]'i.isLt).handle
 
 /-- `(i, j)`-th segment plan. -/
@@ -246,7 +246,7 @@ theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
     (j : Fin (bp.elfAt i).segments.size) :
     Runtime.InRange
       (bp.baseAt i + (bp.segAt i j).pageVaddr + (bp.segAt i j).pageInset +
-        (bp.segAt i j).segment.filesz)
+        (bp.segAt i j).segment.filesz.val)
       (bp.segAt i j).partialBssLen bp.rsv.addr bp.rsv.len := by
   have h_pageEnd := bp.segment_pageRange_in_rsv i j
   have h_no_wrap := bp.segment_pageRange_no_wrap i j
@@ -254,8 +254,7 @@ theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
   have h_lower := bp.rsv_addr_le_baseAt i
   have h_zero_end := (bp.segAt i j).zero_end_le_pageLength
   have h_vm_le := (bp.segAt i j).vaddr_memsz_le_pageEnd
-  have h_filesz_le_memsz :=
-    UInt64.le_iff_toNat_le.mp (bp.segAt i j).segment.fileszLeMemsz
+  have h_filesz_le_memsz := (bp.segAt i j).segment.fileszLeMemsz
   -- Step the address out: (base + pageVaddr + pageInset).toNat.
   have h_a1 : (bp.baseAt i + (bp.segAt i j).pageVaddr).toNat +
               (bp.segAt i j).pageInset.toNat < 2 ^ 64 := by
@@ -271,7 +270,7 @@ theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
     rw [h_a1_eq, h_base_pv]; omega
   have h_a2_eq : (bp.baseAt i + (bp.segAt i j).pageVaddr +
                   (bp.segAt i j).pageInset +
-                  (bp.segAt i j).segment.filesz).toNat =
+                  (bp.segAt i j).segment.filesz.val).toNat =
                  (bp.baseAt i + (bp.segAt i j).pageVaddr +
                   (bp.segAt i j).pageInset).toNat +
                  (bp.segAt i j).segment.filesz.toNat := by
@@ -377,17 +376,17 @@ theorem cross_elf_mmapRange_disjoint (bp : BoundPlan)
     witness on its parent segment. The 4-or-8-byte width is bounded
     by `coversRela`'s conservative 8-byte window. -/
 theorem segment_storeRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) (r_offset : UInt64)
+    (j : Fin (bp.elfAt i).segments.size) (r_offset : Parse.Vaddr)
     (h_cov : Parse.coversRela
       (bp.segAt i j).segment.vaddr (bp.segAt i j).segment.memsz r_offset)
     (size : UInt64) (h_size : size.toNat ≤ 8) :
-    Runtime.InRange (bp.baseAt i + r_offset) size bp.rsv.addr bp.rsv.len := by
+    Runtime.InRange (bp.baseAt i + r_offset.val) size bp.rsv.addr bp.rsv.len := by
   have h_pageEnd := bp.segment_pageRange_in_rsv i j
   have h_no_wrap := bp.segment_pageRange_no_wrap i j
   have h_vm_le := (bp.segAt i j).vaddr_memsz_le_pageEnd
   obtain ⟨h_vaddr_le, h_ro8_le_vm⟩ := h_cov
   have h_ro_no_wrap : (bp.baseAt i).toNat + r_offset.toNat < 2 ^ 64 := by omega
-  have h_base_ro_eq : (bp.baseAt i + r_offset).toNat =
+  have h_base_ro_eq : (bp.baseAt i + r_offset.val).toNat =
       (bp.baseAt i).toNat + r_offset.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_ro_no_wrap
   have h_lower := bp.rsv_addr_le_baseAt i

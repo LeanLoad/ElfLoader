@@ -6,8 +6,8 @@ pure and generic over the effect monad. The abstract IO leaf
 (`Effects m`) is in `Discover.Effects`. This file:
 
   · Builds `Effects.io` — production `resolveDep` composed from
-    `Runtime.openByName` (C-side path search + open) + `Parse` +
-    `Elaborate`. Canonical dedup key = `DT_SONAME` (production
+    `Runtime.openByName` (C-side path search + open) + checked `Parse`.
+    Canonical dedup key = `DT_SONAME` (production
     *requires* it; missing-SONAME deps fail loud).
   · Provides `discover` — the production entry. Opens the main
     executable via `Runtime.openByName` (literal-path case in the
@@ -27,8 +27,7 @@ Search rules (gabi 08 § Shared Object Dependencies) all live in
 -/
 
 import LeanLoad.Discover.Driver
-import LeanLoad.Parse.RawElf
-import LeanLoad.Elaborate.Elf
+import LeanLoad.Parse.Elf.Entry
 import LeanLoad.Runtime
 
 
@@ -38,28 +37,24 @@ open LeanLoad
 
 
 -- ============================================================================
--- Parse + elaborate over an already-open handle. Used by both
+-- Checked parse over an already-open file. Used by both
 -- `Effects.io.resolveDep` (BFS-discovered deps) and `discover` (main).
 -- ============================================================================
 
-/-- Byte-decode the open file then validate via `elaborate`. The
-    handle stays open for the loader's lifetime — used downstream by
-    Materialize for file-backed `mmap`.
+/-- Parse and validate the open file. The file stays open for the loader's
+    lifetime — used downstream by Materialize for file-backed `mmap`.
 
-    `Parse` (I/O — pread the bytes) and `Elaborate` (pure — gabi-07
-    PT_LOAD checks + per-rela segment containment) are separate so
-    I/O failure (short read, missing section) is distinguishable from
-    validation failure (well-formed bytes that violate the spec). -/
-def parseFromHandle (handle : Runtime.FileHandle) : IO Elaborate.Elf := do
-  let raw ← Parse.RawElf.parse handle
-  IO.ofExcept (Elaborate.elaborate raw)
+    `Parse.parse` still separates byte I/O from pure validation
+    internally; callers receive only the checked `Parse.Elf`. -/
+def parseFromFile (file : Runtime.File) : IO Parse.Elf :=
+  Parse.parse file
 
 -- ============================================================================
 -- Effects instance for production IO.
 -- ============================================================================
 
 /-- Production `Effects.resolveDep`: C-side search + open, then Lean-
-    side parse + elaborate. Canonical dedup key = `DT_SONAME` —
+    side checked parse. Canonical dedup key = `DT_SONAME` —
     required for every NEEDED-loaded `.so`. Fails loud if unset.
 
     Why required: SONAME is what makes cross-NEEDED dedup work
@@ -72,10 +67,10 @@ def Effects.io : Effects IO :=
   { resolveDep := fun soname runpath => do
       match ← Runtime.openByName soname runpath with
       | none => pure none
-      | some handle => do
-        let elf ← parseFromHandle handle
+      | some file => do
+        let elf ← parseFromFile file
         match elf.soname with
-        | some name => pure (some (name, handle, elf))
+        | some name => pure (some (name, file, elf))
         | none      => throw (IO.userError
             s!"discover: '{soname}' is missing DT_SONAME (cannot dedup)")
     fail := fun {_} msg => throw (IO.userError msg) }
@@ -97,9 +92,9 @@ def Effects.io : Effects IO :=
 def discover (mainPath : String) : IO LoadGraph := do
   match ← Runtime.openByName mainPath none with
   | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
-  | some mainHandle => do
-    let mainElf ← parseFromHandle mainHandle
+  | some mainFile => do
+    let mainElf ← parseFromFile mainFile
     discoverWith Effects.io 4096
-      (LoadedObject.ofMain mainPath mainHandle mainElf)
+      (LoadedObject.ofMain mainPath mainFile mainElf)
 
 end LeanLoad.Discover

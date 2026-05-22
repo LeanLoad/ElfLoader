@@ -35,15 +35,14 @@ so there's no parallel relocation tree to construct or zip later.
 -/
 
 import LeanLoad.Plan.Resolve
-import LeanLoad.Elaborate.Reloc
-import LeanLoad.Elaborate.Elf
-import LeanLoad.Parse.Segment
+import LeanLoad.ABI.Reloc
+import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Segment.Checked
 
 namespace LeanLoad.Plan.Reloc
 
 open LeanLoad
-open LeanLoad.Parse (RawRela Segment coversRela)
-open LeanLoad.Elaborate (Elf)
+open LeanLoad.Parse (Elf RawRela Segment Vaddr coversRela)
 
 -- ============================================================================
 -- Entry — one rela's planning result. Base-free.
@@ -95,7 +94,7 @@ structure Entry (objCount : Nat) (seg : Segment) where
   type     : UInt32
   /-- Segment-relative byte offset for the patch. The absolute address
       `base + r_offset` is computed at materialize time. -/
-  r_offset : UInt64
+  r_offset : Vaddr
   /-- Addend `A` (gabi `r_addend`; bit pattern of a signed sxword). -/
   addend   : UInt64
   /-- Resolution outcome — see `Target`. -/

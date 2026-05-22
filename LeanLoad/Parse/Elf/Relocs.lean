@@ -1,0 +1,79 @@
+/-
+Relocation grouping for checked ELF construction.
+
+Raw dynamic relocation tables are flat. The checked `Elf` stores relocs on the
+PT_LOAD segment whose memory range contains each relocation's 8-byte write
+window. This module owns that sigma-heavy bucketing; `Elf.Check` just consumes
+the attached segment array.
+-/
+
+import LeanLoad.Parse.Elf.LoadMap
+import LeanLoad.Parse.Reloc.Raw
+
+namespace LeanLoad.Parse.Elf
+
+open LeanLoad.Parse
+
+namespace RelocBuckets
+
+/-- A relocation paired with the checked segment index whose memory range
+    contains its 8-byte write window. -/
+abbrev Entry (segments : Segments) :=
+  Σ i : Fin segments.items.size,
+    { r : RawRela //
+      coversRela segments.items[i].phdr.p_vaddr segments.items[i].phdr.p_memsz r.r_offset }
+
+/-- Find the PT_LOAD index that fully covers `r`'s 8-byte write window. -/
+private def locate (segments : Segments) (r : RawRela) :
+    Option (Entry segments) := Id.run do
+  for h : i in [:segments.items.size] do
+    let idx : Fin segments.items.size := ⟨i, h.upper⟩
+    let s := segments.items[idx]
+    if h_lo : s.phdr.p_vaddr.toNat ≤ r.r_offset.toNat then
+      if h_hi : r.r_offset.toNat + 8 ≤ s.phdr.p_vaddr.toNat + s.phdr.p_memsz.toNat then
+        return some ⟨idx, ⟨r, h_lo, h_hi⟩⟩
+  return none
+
+/-- Bucket a flat relocation table by containing checked PT_LOAD segment. -/
+private def groupOne (label : String) (segments : Segments) (rs : Array RawRela) :
+    Except String (Array (Array (Entry segments))) := do
+  let mut buckets : Array (Array (Entry segments)) := Array.replicate segments.items.size #[]
+  for r in rs do
+    match locate segments r with
+    | none =>
+        .error s!"parse {label}: rela r_offset=0x{r.r_offset.toNat} \
+          not covered by any PT_LOAD segment"
+    | some ⟨i, h_in⟩ =>
+        let entry : Entry segments := ⟨i, h_in⟩
+        buckets := buckets.modify i.val (·.push entry)
+  return buckets
+
+/-- Recover the dependent relocation array for one bucket. -/
+private def buildBucket (segments : Segments) (bucketIdx : Fin segments.items.size)
+    (bucket : Array (Entry segments)) :
+    Array (Rela segments.items[bucketIdx].phdr.p_vaddr
+      segments.items[bucketIdx].phdr.p_memsz) :=
+  bucket.filterMap fun ⟨i, ⟨r, h_in⟩⟩ =>
+    if h_eq : i = bucketIdx then some ⟨r, h_eq ▸ h_in⟩
+    else none
+
+/-- Attach flat `DT_RELA` and `DT_JMPREL` tables to their checked PT_LOAD
+    segments, preserving each segment's existing layout witnesses. -/
+def attach (segments : Segments) (rela jmprel : Array RawRela) :
+    Except String (Array Segment) := do
+  let relaBuckets   ← groupOne "DT_RELA" segments rela
+  let jmprelBuckets ← groupOne "DT_JMPREL" segments jmprel
+  let mut acc : Array Segment := #[]
+  for h : i in [:segments.items.size] do
+    let bucketIdx : Fin segments.items.size := ⟨i, h.upper⟩
+    let seg := segments.items[bucketIdx]
+    let rB := relaBuckets[i]?.getD #[]
+    let jB := jmprelBuckets[i]?.getD #[]
+    acc := acc.push (Segment.withRelocs seg
+      (buildBucket segments bucketIdx rB)
+      (buildBucket segments bucketIdx jB))
+  return acc
+
+end RelocBuckets
+
+end LeanLoad.Parse.Elf

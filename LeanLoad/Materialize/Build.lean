@@ -49,7 +49,8 @@ namespace LeanLoad.Materialize
 
 open LeanLoad
 open LeanLoad.Plan (Layout ElfLayout SegmentLayout)
-open LeanLoad.Elaborate (Elf Formula)
+open LeanLoad.Parse (Elf)
+open LeanLoad.ABI (Formula)
 
 -- ============================================================================
 -- buildSafeArray — generic helper for "build an array of `count`
@@ -372,7 +373,7 @@ def build (bp : BoundPlan) :
 
 /-- Translate one entry into its absolute call address. ET_DYN
     entries are base-relative (LeanLoad's only supported case);
-    `Elaborate.elaborate` rejects ET_EXEC. -/
+    checked `Parse.parse` rejects ET_EXEC. -/
 @[inline] private def callAddrOf (base entry : UInt64) : UInt64 := base + entry
 
 /-- Collect function addresses to call, from a per-elf array selector
@@ -390,10 +391,12 @@ def build (bp : BoundPlan) :
     both `lp.elfs[…]` and `bases[…]` are total — no `[]?` needed. -/
 def collectAddrs (lp : Layout objCount) (bases : Vector UInt64 objCount)
     (order : Array (Fin objCount))
-    (arrOf : Elaborate.Elf → Array UInt64) : Array UInt64 :=
+    (arrOf : (elf : Elf) → Parse.Elf.InitFiniArray elf.segments) : Array UInt64 :=
   order.flatMap fun objectIdx =>
-    (arrOf (lp.elfs[objectIdx]).elf).filterMap fun (entry : UInt64) =>
-      if entry != 0 then some (callAddrOf bases[objectIdx] entry) else none
+    (arrOf (lp.elfs[objectIdx]).elf).filterMap fun entry =>
+      let rawEntry : UInt64 := (Subtype.val entry).val
+      if rawEntry != 0 then some (callAddrOf (bases[objectIdx.val]'objectIdx.isLt) rawEntry)
+      else none
 
 /-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
 def ctorAddrs (bp : BoundPlan) : Array UInt64 :=
@@ -409,24 +412,27 @@ def dtorAddrs (bp : BoundPlan) : Array UInt64 :=
 -- ============================================================================
 -- Membership characterisation. Every emitted address came from
 -- `(objectIdx, entry)` where `entry ∈ arrOf (lp.elfs[objectIdx]).elf`
--- and `entry ≠ 0`.
+-- and `entry.1 ≠ 0`.
 -- ============================================================================
 
 /-- An address is in `collectAddrs lp bases order arrOf` iff it came
-    from some `(objectIdx, entry)` pair via `addr = bases[objectIdx] +
-    entry` with `entry ≠ 0`. -/
+    from some `(objectIdx, entry)` pair via
+    `addr = bases[objectIdx] + entry.1` with `entry.1 ≠ 0`. -/
 theorem collectAddrs_mem_iff (lp : Layout objCount)
     (bases : Vector UInt64 objCount) (order : Array (Fin objCount))
-    (arrOf : Elaborate.Elf → Array UInt64) (addr : UInt64) :
+    (arrOf : (elf : Elf) → Parse.Elf.InitFiniArray elf.segments) (addr : UInt64) :
     addr ∈ collectAddrs lp bases order arrOf ↔
-      ∃ objectIdx ∈ order, ∃ entry ∈ arrOf (lp.elfs[objectIdx]).elf,
-        entry ≠ 0 ∧ addr = bases[objectIdx] + entry := by
+      ∃ objectIdx ∈ order,
+        ∃ entry : Parse.Elf.InitFiniEntry (lp.elfs[objectIdx]).elf.segments,
+          entry ∈ arrOf (lp.elfs[objectIdx]).elf ∧
+          (Subtype.val entry).val ≠ 0 ∧
+          addr = bases[objectIdx.val]'objectIdx.isLt + (Subtype.val entry).val := by
   unfold collectAddrs
   simp only [Array.mem_flatMap, Array.mem_filterMap, callAddrOf]
   constructor
   · rintro ⟨objectIdx, h_obj, entry, h_entry, h_addr⟩
     refine ⟨objectIdx, h_obj, entry, h_entry, ?_⟩
-    by_cases h0 : entry != 0
+    by_cases h0 : (Subtype.val entry).val != 0
     · rw [if_pos h0] at h_addr
       injection h_addr with h_eq
       exact ⟨bne_iff_ne.mp h0, h_eq.symm⟩
@@ -437,29 +443,28 @@ theorem collectAddrs_mem_iff (lp : Layout objCount)
 
 -- ============================================================================
 -- Ctor / dtor in-exec-seg theorems. The witness chain:
---   `Elf.initArrInExecSeg` (every entry is in some exec PT_LOAD of
---    elf.segments) → `ElfLayout.segmentsSegmentEq` (the parallel
---    `(bp.elfAt i).segments[k].segment = elf.segments[k]`) → translate
+--   `Elf.initArr` / `Elf.finiArr` entries carry the executable-segment
+--    witness → `ElfLayout.segmentsSegmentEq` (the parallel
+--    `(bp.elfAt i).segments[k].segment = elf.segments.items[k]`) → translate
 --    `addr = base + entry` into the matching exec PT_LOAD's runtime
---    bounds. The result lifts the elaborate-stage "in some exec
+--    bounds. The result lifts the checked-parse "in some exec
 --    PT_LOAD" witness to a `BoundPlan`-relative claim ready for a
 --    future safety-gated `callCtor`.
 -- ============================================================================
 
 /-- An address lives in some executable PT_LOAD of `bp` — i.e. in
     the runtime range `[base + vaddr, base + vaddr + memsz)` of some
-    elf's exec segment. Phrased over the elaborated `Elf.segments`
-    (not `SegmentLayout`s) so the witness from
-    `Elf.initArrInExecSeg` lands directly without bridging through
-    `ElfLayout.segmentsSegmentEq`. -/
+    elf's exec segment. Phrased over the checked `Elf.segments`
+    (not `SegmentLayout`s) so the witness carried by each init/fini
+    entry lands directly before bridging through `ElfLayout.segmentsSegmentEq`. -/
 def InExecSeg (bp : BoundPlan) (addr : UInt64) : Prop :=
-  ∃ (i : Fin bp.objCount) (j : Nat) (h : j < (bp.elfAt i).elf.segments.size),
-    ((bp.elfAt i).elf.segments[j]'h).perm.exec = true ∧
-    (bp.baseAt i).toNat + ((bp.elfAt i).elf.segments[j]'h).vaddr.toNat ≤
+  ∃ (i : Fin bp.objCount) (j : Nat) (h : j < (bp.elfAt i).elf.segments.items.size),
+    ((bp.elfAt i).elf.segments.items[j]'h).perm.exec = true ∧
+    (bp.baseAt i).toNat + ((bp.elfAt i).elf.segments.items[j]'h).vaddr.toNat ≤
       addr.toNat ∧
     addr.toNat < (bp.baseAt i).toNat +
-      ((bp.elfAt i).elf.segments[j]'h).vaddr.toNat +
-      ((bp.elfAt i).elf.segments[j]'h).memsz.toNat
+      ((bp.elfAt i).elf.segments.items[j]'h).vaddr.toNat +
+      ((bp.elfAt i).elf.segments.items[j]'h).memsz.toNat
 
 /-- An entry inside `[vaddr, vaddr + memsz)` of some `bp.elfAt i`'s
     `j`-th `SegmentLayout` is bounded by the page range, hence by
@@ -467,7 +472,7 @@ def InExecSeg (bp : BoundPlan) (addr : UInt64) : Prop :=
     base.toNat + entry.toNat` doesn't wrap. -/
 private theorem base_add_entry_no_wrap (bp : BoundPlan)
     (i : Fin bp.objCount) (j : Fin (bp.elfAt i).segments.size)
-    (entry : UInt64)
+    (entry : Parse.Vaddr)
     (h_hi : entry.toNat < (bp.segAt i j).segment.vaddr.toNat +
                           (bp.segAt i j).segment.memsz.toNat) :
     (bp.baseAt i).toNat + entry.toNat < 2 ^ 64 := by
@@ -482,55 +487,67 @@ private theorem base_add_entry_no_wrap (bp : BoundPlan)
   omega
 
 /-- Shared shape: every emitted `addr` corresponds to an entry from
-    some elf's array (initArr/finiArr), and that entry was witnessed
-    by the elf's `CtorsInExecSeg` field as living in some exec
-    PT_LOAD. The `inExecSeg` field-of-elf is `Elf.{init,fini}ArrInExecSeg`. -/
+    some elf's array (initArr/finiArr), and that entry carries its own
+    witness that it is zero or targets some executable PT_LOAD. -/
 private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
     (order : Array (Fin bp.objCount))
-    (arrOf : Elaborate.Elf → Array UInt64)
-    (h_witness : ∀ (objectIdx : Fin bp.objCount),
-      Elaborate.CtorsInExecSeg (bp.elfAt objectIdx).elf.segments
-        (arrOf (bp.elfAt objectIdx).elf))
+    (arrOf : (elf : Elf) → Parse.Elf.InitFiniArray elf.segments)
     (addr : UInt64) (h_mem : addr ∈ collectAddrs bp.layout bp.bases order arrOf) :
     InExecSeg bp addr := by
   rw [collectAddrs_mem_iff] at h_mem
   obtain ⟨objectIdx, _h_obj, entry, h_entry, h_ne, h_addr_eq⟩ := h_mem
-  obtain ⟨k, hk, h_arr_eq⟩ := Array.mem_iff_getElem.mp h_entry
-  have h_in_exec := h_witness objectIdx k hk
-  rw [h_arr_eq] at h_in_exec
+  have h_in_exec := Subtype.property entry
   rcases h_in_exec with h_zero | ⟨segIdx, h_segLt, h_exec, h_lo, h_hi⟩
   · exact absurd h_zero h_ne
   -- Bridge to SegmentLayout for the no-wrap argument.
   have h_segLt_eo : segIdx < (bp.elfAt objectIdx).segments.size :=
     (bp.elfAt objectIdx).segmentsSizeEq.symm ▸ h_segLt
   have h_segEq := (bp.elfAt objectIdx).segmentsSegmentEq segIdx h_segLt_eo
-  have h_hi_seg : entry.toNat < (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.vaddr.toNat +
+  have h_exec_bp :
+      ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).perm.exec = true := by
+    simpa using h_exec
+  have h_lo_bp :
+      ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).vaddr.toNat ≤
+        (Subtype.val entry).toNat := by
+    simpa using h_lo
+  have h_hi_bp :
+      (Subtype.val entry).toNat <
+        ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).vaddr.toNat +
+          ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).memsz.toNat := by
+    simpa using h_hi
+  have h_hi_seg : (Subtype.val entry).toNat < (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.vaddr.toNat +
                   (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.memsz.toNat := by
-    show entry.toNat <
+    show (Subtype.val entry).toNat <
       ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.vaddr.toNat +
       ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.memsz.toNat
-    rw [h_segEq]; exact h_hi
-  have h_no_wrap : (bp.baseAt objectIdx).toNat + entry.toNat < 2 ^ 64 :=
-    base_add_entry_no_wrap bp objectIdx ⟨segIdx, h_segLt_eo⟩ entry h_hi_seg
+    rw [h_segEq]; exact h_hi_bp
+  have h_no_wrap : (bp.baseAt objectIdx).toNat + (Subtype.val entry).toNat < 2 ^ 64 :=
+    base_add_entry_no_wrap bp objectIdx ⟨segIdx, h_segLt_eo⟩ (Subtype.val entry) h_hi_seg
+  have h_no_wrap' :
+      (bp.bases[objectIdx.val]'objectIdx.isLt).toNat + (Subtype.val entry).toNat < 2 ^ 64 := by
+    simpa [BoundPlan.baseAt] using h_no_wrap
   have h_addr_toNat : addr.toNat =
-      (bp.baseAt objectIdx).toNat + entry.toNat := by
-    rw [h_addr_eq, UInt64.toNat_add, Nat.mod_eq_of_lt h_no_wrap]
-  exact ⟨objectIdx, segIdx, h_segLt, h_exec,
+      (bp.baseAt objectIdx).toNat + (Subtype.val entry).toNat := by
+    have h_no_wrap_val :
+        (bp.bases[objectIdx.val]'objectIdx.isLt).toNat +
+          (Subtype.val entry).val.toNat < 2 ^ 64 := by
+      simpa [Parse.Vaddr.toNat] using h_no_wrap'
+    rw [h_addr_eq, UInt64.toNat_add, Nat.mod_eq_of_lt h_no_wrap_val]
+    simp [BoundPlan.baseAt, Parse.Vaddr.toNat]
+  exact ⟨objectIdx, segIdx, h_segLt, h_exec_bp,
          by rw [h_addr_toNat]; omega,
          by rw [h_addr_toNat]; omega⟩
 
-/-- Constructor addresses live in some exec PT_LOAD of `bp`. Witness
-    propagated from `Elf.initArrInExecSeg`. -/
+/-- Constructor addresses live in some exec PT_LOAD of `bp`, as witnessed
+    by each `Elf.initArr` entry. -/
 theorem ctorAddrs_inExecSeg (bp : BoundPlan) :
     ∀ addr ∈ ctorAddrs bp, InExecSeg bp addr :=
   collectAddrs_inExecSeg_aux bp bp.initOrder (·.initArr)
-    (fun objectIdx => (bp.elfAt objectIdx).elf.initArrInExecSeg)
 
-/-- Destructor addresses live in some exec PT_LOAD of `bp`. Mirror of
-    `ctorAddrs_inExecSeg` using `Elf.finiArrInExecSeg`. -/
+/-- Destructor addresses live in some exec PT_LOAD of `bp`, as witnessed
+    by each `Elf.finiArr` entry. -/
 theorem dtorAddrs_inExecSeg (bp : BoundPlan) :
     ∀ addr ∈ dtorAddrs bp, InExecSeg bp addr :=
   collectAddrs_inExecSeg_aux bp bp.initOrder.reverse (·.finiArr)
-    (fun objectIdx => (bp.elfAt objectIdx).elf.finiArrInExecSeg)
 
 end LeanLoad.Materialize

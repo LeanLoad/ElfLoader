@@ -7,8 +7,8 @@ Spec: gabi 05 (`third_party/gabi/docsrc/elf/05-symtab.rst`) § Symbol
 Table.
 
 Where `Parse.RawSym` carries the raw byte-fields, `Symbol` carries
-the *meaning*: `bind : SymBind`, `shndx : ShnIdx`, plus the resolved
-name and `value`. The closed `SymBind` enum rejects OS- or processor-
+the *meaning*: `bind : SymBind`, `shndx : ShnIdx`, plus the validated
+name string and `value`. The closed `SymBind` enum rejects OS- or processor-
 specific extensions during checking; `ShnIdx.concrete` covers the open
 range of legitimate section indices.
 
@@ -16,8 +16,8 @@ The low nibble of `st_info` (the symbol-type field) and `st_size` are
 not lifted — no consumer reads them.
 -/
 
-import LeanLoad.Parse.Dynamic.RawSym
-import LeanLoad.Parse.Dynamic.RawStrtab
+import LeanLoad.Parse.Symbol.Raw
+import LeanLoad.Parse.Strtab
 
 namespace LeanLoad.Parse
 
@@ -69,11 +69,11 @@ def ShnIdx.ofRaw : UInt16 → ShnIdx
 -- Per-symbol bundle. Replaces the raw `RawSym` view after checking.
 -- ============================================================================
 
-/-- A checked symbol. Raw `st_*` byte-fields lifted into
-    typed views; `name` pre-resolved against the dynamic string table
-    (`none` if `st_name` was out of range or didn't decode as UTF-8). -/
+/-- A checked symbol. Raw `st_*` byte-fields lifted into typed views;
+    `name` has been resolved through a witnessed `StrtabEntry`. Empty
+    string is the gabi spelling of "no name". -/
 structure Symbol where
-  name  : Option String
+  name  : String
   bind  : SymBind
   shndx : ShnIdx
   /-- `st_value` — for in-memory symbols, the section-relative VA. -/
@@ -120,8 +120,12 @@ def Symbol.ofRaw (strtab : RawStrtab) (s : RawSym) : Except String Symbol := do
   let bindRaw := s.st_info >>> 4
   let some bind := SymBind.ofRaw bindRaw
     | .error s!"unknown st_info binding={bindRaw}"
-  -- `st_name` is a UInt32 strtab offset; wrap it at this boundary.
-  return { name  := strtab.lookup ⟨s.st_name.toUInt64⟩
+  let nameOff : StrtabOff := ⟨s.st_name.toUInt64⟩
+  let nameEntry ←
+    match StrtabEntry.ofOff strtab nameOff with
+    | .ok entry => .ok entry
+    | .error e  => .error s!"invalid symbol st_name={s.st_name}: {e}"
+  return { name  := nameEntry.value
            bind
            shndx := ShnIdx.ofRaw s.st_shndx
            value := s.st_value }

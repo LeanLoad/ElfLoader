@@ -33,6 +33,7 @@ the IO-supplied `Reserve`, and passes that down to materialize.
 -/
 
 import LeanLoad.Discover.Graph
+import LeanLoad.ABI.Reloc
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 
@@ -40,7 +41,8 @@ namespace LeanLoad.Plan
 
 open LeanLoad
 open LeanLoad.Discover (LoadGraph)
-open LeanLoad.Elaborate (Elf)
+open LeanLoad.Parse (Elf)
+open LeanLoad.ABI (Formula formulaFor)
 
 /-- The unified pure-pipeline aggregate. Every sub-output is indexed
     by `graph.objects.size`, so consumers can index `lp.elfs`,
@@ -75,8 +77,8 @@ theorem objectElfs_size (p : Aggregate) :
 
 /-- Per-arch relocation formula, picked off the main elf's
     `e_machine`. -/
-def formula (p : Aggregate) : Elaborate.Formula :=
-  Elaborate.formulaFor p.graph.main.elf.machine
+def formula (p : Aggregate) : Formula :=
+  formulaFor p.graph.main.elf.header.e_machine
 
 /-- Build an `Aggregate` from a `LoadGraph`. Fails with a typed
     error if:

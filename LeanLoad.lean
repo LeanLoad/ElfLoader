@@ -1,26 +1,18 @@
 /-
 Root of the `LeanLoad` library; re-exports every public module.
 
-Pipeline: `Parse → Elaborate → Discover → Plan → Materialize → Runtime`.
+Pipeline: `Parse → Discover → Plan → Materialize → Runtime`.
 
 Each stage takes the *previous* stage's output and adds either data
 or a Prop witness. Once an invariant is witnessed, no downstream
 stage re-checks it — the witness travels in the type.
 
-  • Parse — byte decode only. Bytes in, `RawElf` out. No semantic
-    checks; malformed bytes are caught at `Elaborate`.
-
-  • Elaborate — `RawElf → Except String Elf`. Per-elf validation:
-      · ELFCLASS64, ELFDATA2LSB, ET_DYN, supported `e_machine`.
-      · Per-segment gabi-07 invariants (`fileszLeMemsz`,
-        `alignPow2`, `alignCong`) + LeanLoad's 48-bit `addrBound`.
-      · gabi-07 PT_LOAD pair-wise: `Sorted` + `NonOverlap`.
-      · Every dynamic rela's 8-byte write window covered by a
-        PT_LOAD (`coversRela`).
-      · `phdrCovered` — phdr table mapped by a PT_LOAD with
-        `vaddr = offset` (so `AT_PHDR = mainBase + phoff` holds).
-      · `initArrInExecSeg` / `finiArrInExecSeg` — every ctor /
-        dtor entry lives in an executable PT_LOAD.
+  • Parse — bytes in, checked `Parse.Elf` out. Raw fixed-width records are
+    decoded first, then `LoadMap` establishes ELFCLASS64/ELFDATA2LSB/ET_DYN
+    policy and PT_LOAD well-formedness before any dynamic virtual-address
+    read. Final checked construction attaches relocs to covering segments,
+    resolves dynamic strings, checks phdr coverage, and validates init/fini
+    targets.
 
   • Discover — `Path → IO LoadGraph`. BFS over `DT_NEEDED`. The
     output type witnesses non-emptiness and name `Nodup`.
@@ -53,24 +45,36 @@ stage re-checks it — the witness travels in the type.
     three target soundness theorems (`bytes_preserved`,
     `bss_zeroed`, `relocs_applied`) consume.
 -/
-import LeanLoad.Parse.Offsets
+import LeanLoad.Parse.Address
 import LeanLoad.Parse.Reader
-import LeanLoad.Parse.Header.Enums
-import LeanLoad.Parse.Header.Ehdr
-import LeanLoad.Parse.Dynamic.RawStrtab
-import LeanLoad.Parse.Dynamic.RawSym
-import LeanLoad.Parse.Dynamic.RawRela
-import LeanLoad.Parse.Header.Phdr
-import LeanLoad.Parse.Dynamic.RawDyn
-import LeanLoad.Parse.Dynamic.RawHash
-import LeanLoad.Parse.Dynamic.DynInfo
-import LeanLoad.Parse.Symbol
-import LeanLoad.Parse.Segment
-import LeanLoad.Parse.RawElf
-
-import LeanLoad.Elaborate.Header
-import LeanLoad.Elaborate.Reloc
-import LeanLoad.Elaborate.Elf
+import LeanLoad.Parse.Ehdr.Ident
+import LeanLoad.Parse.Ehdr.Fields
+import LeanLoad.Parse.Ehdr.Raw
+import LeanLoad.Parse.Ehdr.Example
+import LeanLoad.Parse.Phdr.Fields
+import LeanLoad.Parse.Phdr.Raw
+import LeanLoad.Parse.Phdr.Example
+import LeanLoad.Parse.Dyntab.Fields
+import LeanLoad.Parse.Dyntab.Raw
+import LeanLoad.Parse.Dyntab.Info
+import LeanLoad.Parse.Dyntab.Example
+import LeanLoad.Parse.Strtab
+import LeanLoad.Parse.Symbol.Raw
+import LeanLoad.Parse.Symbol.Checked
+import LeanLoad.Parse.Symbol.SysVHash
+import LeanLoad.Parse.Reloc.Raw
+import LeanLoad.ABI.Reloc
+import LeanLoad.Parse.Segment.Checked
+import LeanLoad.Parse.Segment.Array
+import LeanLoad.Parse.Segment.Properties
+import LeanLoad.Parse.Segment.Example
+import LeanLoad.Parse.Elf.Checked
+import LeanLoad.Parse.Elf.LoadMap
+import LeanLoad.Parse.Elf.RawImage
+import LeanLoad.Parse.Elf.Relocs
+import LeanLoad.Parse.Elf.Check
+import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf.Example
 
 import LeanLoad.Runtime
 

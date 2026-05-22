@@ -6,8 +6,8 @@ against `bfsOrder g` and record the outcome:
 
   • `STB_GLOBAL` undef → `.found ref` or `.strongUndef` (load failure).
   • `STB_WEAK` undef   → `.found ref` or `.weakUndef` (gabi 05: S = 0).
-  • NoName / empty-name undef → `.weakUndef`. A strong-undef without
-    a name is a malformed ELF; we tolerate it as weak rather than
+  • Empty-name undef → `.weakUndef`. A strong undef without a useful
+    name is a malformed ELF; we tolerate it as weak rather than
     error, matching glibc/musl behaviour.
 
 The result is a `Table objCount` carrying two parallel views:
@@ -29,7 +29,7 @@ import Std.Data.HashMap
 namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
-open LeanLoad.Elaborate (Elf)
+open LeanLoad.Parse (Elf)
 open LeanLoad.Discover (LoadGraph)
 
 /-- Result of resolving one undef reference. Three explicit cases:
@@ -61,10 +61,10 @@ end Resolution
     `SymRef` carries its bounds proof.
 
     `index` is *total over all undefined symbols* (not just those with
-    a name): `buildTable` inserts `weakUndef` for noName / empty-name
+    a name): `buildTable` inserts `weakUndef` for empty-name
     undefs, so any per-rela lookup `lookup objectIdx symIdx` always
     returns a defined `Resolution`. `entries` is the diagnostic /
-    iteration array and skips noName entries (they have no useful
+    iteration array and skips empty-name entries (they have no useful
     diagnostic name to surface). -/
 structure Table (objCount : Nat) where
   /-- One entry per *named* undefined reference, in iteration order.
@@ -111,7 +111,7 @@ end Table
     `index`.
 
     `index` covers *every* undefined symbol — named or not — so
-    `Table.lookup` is total. NoName / empty-name undefs map to
+    `Table.lookup` is total. Empty-name undefs map to
     `weakUndef` (gabi 05's safe fallback for an unresolvable weak
     reference; a strong-undef without a name is a malformed ELF that
     the linker shouldn't have produced). `entries` skips them since
@@ -128,12 +128,10 @@ def buildTable (g : LoadGraph) : Table g.objects.size := Id.run do
     let mut symIdx := 0
     for symEntry in elf.symtab do
       if symEntry.isUndef then
-        match symEntry.name with
-        | none =>
+        if symEntry.name == "" then
           index := index.insert (objectIdx, symIdx) .weakUndef
-        | some "" =>
-          index := index.insert (objectIdx, symIdx) .weakUndef
-        | some symName =>
+        else
+          let symName := symEntry.name
           let entry : Unresolved g.objects.size :=
             { objectIdx := ⟨objectIdx, h.upper⟩, symIdx, name := symName }
           let resolution : Resolution g.objects.size :=

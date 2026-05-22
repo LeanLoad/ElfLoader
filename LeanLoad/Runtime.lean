@@ -33,14 +33,31 @@ namespace LeanLoad
 namespace Runtime
 
 -- ============================================================================
--- FileHandle — a transparent kernel fd. Held until process exit.
+-- File — an open kernel fd plus the regular-file size observed at open time.
 -- ============================================================================
 
-abbrev FileHandle : Type := UInt32
+/-- Open read-only file, held until process exit. `size` is captured with
+    `fstat(2)` immediately after open so parse-time reads can reject ranges
+    beyond EOF before calling `pread(2)`. -/
+structure File where
+  fd   : UInt32
+  size : UInt64
+  deriving Repr, Inhabited, BEq
+
+namespace File
+
+/-- Does `[off, off + len)` fit inside this file's observed byte size? -/
+def containsRange (f : File) (off len : UInt64) : Prop :=
+  off.toNat + len.toNat ≤ f.size.toNat
+
+instance (f : File) (off len : UInt64) : Decidable (f.containsRange off len) := by
+  unfold containsRange; infer_instance
+
+end File
 
 /-- Resolve a `DT_NEEDED` soname against `LD_LIBRARY_PATH` + the
     given `runpath`, open the resulting file `RDONLY | CLOEXEC`, and
-    return the open `FileHandle`.
+    return the open file.
 
     Search rules (gabi 08 § Shared Object Dependencies):
       1. If `soname` contains '/', open as a literal path.
@@ -48,17 +65,37 @@ abbrev FileHandle : Type := UInt32
       3. Else search `runpath` (if `some`).
       4. Else `none`.
 
-    Returns just the `FileHandle` (no resolved path back) — the
+    Returns just the open file (no resolved path back) — the
     canonical dedup key is `DT_SONAME` with the requested name as
     fallback (see `Discover.Effects.io`), neither of which needs the
     resolved path. Implementation lives in `Runtime.c` — keeps the
     path splitting and `getenv` call out of Lean. -/
 @[extern "leanload_open_by_name"]
-opaque openByName (soname : @& String) (runpath : @& Option String) :
-    IO (Option FileHandle)
+private opaque openByNameFd (soname : @& String) (runpath : @& Option String) :
+    IO (Option UInt32)
+
+@[extern "leanload_file_size"]
+private opaque fileSizeFd (fd : UInt32) : IO UInt64
+
+/-- Resolve, open, and attach the observed file size. -/
+def openByName (soname : String) (runpath : Option String) : IO (Option File) := do
+  match ← openByNameFd soname runpath with
+  | none    => pure none
+  | some fd =>
+      let size ← fileSizeFd fd
+      pure (some { fd, size })
 
 @[extern "leanload_pread"]
-opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
+private opaque preadFd (fd : UInt32) (offset : UInt64) (len : UInt64) : IO ByteArray
+
+/-- Bounded `pread(2)`: reject ranges outside the observed file size before
+    crossing the FFI boundary. -/
+def pread (f : File) (offset : UInt64) (len : UInt64) : IO ByteArray := do
+  if _h : f.containsRange offset len then
+    preadFd f.fd offset len
+  else
+    throw (IO.userError s!"pread out of bounds: offset 0x{offset.toNat}, \
+      len {len.toNat}, file size {f.size.toNat}")
 
 -- ============================================================================
 -- FFI primitives — one Lean signature per C shim. *Private*: the
@@ -70,7 +107,7 @@ opaque pread (h : FileHandle) (offset : UInt64) (len : UInt64) : IO ByteArray
     Replaces whatever was at `[vaddr, vaddr+len)` (intentionally — in
     our design that's the kernel-picked anon reservation). -/
 @[extern "leanload_mmap_file"]
-private opaque mmapFile (h : FileHandle) (vaddr : UInt64) (len : UInt64)
+private opaque mmapFileFd (fd : UInt32) (vaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
 /-- Kernel-picked anon mapping. `mmap(NULL, len, PROT_READ |
@@ -131,7 +168,7 @@ end Runtime
 
 /-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap. -/
 structure MmapOp where
-  handle : Runtime.FileHandle
+  handle : Runtime.File
   addr   : UInt64
   len    : UInt64
   prot   : UInt32
@@ -179,7 +216,7 @@ structure Reserve where
 
 namespace MmapOp
 def run (m : MmapOp) : IO Unit :=
-  Runtime.mmapFile m.handle m.addr m.len m.prot m.offset
+  Runtime.mmapFileFd m.handle.fd m.addr m.len m.prot m.offset
 end MmapOp
 
 namespace ZeroOp

@@ -9,7 +9,7 @@ fatal error. Both leaves are bundled here as `Effects m`.
 Two instantiations live downstream:
 
   · `Effects.io` (`IO.lean`) — production. `resolveDep` composes
-    `Runtime.openByName` + `parseFromHandle`; `fail` is
+    `Runtime.openByName` + `parseFromFile`; `fail` is
     `throw (IO.userError …)`.
   · `Effects.test` (`Test.lean`) — pure. `resolveDep` reads from an
     in-memory `TestStore`; `fail` is `Except.error`.
@@ -19,7 +19,7 @@ consumer pulls in the driver's invariant machinery just to instantiate
 the record.
 -/
 
-import LeanLoad.Elaborate.Elf
+import LeanLoad.Parse.Elf.Entry
 import LeanLoad.Runtime
 
 namespace LeanLoad.Discover
@@ -38,19 +38,19 @@ open LeanLoad
     to simulate. -/
 structure Effects (m : Type → Type) where
   /-- Resolve a `DT_NEEDED` soname against the runtime's search rules
-      (env + runpath), open the file, parse it, and elaborate. Returns:
+      (env + runpath), open the file, and parse it. Returns:
       · `none` — soname didn't resolve to an existing file (missing dep).
-      · `some (name, handle, elf)` — `name` is the canonical dedup key
-        (`DT_SONAME`; production *requires* it), `handle` is the open
-        fd (kept for downstream `mmap`), `elf` is the elaborated view.
-      Parse/elaborate failures (including missing SONAME in production)
+      · `some (name, file, elf)` — `name` is the canonical dedup key
+        (`DT_SONAME`; production *requires* it), `file` is the open file
+        (kept for downstream `mmap`), `elf` is the checked view.
+      Parse failures (including missing SONAME in production)
       escape via the monad's error mechanism (IO exception in production;
       `throw` in `Except`-based tests). Splitting "not found" out as a
       `none` instead of using `fail` lets the driver produce the
       diagnostic with the full `WorkItem` context (runpath, soname)
       attached. -/
   resolveDep : String → Option String →
-               m (Option (String × Runtime.FileHandle × Elaborate.Elf))
+               m (Option (String × Runtime.File × LeanLoad.Parse.Elf))
   /-- Surface a fatal error. In `IO`, this is `throw (IO.userError …)`;
       in `Except String`, it's `throw`. Polymorphic in the return type
       because the caller is in continuation position. -/

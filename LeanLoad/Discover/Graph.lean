@@ -34,8 +34,7 @@ File layout:
     LoadedObject`. Free function so `DfsState` can use it.
 -/
 
-import LeanLoad.Parse.RawElf
-import LeanLoad.Elaborate.Elf
+import LeanLoad.Parse.Elf.Entry
 import LeanLoad.Runtime
 import Mathlib.Logic.Relation
 
@@ -56,21 +55,21 @@ structure LoadedObject where
   /-- Canonical dedup key. For NEEDED deps: `elf.soname.get!` (production
       requires DT_SONAME). For the main executable: `basename mainPath`. -/
   name : String
-  /-- Open read-only file handle, kept for `pread` (parsing extras) and
+  /-- Open read-only file, kept for `pread` (parsing extras) and
       `mmap` (Materialize stage). Production paths always carry a real
-      fd; tests use a dummy `(0 : UInt32)`. -/
-  handle : Runtime.FileHandle
-  /-- Elaborated ELF — output of `Elaborate.elaborate` after `Parse.parse`.
-      The type is the witness that PT_LOAD well-formedness held and every
-      dynamic relocation was located against a covering segment. -/
-  elf  : Elaborate.Elf
+      fd plus observed size; tests use a dummy `Runtime.File`. -/
+  handle : Runtime.File
+  /-- Checked ELF — output of `Parse.parse`. The type is the witness
+      that PT_LOAD well-formedness held and every dynamic relocation
+      was located against a covering segment. -/
+  elf  : Elf
 
 /-- Construct the main `LoadedObject` from a user-supplied path. The
     canonical name is the path basename — executables don't conventionally
     set DT_SONAME, and main is path-loaded (not NEEDED-driven), so we
     don't consult `elf.soname`. -/
-def LoadedObject.ofMain (mainPath : String) (handle : Runtime.FileHandle)
-    (elf : Elaborate.Elf) : LoadedObject :=
+def LoadedObject.ofMain (mainPath : String) (handle : Runtime.File)
+    (elf : Elf) : LoadedObject :=
   { name := (mainPath.splitOn "/").getLast?.getD mainPath, handle, elf }
 
 -- ============================================================================

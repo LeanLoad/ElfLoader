@@ -63,7 +63,7 @@ end Memory
     parse time; the snapshot abstracts over the per-section `pread`
     pattern in `Parse.parse` and over the `MAP_PRIVATE` mmap. -/
 structure File where
-  byte : Runtime.FileHandle → UInt64 → UInt8
+  byte : Runtime.File → UInt64 → UInt8
 
 -- ============================================================================
 -- Per-op denotations. Each lifts its slot record to a `Memory → Memory`.

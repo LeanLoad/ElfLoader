@@ -32,7 +32,7 @@ import LeanLoad.Discover.Driver
 namespace LeanLoad.Discover
 
 open LeanLoad
-open LeanLoad.Elaborate (Elf)
+open LeanLoad.Parse (Elf)
 
 -- ============================================================================
 -- Minimal Elf builder — only the fields BFS reads (`soname`, `runpath`,
@@ -50,23 +50,20 @@ open LeanLoad.Elaborate (Elf)
 def mockElf (soname : Option String := some "anon")
     (runpath : Option String := none)
     (needed : Array String := #[]) : Elf := {
-  elfType  := .dyn
-  machine  := .x86_64
-  entry    := 0
-  phoff    := 0
-  phnum    := 0
+  header   := { (default : Parse.Ehdr) with
+    e_type := .dyn
+    e_machine := .x86_64
+    e_entry := 0
+    e_phoff := 0
+    e_phnum := 0 }
   symtab   := #[]
   needed
   soname
   runpath
+  segments := Parse.Segments.empty
   initArr  := #[]
   finiArr  := #[]
-  segments := #[]
-  segmentsSorted     := by decide
-  segmentsNonOverlap := by decide
-  phdrCovered        := by decide
-  initArrInExecSeg   := by decide
-  finiArrInExecSeg   := by decide }
+  phdrCovered := Or.inl (by simp) }
 
 -- ============================================================================
 -- TestStore — in-memory `path → Elf` map. Mirrors what the production
@@ -112,7 +109,7 @@ def Effects.test (store : TestStore) (envPath : Option String := none) :
   { resolveDep := fun soname runpath => .ok <|
       (testSearchCandidates soname runpath envPath).findSome? fun path =>
         (store.getElf? path).bind fun elf =>
-          elf.soname.map fun name => (name, (0 : Runtime.FileHandle), elf)
+          elf.soname.map fun name => (name, (default : Runtime.File), elf)
     fail := fun {_} msg => .error msg }
 
 -- ============================================================================
@@ -130,7 +127,7 @@ def discoverPure (store : TestStore) (mainPath : String)
   let some mainElf := store.getElf? mainPath
     | .error s!"discoverPure: main {mainPath} not in store"
   discoverWith (Effects.test store envPath) 64
-    (LoadedObject.ofMain mainPath 0 mainElf)
+    (LoadedObject.ofMain mainPath (default : Runtime.File) mainElf)
 
 -- ============================================================================
 -- Behavior tests via `#guard`. Each scenario builds a small store, runs

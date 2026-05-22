@@ -28,15 +28,16 @@ Used by `Materialize.buildSegment` (one call per segment).
 import LeanLoad.Plan.Layout
 import LeanLoad.Materialize.LoadOps
 import LeanLoad.Materialize.Safety
-import LeanLoad.Elaborate.Reloc
-import LeanLoad.Parse.Segment
+import LeanLoad.ABI.Reloc
+import LeanLoad.Parse.Segment.Checked
 
 namespace LeanLoad.Materialize
 
 open LeanLoad
 open LeanLoad.Plan.Reloc (Entry)
 open LeanLoad.Parse (Segment)
-open LeanLoad.Elaborate (Elf Formula FormulaInputs FormulaResult PatchSize)
+open LeanLoad.Parse (Elf)
+open LeanLoad.ABI (Formula FormulaInputs FormulaResult PatchSize)
 
 -- ============================================================================
 -- 32-bit overflow check.
@@ -99,19 +100,19 @@ private def bakeRelocImpl (formula : Formula) (elfs : Array Elf)
   match formula entry.type
     { symValue := symValueOf elfs bases h_bases entry.target,
       addend := entry.addend, base,
-      place := base + entry.r_offset } with
+      place := base + (entry.r_offset.val) } with
   | none     => .ok none
   | some res =>
     match res.size with
-    | .b8 => .ok (some ({ addr := base + entry.r_offset,
+    | .b8 => .ok (some ({ addr := base + (entry.r_offset.val),
                           size := 8, value := res.value } : StoreOp))
     | .b4 =>
       if fitsLow32 res.value then
-        .ok (some ({ addr := base + entry.r_offset,
+        .ok (some ({ addr := base + (entry.r_offset.val),
                      size := 4, value := res.value } : StoreOp))
       else
         .error s!"reloc type {entry.type}: 32-bit overflow at \
-          place=0x{(base + entry.r_offset).toNat} \
+          place=0x{(base + (entry.r_offset.val)).toNat} \
           (value=0x{res.value.toNat} doesn't fit signed-32 or unsigned-32)"
 
 /-- Bake every entry in one segment into a flat `Array StoreOp`.
@@ -163,13 +164,13 @@ def bakeReloc (formula : Formula) {objCount : Nat}
 
 /-- `bakeReloc` either errors out (32-bit overflow), returns `.ok
     none` (no-op type), or returns `.ok (some s)` with the closed form
-    `s.addr = base + entry.r_offset` and `s.size ∈ {4, 8}`. -/
+    `s.addr = base + entry.r_offset.val` and `s.size ∈ {4, 8}`. -/
 private theorem bakeReloc_ok_someImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
     (s : StoreOp)
     (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
-    s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
+    s.addr = base + (entry.r_offset.val) ∧ (s.size = 4 ∨ s.size = 8) := by
   unfold bakeRelocImpl at h
   split at h
   · cases h    -- formula = none → .ok none, not .ok (some s)
@@ -251,7 +252,7 @@ private theorem listFoldlM_except_preserves {α : Type} {β : Type}
     `bakeReloc` on some entry of the input array, so it satisfies any
     predicate that `bakeReloc`'s `.ok (some _)` results satisfy
     universally (in particular: `byteLen ≤ 8` + `addr = base +
-    entry.r_offset` for some `entry`). -/
+    entry.r_offset.val` for some `entry`). -/
 private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
     (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg))
@@ -321,7 +322,7 @@ theorem bakeReloc_ok_some (formula : Formula) {objCount : Nat} (elfs : Array Elf
     (base : UInt64) (seg : Segment) (entry : Entry objCount seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
-    s.addr = base + entry.r_offset ∧ (s.size = 4 ∨ s.size = 8) := by
+    s.addr = base + (entry.r_offset.val) ∧ (s.size = 4 ∨ s.size = 8) := by
   subst h_elfs
   exact bakeReloc_ok_someImpl formula elfs bases h_bases base seg entry s h
 

@@ -10,7 +10,7 @@ witnessed match — its four fields *are* the per-elf contract:
 
   • `lt_size`  — `symIdx` is in bounds for `elf.symtab`.
   • `isDef`    — `elf.symtab[symIdx].isGlobalDef = true`.
-  • `nameEq`   — `elf.symtab[symIdx].name = some name`.
+  • `nameEq`   — `elf.symtab[symIdx].name = name`.
   • `isFirst`  — no earlier symbol in `elf.symtab` is a matching def.
 
 Pushing the properties into the result type means consumers read the
@@ -32,14 +32,13 @@ BFS walk over `LoadGraph` lives in `Bfs.lean`; the across-elves
 wrapper lives in `Lookup.lean`.
 -/
 
-import LeanLoad.Elaborate.Elf
-import LeanLoad.Parse.Symbol
+import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Symbol.Checked
 
 namespace LeanLoad.Plan.Resolve
 
 open LeanLoad
-open LeanLoad.Elaborate (Elf)
-open LeanLoad.Parse (Symbol)
+open LeanLoad.Parse (Elf Symbol)
 
 /-- A resolved global symbol, parameterised by the elf-array size
     `objCount`. The `Fin objCount` carries the bounds proof at the
@@ -68,24 +67,24 @@ structure Unresolved (objCount : Nat) where
 /-- The predicate `findInElf` searches for. Lifted out so the
     `Array.findIdx?` characterisation lemmas can talk about it. -/
 private def isMatchingDef (name : String) (entry : Symbol) : Bool :=
-  entry.isGlobalDef && entry.name == some name
+  entry.isGlobalDef && entry.name == name
 
 /-- Raw lookup — returns just the index. The witnessed wrapper
     `findInElf` is what consumers should use. -/
-private def findInElfRaw (elf : Elaborate.Elf) (name : String) : Option Nat :=
+private def findInElfRaw (elf : Elf) (name : String) : Option Nat :=
   elf.symtab.findIdx? (isMatchingDef name)
 
-private theorem findInElfRaw_lt_size {elf : Elaborate.Elf} {name : String}
+private theorem findInElfRaw_lt_size {elf : Elf} {name : String}
     {symIdx : Nat} (h : findInElfRaw elf name = some symIdx) :
     symIdx < elf.symtab.size := by
   unfold findInElfRaw at h
   rw [Array.findIdx?_eq_some_iff_getElem] at h
   exact h.1
 
-private theorem findInElfRaw_provides {elf : Elaborate.Elf} {name : String}
+private theorem findInElfRaw_provides {elf : Elf} {name : String}
     {symIdx : Nat} (h : findInElfRaw elf name = some symIdx) :
     (elf.symtab[symIdx]'(findInElfRaw_lt_size h)).isGlobalDef = true ∧
-    (elf.symtab[symIdx]'(findInElfRaw_lt_size h)).name = some name := by
+    (elf.symtab[symIdx]'(findInElfRaw_lt_size h)).name = name := by
   have h' := h
   unfold findInElfRaw at h'
   rw [Array.findIdx?_eq_some_iff_getElem] at h'
@@ -94,11 +93,11 @@ private theorem findInElfRaw_provides {elf : Elaborate.Elf} {name : String}
   rw [Bool.and_eq_true] at h_pred
   exact ⟨h_pred.1, beq_iff_eq.mp h_pred.2⟩
 
-private theorem findInElfRaw_is_first {elf : Elaborate.Elf} {name : String}
+private theorem findInElfRaw_is_first {elf : Elf} {name : String}
     {symIdx : Nat} (h : findInElfRaw elf name = some symIdx) (k : Nat)
     (h_k : k < symIdx) :
     ¬ ((elf.symtab[k]'(Nat.lt_trans h_k (findInElfRaw_lt_size h))).isGlobalDef = true ∧
-       (elf.symtab[k]'(Nat.lt_trans h_k (findInElfRaw_lt_size h))).name = some name) := by
+       (elf.symtab[k]'(Nat.lt_trans h_k (findInElfRaw_lt_size h))).name = name) := by
   intro ⟨h_def, h_name⟩
   unfold findInElfRaw at h
   rw [Array.findIdx?_eq_some_iff_getElem] at h
@@ -114,7 +113,7 @@ private theorem findInElfRaw_is_first {elf : Elaborate.Elf} {name : String}
 /-- A witnessed match in `elf.symtab` against `name` — the first
     global definition with that name. The fields together discharge
     the gabi 08 § Shared Object Dependencies per-elf contract. -/
-structure MatchedSym (elf : Elaborate.Elf) (name : String) where
+structure MatchedSym (elf : Elf) (name : String) where
   /-- The matching symbol's index. -/
   symIdx  : Nat
   /-- Index in bounds. -/
@@ -122,16 +121,16 @@ structure MatchedSym (elf : Elaborate.Elf) (name : String) where
   /-- Symbol at `symIdx` is a global definition. -/
   isDef   : (elf.symtab[symIdx]'lt_size).isGlobalDef = true
   /-- Symbol at `symIdx` carries the requested name. -/
-  nameEq  : (elf.symtab[symIdx]'lt_size).name = some name
+  nameEq  : (elf.symtab[symIdx]'lt_size).name = name
   /-- No earlier symbol in `elf.symtab` is a matching global definition. -/
   isFirst : ∀ k (h_k : k < symIdx),
     ¬ ((elf.symtab[k]'(Nat.lt_trans h_k lt_size)).isGlobalDef = true ∧
-       (elf.symtab[k]'(Nat.lt_trans h_k lt_size)).name = some name)
+       (elf.symtab[k]'(Nat.lt_trans h_k lt_size)).name = name)
 
 /-- Look up the first global definition in `elf.symtab` with name
     `name`. The fields of the returned `MatchedSym` are filled by
     the `findInElfRaw_*` characterisation lemmas. -/
-def findInElf (elf : Elaborate.Elf) (name : String) :
+def findInElf (elf : Elf) (name : String) :
     Option (MatchedSym elf name) :=
   match h : findInElfRaw elf name with
   | none => none
