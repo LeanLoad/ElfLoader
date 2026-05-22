@@ -7,8 +7,8 @@ well-formedness immediately after reading `Ehdr + phdrs`, then all dynamic
 content reads go through `LoadMap.mapVaddr`.
 -/
 
-import LeanLoad.Parse.Ehdr.Raw
-import LeanLoad.Parse.Phdr.Raw
+import LeanLoad.Parse.Ehdr.Basic
+import LeanLoad.Parse.Phdr.Basic
 import LeanLoad.Parse.Segment.Array
 
 namespace LeanLoad.Parse.Elf
@@ -42,8 +42,8 @@ def checkHeader (header : Ehdr) : Except String Unit := do
   if header.e_ehsize.toNat != EhdrSize then
     .error s!"parse: e_ehsize={header.e_ehsize} but Elf64_Ehdr is {EhdrSize} bytes \
       (gabi-02 § ELF Header)"
-  if header.e_phentsize.toNat != RawPhdrSize then
-    .error s!"parse: e_phentsize={header.e_phentsize} but Elf64_Phdr is {RawPhdrSize} bytes \
+  if header.e_phentsize.toNat != PhdrSize then
+    .error s!"parse: e_phentsize={header.e_phentsize} but Elf64_Phdr is {PhdrSize} bytes \
       (gabi-07 § Program Header)"
   if header.e_type == .exec then
     .error s!"parse: ET_EXEC not supported — LeanLoad expects PIE \
@@ -62,7 +62,7 @@ structure MappedVaddr (map : LoadMap) (va : Vaddr) (len : ByteSize) where
 /-- Validate header policy and PT_LOAD invariants before any dynamic pointer is
     followed. This pushes parse facts earlier than the final checked-ELF
     construction, so dynamic reads consume witnessed load-map state. -/
-def ofHeaders (fileSize : UInt64) (header : Ehdr) (phdrs : Array RawPhdr) :
+def ofHeaders (fileSize : UInt64) (header : Ehdr) (phdrs : Array Phdr) :
     Except String LoadMap := do
   checkHeader header
   let loadable := phdrs.filter (·.p_type == .load)
@@ -90,6 +90,11 @@ def mapVaddr (map : LoadMap) (va : Vaddr) (len : ByteSize) :
     | .isFalse _ => pure ()
   return .error s!"parse: virtual range 0x{va.toNat}..+{len.toNat} is not \
     covered by any file-backed PT_LOAD"
+
+/-- Resolve a dynamic virtual-address span through the checked load map. -/
+def mapSpan (map : LoadMap) (span : VaddrSpan) :
+    Except String (MappedVaddr map span.start span.size) :=
+  mapVaddr map span.start span.size
 
 end LoadMap
 

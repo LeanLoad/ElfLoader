@@ -103,4 +103,39 @@ instance : RawDecode DynTag UInt64 where
       else
         .ok (.reserved n)
 
+/-- Values stored in `DT_PLTREL.d_un`. gABI 08 § Dynamic Array Tags says the
+    value is either `DT_REL` or `DT_RELA`; LeanLoad currently accepts only
+    `.rela` because `DT_JMPREL` is decoded with `Elf64_Rela`. -/
+inductive PltRelKind where
+  | rel
+  | rela
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+namespace PltRelKind
+
+/-- Decode a raw `DT_PLTREL` payload. Constants are gABI 08 § Dynamic
+    Array Tags: `DT_RELA = 7`, `DT_REL = 17`. -/
+def ofRaw : UInt64 → Except String PltRelKind
+  | 7  => .ok .rela
+  | 17 => .ok .rel
+  | raw =>
+      .error s!"parse: DT_PLTREL={raw.toNat}, expected DT_RELA (7) or DT_REL (17)"
+
+#guard
+  match PltRelKind.ofRaw 7 with
+  | .ok .rela => true
+  | _         => false
+
+#guard
+  match PltRelKind.ofRaw 17 with
+  | .ok .rel => true
+  | _        => false
+
+#guard
+  match PltRelKind.ofRaw 0 with
+  | .ok _    => false
+  | .error _ => true
+
+end PltRelKind
+
 end LeanLoad.Parse

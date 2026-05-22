@@ -30,7 +30,7 @@ private def realize (bp : Materialize.BoundPlan)
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
-  let phdrNbytes : Nat := Parse.RawPhdrSize * mainElf.header.e_phnum.toNat
+  let phdrNbytes : Nat := Parse.PhdrSize * mainElf.header.e_phnum.toNat
   let phdrMap ← IO.ofExcept <|
     Parse.PhdrMap.ofSegments mainElf.segments mainElf.header.e_phoff phdrNbytes
   let entry  := mainBase + mainElf.header.e_entry.val
@@ -41,7 +41,7 @@ private def realize (bp : Materialize.BoundPlan)
   ctorAddrs.forM Runtime.callCtor
   let stack ← Reserve.run stackBytes
   let phnum  := mainElf.header.e_phnum.toUInt64
-  let phent  := Parse.RawPhdrSize.toUInt64
+  let phent  := Parse.PhdrSize.toUInt64
   Runtime.execAndJump entry phdrVa phent phnum 0 stack.val.addr stack.val.len path
 
 /-- Right-pad a string to `objCount` chars with `c`. -/

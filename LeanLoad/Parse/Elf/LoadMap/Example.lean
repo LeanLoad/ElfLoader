@@ -11,12 +11,12 @@ open LeanLoad.Parse
 -- Two non-contiguous PT_LOADs (handcrafted, not byte-decoded) exercise
 -- the `vaddr ≠ offset` case that the consolidated fixture's single PT_LOAD
 -- (with `vaddr = offset = 0`) cannot surface alone.
-def phdrVaTestSegments : Array RawPhdr := #[
-  { (default : RawPhdr) with
+def phdrVaTestSegments : Array Phdr := #[
+  { (default : Phdr) with
     p_type := .load,
     p_vaddr := 0x1000, p_memsz := 0x1000,
     p_offset := 0x1000, p_filesz := 0x1000 },
-  { (default : RawPhdr) with
+  { (default : Phdr) with
     p_type := .load,
     p_vaddr := 0x3000, p_memsz := 0x500,
     p_offset := 0x2000, p_filesz := 0x500 } ]

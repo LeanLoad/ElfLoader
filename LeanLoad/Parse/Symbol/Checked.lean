@@ -116,7 +116,7 @@ end Symbol
 /-- Build a `Symbol` from a `RawSym` by lifting `st_info`'s binding
     nibble to `SymBind` and resolving `st_name` against `strtab`.
     Fails if the binding nibble is not in the gabi-05 named set. -/
-def Symbol.ofRaw (strtab : RawStrtab) (s : RawSym) : Except String Symbol := do
+def Symbol.ofRaw (strtab : Strtab) (s : RawSym) : Except String Symbol := do
   let bindRaw := s.st_info >>> 4
   let some bind := SymBind.ofRaw bindRaw
     | .error s!"unknown st_info binding={bindRaw}"

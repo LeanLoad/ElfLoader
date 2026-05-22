@@ -45,7 +45,7 @@ end RawSymtab
     `.dynsym` always reserves index 0 for the all-zero NULL entry
     (gabi 05). The entry count is normally derived from `DT_HASH.nchain`
     in the consolidated fixture (where `nchain = 2`). The second
-    symbol's `st_name = 11` indexes into `RawStrtab.fixtureBytes` at
+    symbol's `st_name = 11` indexes into `Strtab.fixtureBytes` at
     the start of "printf". -/
 def RawSym.fixtureBytes : ByteArray := ⟨#[
   -- Sym[0]: NULL ────────────────────────────────────────────────────────

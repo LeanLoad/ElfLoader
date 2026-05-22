@@ -148,7 +148,7 @@ private def emptyResolveTable (objCount : Nat) : Resolve.Table objCount :=
     `Option` because `ofPhdr` returns `Except` for ill-formed phdrs;
     well-formed inputs always succeed. -/
 private def synthSegment? (vaddr : Parse.Vaddr) (memsz : Parse.ByteSize) : Option Parse.Segment :=
-  let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
+  let phdr : Parse.Phdr := { (default : Parse.Phdr) with
     p_type := .load,
     p_vaddr := vaddr, p_memsz := memsz,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
@@ -213,7 +213,7 @@ private def stackingExample : Option (Array UInt64) := do
     `filesz = 0` and `memsz = 0x2000`, this is two pages of pure BSS
     with no file backing. -/
 private def bssOnlySeg : Option Segment :=
-  let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
+  let phdr : Parse.Phdr := { (default : Parse.Phdr) with
     p_type := .load,
     p_vaddr := 0, p_memsz := 0x2000,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
@@ -255,7 +255,7 @@ private def dummyHandle : Runtime.File := default
 /-- A more general synth helper that lets us vary `filesz` to land in
     each profile. -/
 private def synthSeg? (vaddr : Parse.Vaddr) (memsz filesz : Parse.ByteSize) : Option Segment :=
-  let phdr : Parse.RawPhdr := { (default : Parse.RawPhdr) with
+  let phdr : Parse.Phdr := { (default : Parse.Phdr) with
     p_type := .load,
     p_vaddr := vaddr, p_memsz := memsz,
     p_filesz := filesz, p_offset := 0, p_align := 0x1000 }

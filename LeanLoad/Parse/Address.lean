@@ -1,10 +1,10 @@
 /-
 Distinguished address and extent types for the Parse layer.
 
-Several semantic kinds of 64-bit scalar coexist throughout `parse`:
+Several semantic kinds of parse-layer addresses, offsets, and extents coexist:
 
   • `Vaddr`     — virtual address as recorded in `.dynamic` /
-                  `RawPhdr.p_vaddr` / etc. Translated to a file
+                  `Phdr.p_vaddr` / etc. Translated to a file
                   offset via `Parse.Elf.LoadMap` over checked PT_LOAD
                   coverage.
 
@@ -13,12 +13,15 @@ Several semantic kinds of 64-bit scalar coexist throughout `parse`:
   • `ByteSize`  — byte length / extent of a file or memory region.
 
   • `StrtabOff` — byte offset into the dynamic string table
-                  (`.dynstr`). Consumed by `RawStrtab.lookup`.
+                  (`.dynstr`). Consumed by `Strtab.lookup`.
 
-All are single-field wrappers over `UInt64`. They are distinct nominal
-types — you cannot pass a `Vaddr` to a function expecting a `FileOff`,
-or a `ByteSize` where a string-table offset is required. Wrapping is
-explicit (`⟨x⟩` or `Vaddr.mk x`); numeric literals work via `OfNat`.
+  • `VaddrSpan` — raw `(Vaddr, ByteSize)` pair before no-wrap or
+                  load-map containment has been established.
+
+The scalar forms are single-field wrappers over `UInt64`. They are distinct
+nominal types — you cannot pass a `Vaddr` to a function expecting a `FileOff`,
+or a `ByteSize` where a string-table offset is required. Wrapping is explicit
+(`⟨x⟩` or `Vaddr.mk x`); numeric literals work via `OfNat`.
 
 No coercion *into* these types from a bare `UInt64` is provided — that
 would defeat the safety. Conversion *out* (`.val` / `.toNat`) is
@@ -30,7 +33,7 @@ import LeanLoad.Parse.Decode
 namespace LeanLoad.Parse
 
 /-- Virtual address as recorded in ELF (`.dynamic` tags,
-    `RawPhdr.p_vaddr`, etc.). Distinct from `FileOff` and `StrtabOff`.
+    `Phdr.p_vaddr`, etc.). Distinct from `FileOff` and `StrtabOff`.
     Translated to a file offset via `Parse.Elf.LoadMap`. -/
 structure Vaddr where
   val : UInt64
@@ -80,10 +83,12 @@ def ByteSize.ofEntries (count entrySize : Nat) : ByteSize :=
 def segmentLayoutAlign (align : UInt64) : UInt64 :=
   if align == 0 then 1 else align
 
-/-- Half-open virtual-memory range `[start, start + size)`.
-    The witness rules out UInt64 wrap at the range end. -/
-structure VaddrRange (start : Vaddr) (size : ByteSize) where
-  noWrap : start.toNat + size.toNat < 2 ^ 64
+/-- Raw virtual-address span `[start, start + size)` before any no-wrap or
+    load-map containment witness has been established. -/
+structure VaddrSpan where
+  start : Vaddr
+  size  : ByteSize
+  deriving DecidableEq, Repr, Inhabited, BEq, Hashable
 
 /-- Half-open file-byte range `[off, off + len)` known to fit inside a file of
     observed byte size `fileSize`. This strengthens `(FileOff, ByteSize)`
@@ -92,7 +97,7 @@ structure FileRange (fileSize : UInt64) (off : FileOff) (len : ByteSize) where
   inFile : off.toNat + len.toNat ≤ fileSize.toNat
 
 /-- Byte offset into the dynamic string table (`.dynstr`). Consumed by
-    `RawStrtab.lookup` to recover the NUL-terminated name at that
+    `Strtab.lookup` to recover the NUL-terminated name at that
     offset. Distinct from `Vaddr` and `FileOff`. -/
 structure StrtabOff where
   val : UInt64

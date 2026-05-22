@@ -8,8 +8,8 @@ namespace LeanLoad.Parse.Example
 
 private def exampleFileSize : UInt64 := 0x4000
 
-private def execPhdr : RawPhdr :=
-  { (default : RawPhdr) with
+private def execPhdr : Phdr :=
+  { (default : Phdr) with
     p_type := .load,
     p_flags := PhdrFlags.ofRaw 0x5, -- R|X
     p_offset := 0,
@@ -18,8 +18,8 @@ private def execPhdr : RawPhdr :=
     p_memsz := 0x200,
     p_align := 0x1000 }
 
-private def dataPhdr : RawPhdr :=
-  { (default : RawPhdr) with
+private def dataPhdr : Phdr :=
+  { (default : Phdr) with
     p_type := .load,
     p_flags := PhdrFlags.ofRaw 0x6, -- R|W
     p_offset := 0x1000,
@@ -28,8 +28,8 @@ private def dataPhdr : RawPhdr :=
     p_memsz := 0x200,
     p_align := 0x1000 }
 
-private def overlapPhdr : RawPhdr :=
-  { (default : RawPhdr) with
+private def overlapPhdr : Phdr :=
+  { (default : Phdr) with
     p_type := .load,
     p_flags := PhdrFlags.ofRaw 0x4, -- R
     p_offset := 0x100,
@@ -38,8 +38,8 @@ private def overlapPhdr : RawPhdr :=
     p_memsz := 0x10,
     p_align := 0x100 }
 
-private def shiftedPhdr : RawPhdr :=
-  { (default : RawPhdr) with
+private def shiftedPhdr : Phdr :=
+  { (default : Phdr) with
     p_type := .load,
     p_flags := PhdrFlags.ofRaw 0x4, -- R
     p_offset := 0x2000,

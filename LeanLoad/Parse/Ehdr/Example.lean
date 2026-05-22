@@ -1,8 +1,8 @@
 /-
-Examples and fixture bytes for `Parse/Ehdr/Raw.lean`.
+Examples and fixture bytes for `Parse/Ehdr/Basic.lean`.
 -/
 
-import LeanLoad.Parse.Ehdr.Raw
+import LeanLoad.Parse.Ehdr.Basic
 
 namespace LeanLoad.Parse.Example
 

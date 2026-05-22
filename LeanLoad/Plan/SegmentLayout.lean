@@ -31,7 +31,7 @@ import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Resolve
 import LeanLoad.Parse.Elf.Entry
 import LeanLoad.Parse.Segment.Checked
-import LeanLoad.Parse.Phdr.Raw
+import LeanLoad.Parse.Phdr.Basic
 
 namespace LeanLoad.Plan
 

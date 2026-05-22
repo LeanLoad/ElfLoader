@@ -1,5 +1,5 @@
 /-
-gabi 04 § String Table — `RawStrtab` is a byte buffer holding
+gabi 04 § String Table — `Strtab` is a byte buffer holding
 NUL-terminated C strings addressed by byte offset; offset 0 always
 denotes either the empty string or "no name".
 
@@ -20,29 +20,29 @@ import LeanLoad.Parse.Decode
 
 namespace LeanLoad.Parse
 
-abbrev RawStrtab := ByteArray
+abbrev Strtab := ByteArray
 
-instance : Repr RawStrtab where
+instance : Repr Strtab where
   reprPrec tab prec := reprPrec tab.data prec
 
-namespace RawStrtab
+namespace Strtab
 
 /-- Empty string table when `DT_STRTAB`/`DT_STRSZ` is absent. Any nonzero
     string reference will fail later through `StrtabEntry.ofOff`. -/
-def empty : RawStrtab := ByteArray.mk #[]
+def empty : Strtab := ByteArray.mk #[]
 
 /-- Parse a string table: preserve bytes exactly. gabi 04 string tables have
     no fixed-width record structure; offsets are validated by `lookup`. -/
-def parse : Parser RawStrtab := buffer
+def parse : Parser Strtab := buffer
 
-end RawStrtab
+end Strtab
 
 /-- Read the null-terminated string at `offset` in `tab`. Returns
     `none` if `offset` is past the end or if the bytes don't decode
     as UTF-8. The result excludes the null. Defined under the
-    `RawStrtab` namespace prefix so dot notation `tab.lookup off`
+    `Strtab` namespace prefix so dot notation `tab.lookup off`
     resolves. -/
-def RawStrtab.lookup (tab : RawStrtab) (offset : StrtabOff) : Option String :=
+def Strtab.lookup (tab : Strtab) (offset : StrtabOff) : Option String :=
   let o := offset.toNat
   if o >= tab.size then
     none
@@ -54,16 +54,16 @@ def RawStrtab.lookup (tab : RawStrtab) (offset : StrtabOff) : Option String :=
     `value` is the decoded string and `lookup_eq` witnesses that the
     offset is valid for this table under LeanLoad's UTF-8
     interpretation of gabi 04 string-table bytes. -/
-structure StrtabEntry (tab : RawStrtab) where
+structure StrtabEntry (tab : Strtab) where
   off       : StrtabOff
   value     : String
-  lookup_eq : RawStrtab.lookup tab off = some value
+  lookup_eq : Strtab.lookup tab off = some value
 
 namespace StrtabEntry
 
 /-- Resolve an offset into a witnessed string-table entry. -/
-def ofOff (tab : RawStrtab) (off : StrtabOff) : Except String (StrtabEntry tab) :=
-  match h : RawStrtab.lookup tab off with
+def ofOff (tab : Strtab) (off : StrtabOff) : Except String (StrtabEntry tab) :=
+  match h : Strtab.lookup tab off with
   | some value => .ok { off, value, lookup_eq := h }
   | none       =>
       .error s!"invalid strtab offset 0x{off.toNat} (strtab size {tab.size})"
@@ -77,7 +77,7 @@ end StrtabEntry
     `RawSym.fixtureBytes`'s second symbol's `st_name` (→ "printf").
     Real `.dynstr` always starts with a NUL byte so offset 0 means
     "empty string". -/
-def RawStrtab.fixtureBytes : RawStrtab := ⟨#[
+def Strtab.fixtureBytes : Strtab := ⟨#[
   0x00,                                                         -- [0x00] NUL
   0x6c, 0x69, 0x62, 0x63, 0x2e, 0x73, 0x6f, 0x2e, 0x36, 0x00,   -- [0x01] "libc.so.6\0"
   0x70, 0x72, 0x69, 0x6e, 0x74, 0x66, 0x00,                     -- [0x0b] "printf\0"
@@ -86,11 +86,11 @@ def RawStrtab.fixtureBytes : RawStrtab := ⟨#[
   0x00                                                          -- [0x1f] pad
 ]⟩
 
-#guard RawStrtab.fixtureBytes.size == 32
+#guard Strtab.fixtureBytes.size == 32
 
 section Example
 
-open RawStrtab
+open Strtab
 
 -- ── Byte-level layout ───────────────────────────────────────────────
 -- Each string starts at its documented byte offset.

@@ -7,7 +7,7 @@ Phase 1 of 2 in the relocation pipeline:
      symbol reference into a `Target` (three explicit cases:
      `noSymbol`, `weakUnresolved`, `resolved ref`) and bundles it with
      the rela's `type` / `r_offset` / `addend` and the inherited
-     `coversRela` witness. *Base-free*: no field knows about an mmap
+     `Rela.covered` witness. *Base-free*: no field knows about an mmap
      base. Result lives on each `SegmentLayout.relocs`.
   2. **Bake** (`Materialize/Reloc.lean`) — `Entry objCount seg + base →
      Option StoreOp`. Computes the absolute place and symbol value once
@@ -47,7 +47,7 @@ open LeanLoad.Parse (Elf RawRela Segment Vaddr coversRela)
 -- ============================================================================
 -- Entry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `coversRela` witness
--- (inherited from `Segment.rela` / `Segment.jmprel`'s subtype) can be
+-- (inherited from `Segment.rela` / `Segment.jmprel`) can be
 -- preserved through planning. `SegmentSafe.storesInRange` needs
 -- `r_offset + 8 ≤ seg.vaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
@@ -100,7 +100,7 @@ structure Entry (objCount : Nat) (seg : Segment) where
   /-- Resolution outcome — see `Target`. -/
   target   : Target objCount
   /-- 8-byte write window fits in `[seg.vaddr, seg.vaddr + seg.memsz)`.
-      Inherited from the `coversRela` subtype on `Segment.rela` /
+      Inherited from the checked `Rela.covered` field on `Segment.rela` /
       `Segment.jmprel`; preserved through `planOne` so the
       materializer can prove `StoresContained` structurally. -/
   covered  : coversRela seg.vaddr seg.memsz r_offset
@@ -118,7 +118,7 @@ structure Entry (objCount : Nat) (seg : Segment) where
       • `symtab[symIdx]? = none` — malformed ELF whose rela's `r.sym`
         index exceeds the dynsym size. Could be ruled out structurally
         by adding `r.sym.toNat < symtab.size` to the `Segment.rela` /
-        `jmprel` subtypes; cascade through Segment/SegmentLayout/ElfLayout.
+        `jmprel` checked entries; cascade through Segment/SegmentLayout/ElfLayout.
       • `.strongUndef` — `Plan.ofObjects` rejects layout when any
         strong-undef remains, but the *type* of `Resolve.Table` does
         not yet witness "no strongUndef". A `noStrongUndef` field
@@ -163,9 +163,9 @@ def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     Array (Entry elfs.size seg) := Id.run do
   let mut acc : Array (Entry elfs.size seg) := #[]
   for entry in seg.rela do
-    acc := acc.push (planOne elfs rt objectIdx seg entry.val entry.property)
+    acc := acc.push (planOne elfs rt objectIdx seg entry.raw entry.covered)
   for entry in seg.jmprel do
-    acc := acc.push (planOne elfs rt objectIdx seg entry.val entry.property)
+    acc := acc.push (planOne elfs rt objectIdx seg entry.raw entry.covered)
   return acc
 
 end LeanLoad.Plan.Reloc

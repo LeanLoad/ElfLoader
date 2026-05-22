@@ -14,7 +14,7 @@ import LeanLoad.Parse.Address
 namespace LeanLoad.Parse
 
 /-- 64-bit program header entry. Field layout matches `Elf64_Phdr`. -/
-structure RawPhdr where
+structure Phdr where
   p_type   : PhdrType
   p_flags  : PhdrFlags
   p_offset : FileOff
@@ -26,22 +26,22 @@ structure RawPhdr where
   deriving Repr, Inhabited, BytesDecode
 
 /-- Size of one `Elf64_Phdr` on disk: 4+4+8*6 = 56. -/
-def RawPhdrSize : Nat := 56
+def PhdrSize : Nat := 56
 
-namespace RawPhdr
+namespace Phdr
 
 /-- Byte extent of a `count`-entry program-header table. -/
 def tableByteSize (count : Nat) : ByteSize :=
-  ByteSize.ofEntries count RawPhdrSize
+  ByteSize.ofEntries count PhdrSize
 
 /-- Parse one program-header entry from the current cursor. -/
-def parse : Parser RawPhdr :=
+def parse : Parser Phdr :=
   BytesDecode.decode
 
 /-- Parse `count` consecutive program-header entries from the current cursor. -/
-def parseTable (count : Nat) : Parser (Array RawPhdr) :=
-  decodeArray (α := RawPhdr) count
+def parseTable (count : Nat) : Parser (Array Phdr) :=
+  decodeArray (α := Phdr) count
 
-end RawPhdr
+end Phdr
 
 end LeanLoad.Parse

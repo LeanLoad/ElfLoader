@@ -20,8 +20,7 @@ namespace RelocBuckets
     contains its 8-byte write window. -/
 abbrev Entry (segments : Segments) :=
   Σ i : Fin segments.items.size,
-    { r : RawRela //
-      coversRela segments.items[i].phdr.p_vaddr segments.items[i].phdr.p_memsz r.r_offset }
+    Rela segments.items[i].phdr.p_vaddr segments.items[i].phdr.p_memsz
 
 /-- Find the PT_LOAD index that fully covers `r`'s 8-byte write window. -/
 private def locate (segments : Segments) (r : RawRela) :
@@ -31,7 +30,7 @@ private def locate (segments : Segments) (r : RawRela) :
     let s := segments.items[idx]
     if h_lo : s.phdr.p_vaddr.toNat ≤ r.r_offset.toNat then
       if h_hi : r.r_offset.toNat + 8 ≤ s.phdr.p_vaddr.toNat + s.phdr.p_memsz.toNat then
-        return some ⟨idx, ⟨r, h_lo, h_hi⟩⟩
+        return some ⟨idx, { raw := r, covered := ⟨h_lo, h_hi⟩ }⟩
   return none
 
 /-- Bucket a flat relocation table by containing checked PT_LOAD segment. -/
@@ -53,8 +52,9 @@ private def buildBucket (segments : Segments) (bucketIdx : Fin segments.items.si
     (bucket : Array (Entry segments)) :
     Array (Rela segments.items[bucketIdx].phdr.p_vaddr
       segments.items[bucketIdx].phdr.p_memsz) :=
-  bucket.filterMap fun ⟨i, ⟨r, h_in⟩⟩ =>
-    if h_eq : i = bucketIdx then some ⟨r, h_eq ▸ h_in⟩
+  bucket.filterMap fun ⟨i, rela⟩ =>
+    if h_eq : i = bucketIdx then
+      some { raw := rela.raw, covered := h_eq ▸ rela.covered }
     else none
 
 private def attachedItems (segments : Segments)

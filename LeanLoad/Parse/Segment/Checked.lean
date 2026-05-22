@@ -5,7 +5,7 @@ Spec: gabi 07 (`third_party/gabi/docsrc/elf/07-pheader.rst`) § Program
 Header.
 
 Carried as struct fields:
-  - the originating `RawPhdr` plus a witness that it is `PT_LOAD`,
+  - the originating `Phdr` plus a witness that it is `PT_LOAD`,
   - gabi-07 per-segment invariants (`fileszLeMemsz`, `alignPow2`,
     `alignCong`),
   - typed memory/file range witnesses and the page-layout no-wrap bound that
@@ -20,7 +20,7 @@ chosen mmap base.
 -/
 
 import LeanLoad.Parse.Reloc.Raw
-import LeanLoad.Parse.Phdr.Raw
+import LeanLoad.Parse.Phdr.Basic
 
 namespace LeanLoad.Parse
 
@@ -42,13 +42,25 @@ instance (vaddr : Vaddr) (memsz : ByteSize) (r_offset : Vaddr) :
 
 /-- A checked relocation whose 8-byte write window is contained in the segment
     range `[vaddr, vaddr + memsz)`. -/
-abbrev Rela (vaddr : Vaddr) (memsz : ByteSize) :=
-  { r : RawRela // coversRela vaddr memsz r.r_offset }
+structure Rela (vaddr : Vaddr) (memsz : ByteSize) where
+  raw     : RawRela
+  covered : coversRela vaddr memsz raw.r_offset
+  deriving Repr
 
 -- ============================================================================
 -- Segment — gabi-07 byte fields + invariants. mmap-stage semantics
 -- live on `Plan.SegmentLayout`.
 -- ============================================================================
+
+/-- A PT_LOAD program header's virtual memory range
+    `[p_vaddr, p_vaddr + p_memsz)` does not wrap UInt64. -/
+structure Segment.MemRange (phdr : Phdr) where
+  noWrap : phdr.p_vaddr.toNat + phdr.p_memsz.toNat < 2 ^ 64
+
+/-- A PT_LOAD program header's file-backed byte range
+    `[p_offset, p_offset + p_filesz)` is contained in the source file. -/
+structure Segment.FileImageRange (fileSize : UInt64) (phdr : Phdr) where
+  inFile : phdr.p_offset.toNat + phdr.p_filesz.toNat ≤ fileSize.toNat
 
 /-- A PT_LOAD segment: gabi-07 byte fields, the gabi per-segment
     invariants, range/layout no-wrap witnesses, and the dynamic relocations
@@ -59,13 +71,13 @@ structure Segment where
   /-- Source program-header row. Its fields stay typed as `Vaddr`,
       `FileOff`, and `ByteSize`; projections below expose those typed
       fields without duplicating data. -/
-  phdr   : RawPhdr
+  phdr   : Phdr
   /-- This checked segment is backed by a `PT_LOAD` phdr. -/
   isLoad : phdr.p_type = .load
   /-- Virtual memory range `[p_vaddr, p_vaddr + p_memsz)`. -/
-  memRange : VaddrRange phdr.p_vaddr phdr.p_memsz
+  memRange : Segment.MemRange phdr
   /-- File-backed range `[p_offset, p_offset + p_filesz)`. -/
-  fileRange : FileRange fileSize phdr.p_offset phdr.p_filesz
+  fileRange : Segment.FileImageRange fileSize phdr
   /-- gabi 07: `p_filesz ≤ p_memsz`. -/
   fileszLeMemsz : phdr.p_filesz.toNat ≤ phdr.p_memsz.toNat
   /-- gabi 07: `p_align` is `0` or a power of two. -/
@@ -173,10 +185,10 @@ private def assertProp (p : Prop) [Decidable p] (msg : String) :
     Except String (PLift p) :=
   if h : p then .ok ⟨h⟩ else .error msg
 
-/-- Smart constructor: build a `Segment` from a `RawPhdr` and pre-located rela
+/-- Smart constructor: build a `Segment` from a `Phdr` and pre-located rela
     arrays. Decidably checks each gabi-07 per-segment invariant plus the
     memory/file/page-layout no-wrap witnesses, failing with a typed error. -/
-def Segment.ofPhdr (phdr : RawPhdr) (fileSize : UInt64)
+def Segment.ofPhdr (phdr : Phdr) (fileSize : UInt64)
     (rela jmprel : Array (Rela phdr.p_vaddr phdr.p_memsz)) :
     Except String Segment := do
   let ⟨isLoad⟩ ← assertProp (phdr.p_type = .load)

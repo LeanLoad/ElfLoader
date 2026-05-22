@@ -51,7 +51,7 @@ private def initArrBytes : ByteArray := ⟨#[
 def fixtureBytes : ByteArray :=
   Example.ehdrBytes
     ++ Example.phdrBytes
-    ++ RawStrtab.fixtureBytes
+    ++ Strtab.fixtureBytes
     ++ RawSym.fixtureBytes
     ++ hashBytes
     ++ RawRela.fixtureBytes

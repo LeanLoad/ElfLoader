@@ -49,14 +49,13 @@ import LeanLoad.Parse.Address
 import LeanLoad.Parse.Reader
 import LeanLoad.Parse.Ehdr.Ident
 import LeanLoad.Parse.Ehdr.Fields
-import LeanLoad.Parse.Ehdr.Raw
+import LeanLoad.Parse.Ehdr.Basic
 import LeanLoad.Parse.Ehdr.Example
 import LeanLoad.Parse.Phdr.Fields
-import LeanLoad.Parse.Phdr.Raw
+import LeanLoad.Parse.Phdr.Basic
 import LeanLoad.Parse.Phdr.Example
 import LeanLoad.Parse.Dyntab.Fields
-import LeanLoad.Parse.Dyntab.Raw
-import LeanLoad.Parse.Dyntab.Info
+import LeanLoad.Parse.Dyntab.Basic
 import LeanLoad.Parse.Dyntab.Example
 import LeanLoad.Parse.Strtab
 import LeanLoad.Parse.Symbol.Raw

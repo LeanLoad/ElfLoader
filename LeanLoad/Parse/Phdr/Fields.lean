@@ -1,5 +1,5 @@
 /-
-Typed fields for `RawPhdr`.
+Typed fields for `Phdr`.
 
 `p_type` is decoded into a range-aware `PhdrType`; `p_flags` is decoded
 into the named gABI permission bits plus OS/proc-specific masks.

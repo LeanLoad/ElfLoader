@@ -1,8 +1,8 @@
 /-
-Examples and fixture bytes for `Parse/Phdr/Raw.lean`.
+Examples and fixture bytes for `Parse/Phdr/Basic.lean`.
 -/
 
-import LeanLoad.Parse.Phdr.Raw
+import LeanLoad.Parse.Phdr.Basic
 
 namespace LeanLoad.Parse.Example
 
@@ -32,20 +32,20 @@ def phdrBytes : ByteArray := ⟨#[
   0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00    -- p_align  = 8
 ]⟩
 
-#guard phdrBytes.size == 2 * RawPhdrSize  -- = 112
+#guard phdrBytes.size == 2 * PhdrSize  -- = 112
 
-def phdrs? : Option (Array RawPhdr) :=
-  parseBytes? phdrBytes (RawPhdr.parseTable 2)
+def phdrs? : Option (Array Phdr) :=
+  parseBytes? phdrBytes (Phdr.parseTable 2)
 
 #guard phdrs?.isSome
 
-def phdrs : Array RawPhdr :=
+def phdrs : Array Phdr :=
   phdrs?.get (by native_decide)
 
 #guard phdrs.size = 2
 
-def loadPhdr : RawPhdr := (phdrs[0]?).getD default
-def dynamicPhdr : RawPhdr := (phdrs[1]?).getD default
+def loadPhdr : Phdr := (phdrs[0]?).getD default
+def dynamicPhdr : Phdr := (phdrs[1]?).getD default
 
 -- PT_LOAD
 #guard loadPhdr.p_type   = .load
@@ -59,14 +59,14 @@ def dynamicPhdr : RawPhdr := (phdrs[1]?).getD default
 #guard dynamicPhdr.p_filesz = 0xe0
 
 -- ── Error cases ──────────────────────────────────────────────────────
--- Truncated phdr: 20 bytes when 56 (RawPhdrSize) expected. EOF hits
+-- Truncated phdr: 20 bytes when 56 (PhdrSize) expected. EOF hits
 -- inside the `p_offset` u64 read.
 #guard
-  (parseBytes? (phdrBytes.extract 0 20) RawPhdr.parse).isNone
+  (parseBytes? (phdrBytes.extract 0 20) Phdr.parse).isNone
 
 -- `decodeArray` asking for 3 entries from a 2-entry buffer: third
 -- entry hits EOF.
 #guard
-  (parseBytes? phdrBytes (RawPhdr.parseTable 3)).isNone
+  (parseBytes? phdrBytes (Phdr.parseTable 3)).isNone
 
 end LeanLoad.Parse.Example

@@ -7,7 +7,7 @@ header policy, segment well-formedness, relocation containment, resolved
 dynamic strings, and constructor/destructor target coverage.
 -/
 
-import LeanLoad.Parse.Ehdr.Raw
+import LeanLoad.Parse.Ehdr.Basic
 import LeanLoad.Parse.Symbol.Checked
 import LeanLoad.Parse.Segment.Properties
 
