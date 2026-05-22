@@ -28,8 +28,6 @@ queue to empty.
 -/
 
 import LeanLoad.Discover.Graph
-import Mathlib.Data.List.Basic
-import Mathlib.Data.List.Nodup
 
 namespace LeanLoad.Plan.Resolve
 
@@ -253,7 +251,7 @@ theorem bfsOrder_head (g : LoadGraph) :
           (⟨0, g.sizePos⟩ : Fin g.objects.size).isLt)
         ((#[] : Array (Fin g.objects.size)).push ⟨0, g.sizePos⟩) := by
     show bfsLoop g (totalEdges g + g.objects.size + 1) _ _ _ = _
-    conv_lhs => rw [bfsLoop]
+    rw [bfsLoop]
     simp [h_vis_main]
   rw [h_step]
   obtain ⟨suffix, h_suffix⟩ := bfsLoop_toList_prefix g
