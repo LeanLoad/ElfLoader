@@ -9,6 +9,7 @@ an offset) are defined here. The full enumeration of `p_type` and
 
 import LeanLoad.Parse.Decode
 import LeanLoad.Parse.Deriving
+import LeanLoad.Parse.Offsets
 
 namespace LeanLoad.Parse
 
@@ -27,6 +28,7 @@ structure RawPhdr where
 /-- Size of one `Elf64_Phdr` on disk: 4+4+8*6 = 56. -/
 def RawPhdrSize : Nat := 56
 
+
 -- `p_type` constants used navigationally by `Parse.RawElf.parse`.
 def PT_LOAD    : UInt32 := 1
 def PT_DYNAMIC : UInt32 := 2
@@ -39,24 +41,26 @@ def PT_DYNAMIC : UInt32 := 2
 
 /-- Per-phdr offset translation: `some off` if `ph` is a PT_LOAD
     that covers `va`, `none` otherwise. -/
-private def offsetIn (va : UInt64) (ph : RawPhdr) : Option Nat :=
-  if ph.p_type == PT_LOAD ∧ ph.p_vaddr ≤ va ∧ va < ph.p_vaddr + ph.p_memsz then
-    some ((va - ph.p_vaddr).toNat + ph.p_offset.toNat)
+private def offsetIn (va : Vaddr) (ph : RawPhdr) : Option Nat :=
+  if ph.p_type == PT_LOAD ∧ ph.p_vaddr ≤ va.val ∧ va.val < ph.p_vaddr + ph.p_memsz then
+    some ((va.val - ph.p_vaddr).toNat + ph.p_offset.toNat)
   else none
 
 /-- Translate a virtual address to a file offset by walking the
-    `PT_LOAD` segments. Returns `none` if no `PT_LOAD` covers `va`. -/
-def vaToOffset (phdrs : Array RawPhdr) (va : UInt64) : Option Nat :=
+    `PT_LOAD` segments. Returns `none` if no `PT_LOAD` covers `va`.
+    The input is typed `Vaddr` — a file offset cannot be passed by
+    mistake. -/
+def vaToOffset (phdrs : Array RawPhdr) (va : Vaddr) : Option Nat :=
   phdrs.findSome? (offsetIn va)
 
 /-- Correctness witness: a successful `vaToOffset` returns an offset
     derived from a covering PT_LOAD phdr in `phdrs`. -/
 theorem vaToOffset_eq_some
-    {phdrs : Array RawPhdr} {va : UInt64} {off : Nat}
+    {phdrs : Array RawPhdr} {va : Vaddr} {off : Nat}
     (h : vaToOffset phdrs va = some off) :
     ∃ ph ∈ phdrs, ph.p_type = PT_LOAD ∧
-                  ph.p_vaddr ≤ va ∧ va < ph.p_vaddr + ph.p_memsz ∧
-                  off = (va - ph.p_vaddr).toNat + ph.p_offset.toNat := by
+                  ph.p_vaddr ≤ va.val ∧ va.val < ph.p_vaddr + ph.p_memsz ∧
+                  off = (va.val - ph.p_vaddr).toNat + ph.p_offset.toNat := by
   unfold vaToOffset at h
   obtain ⟨ph, h_mem, h_some⟩ := Array.exists_of_findSome?_eq_some h
   unfold offsetIn at h_some
@@ -129,12 +133,12 @@ private def vaTestPhdrs : Array RawPhdr := #[
     p_vaddr := 0x3000, p_memsz := 0x500,
     p_offset := 0x2000, p_filesz := 0x500 } ]
 
-#guard vaToOffset vaTestPhdrs 0x1000 = some 0x1000  -- first PT_LOAD, identity
-#guard vaToOffset vaTestPhdrs 0x1abc = some 0x1abc  -- inside first segment
-#guard vaToOffset vaTestPhdrs 0x3010 = some 0x2010  -- second PT_LOAD, vaddr ≠ offset
-#guard vaToOffset vaTestPhdrs 0x0fff = none         -- before everything
-#guard vaToOffset vaTestPhdrs 0x2500 = none         -- gap between segments
-#guard vaToOffset vaTestPhdrs 0x3500 = none         -- past the second segment
+#guard vaToOffset vaTestPhdrs (0x1000 : Vaddr) = some 0x1000  -- first PT_LOAD, identity
+#guard vaToOffset vaTestPhdrs (0x1abc : Vaddr) = some 0x1abc  -- inside first segment
+#guard vaToOffset vaTestPhdrs (0x3010 : Vaddr) = some 0x2010  -- second PT_LOAD, vaddr ≠ offset
+#guard vaToOffset vaTestPhdrs (0x0fff : Vaddr) = none         -- before everything
+#guard vaToOffset vaTestPhdrs (0x2500 : Vaddr) = none         -- gap between segments
+#guard vaToOffset vaTestPhdrs (0x3500 : Vaddr) = none         -- past the second segment
 
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated phdr: 20 bytes when 56 (RawPhdrSize) expected. EOF hits

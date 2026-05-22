@@ -53,12 +53,16 @@ stage re-checks it — the witness travels in the type.
     three target soundness theorems (`bytes_preserved`,
     `bss_zeroed`, `relocs_applied`) consume.
 -/
-import LeanLoad.Parse.RawEhdr
-import LeanLoad.Parse.RawStrtab
-import LeanLoad.Parse.RawSym
-import LeanLoad.Parse.RawRela
-import LeanLoad.Parse.RawPhdr
-import LeanLoad.Parse.RawDyn
+import LeanLoad.Parse.Offsets
+import LeanLoad.Parse.Reader
+import LeanLoad.Parse.Header.RawEhdr
+import LeanLoad.Parse.Dynamic.RawStrtab
+import LeanLoad.Parse.Dynamic.RawSym
+import LeanLoad.Parse.Dynamic.RawRela
+import LeanLoad.Parse.Header.RawPhdr
+import LeanLoad.Parse.Dynamic.RawDyn
+import LeanLoad.Parse.Dynamic.RawHash
+import LeanLoad.Parse.Dynamic.DynInfo
 import LeanLoad.Parse.RawElf
 
 import LeanLoad.Elaborate.Header
@@ -69,6 +73,7 @@ import LeanLoad.Elaborate.Elf
 
 import LeanLoad.Runtime
 
+import LeanLoad.Discover.State
 import LeanLoad.Discover.Driver
 import LeanLoad.Discover.IO
 import LeanLoad.Discover.Test  -- pure #guard scenarios; elaborate on build
@@ -86,9 +91,7 @@ import LeanLoad.Materialize.Reloc
 import LeanLoad.Materialize.BoundPlan
 import LeanLoad.Materialize.Build
 
-import LeanLoad.Spec.Memory
-import LeanLoad.Spec.File
-import LeanLoad.Spec.Apply
-import LeanLoad.Spec.ApplyLemmas
-import LeanLoad.Spec.FFI
-import LeanLoad.Spec.Soundness
+import LeanLoad.Materialize.Apply
+import LeanLoad.Materialize.ApplyLemmas
+import LeanLoad.RuntimeAxiom
+import LeanLoad.Soundness

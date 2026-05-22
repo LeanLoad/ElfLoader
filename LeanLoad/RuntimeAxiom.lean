@@ -48,16 +48,16 @@ Scope of the axiom's "memory":
 Living under `LeanLoad.Materialize.LoadOps` so the two new
 declarations sit next to `LoadOps.runSafe` (in `Materialize/
 Safety.lean`) — same namespace, same conceptual layer. A grep
-for `axiom` outside `Runtime.lean` and `Spec/FFI.lean` should be
+for `axiom` outside `Runtime.lean` and `RuntimeAxiom.lean` should be
 the only places to look for trust-surface items.
 -/
 
-import LeanLoad.Spec.Apply
+import LeanLoad.Materialize.Apply
 import LeanLoad.Materialize.Safety
 
 namespace LeanLoad.Materialize.LoadOps
 
-open LeanLoad.Spec
+open LeanLoad
 
 -- ============================================================================
 -- The opaque image of a successful `runSafe` call. Pinned down by the

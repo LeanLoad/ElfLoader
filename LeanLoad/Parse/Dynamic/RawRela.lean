@@ -26,6 +26,7 @@ structure RawRela where
 /-- Size of one `Elf64_Rela` on disk: 8+8+8 = 24. -/
 def RawRelaSize : Nat := 24
 
+
 /-- 24-byte rela-table fixture: one `R_X86_64_RELATIVE` relocation at
     offset `0x100`. The `r_offset` lies inside the consolidated
     fixture's PT_LOAD memsz, so `coversRela` accepts at elaborate

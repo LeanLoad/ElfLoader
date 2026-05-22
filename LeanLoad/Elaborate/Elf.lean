@@ -266,9 +266,11 @@ def elaborate (raw : RawElf) : Except String Elf := do
     | .error s!"elaborate: unsupported e_machine={raw.header.e_machine} \
         (need 62=EM_X86_64 or 183=EM_AARCH64)"
   let symtab : Array Symbol ← raw.symtab.mapM (Symbol.ofRaw raw.strtab)
-  let needed  := raw.needed.filterMap (raw.strtab.lookup ·.toNat)
-  let soname  := raw.soname.bind (raw.strtab.lookup ·.toNat)
-  let runpath := raw.runpath.bind (raw.strtab.lookup ·.toNat)
+  -- `needed`/`soname`/`runpath` are already `StrtabOff` from Parse;
+  -- `RawStrtab.lookup` accepts that type directly.
+  let needed  := raw.needed.filterMap raw.strtab.lookup
+  let soname  := raw.soname.bind raw.strtab.lookup
+  let runpath := raw.runpath.bind raw.strtab.lookup
   if h_wf : Sorted segments ∧ NonOverlap segments then
     let phdr_nbytes : Nat := Parse.RawPhdrSize * raw.header.e_phnum.toNat
     if h_phdr : PhdrCovered segments raw.header.e_phoff phdr_nbytes then

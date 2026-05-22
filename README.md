@@ -35,8 +35,11 @@ seam is `LoadOps.runSafe` in
 it only accepts a `LoadSafe`-witnessed `LoadOps` tree, where
 `SegmentSafe` / `ElfSafe` / `LoadSafe` together discharge in-bounds
 and pairwise-disjoint without ever materialising a flat predicate
-array. Soundness theorems against the abstract `Memory` model live
-in [`LeanLoad/Spec/`](LeanLoad/Spec/).
+array. The formal trust seam (`runSafe_image_eq` axiom) lives in
+[`LeanLoad/RuntimeAxiom.lean`](LeanLoad/RuntimeAxiom.lean); soundness
+theorems against the abstract `Memory` model live in
+[`LeanLoad/Soundness.lean`](LeanLoad/Soundness.lean) (consuming the
+preservation lemmas in [`LeanLoad/Soundness/`](LeanLoad/Soundness/)).
 
 See [`DESIGN.md`](DESIGN.md) for the full pipeline + trust-boundary
 writeup.
@@ -298,8 +301,10 @@ LeanLoad/
                            deps-shape / deps-bounds witnesses + smart constructors
     Effects.lean           abstract IO leaf (resolveDep + fail), monad-polymorphic;
                            instantiated by IO.lean (production) and Test.lean (pure)
-    Driver.lean            DFS recursion + DfsState carrier (objects in pre-order,
-                           postOrder in return order); `discoverWith` top-level
+    State.lean             DfsState carrier + smart constructors (initial/pushObject/
+                           recordDep/markComplete) + characterisation theorems
+    Driver.lean            DfsResult / NeededAcc + mutual `dfs` / `dfsList` +
+                           `discoverWith` top-level (promotes final state to LoadGraph)
     IO.lean                Effects.io (Runtime.openByName → parseFromHandle) +
                            `discover` (production entry; opens main, drives DFS)
     Test.lean              Effects.test (over in-memory TestStore) + discoverPure +
@@ -308,7 +313,12 @@ LeanLoad/
     Align.lean             alignment / page-math helpers over UInt64
     SegmentLayout.lean     per-segment plan (file + bss + mprotect shape), base-free
     Layout.lean            per-object base assignment; totalSpan; segmentsSorted
-    Resolve.lean           SymRef n / Unresolved n / Table n with O(1) HashMap index
+    Resolve.lean           re-exports the four sub-modules below
+    Resolve/Find.lean      `findInElf` returning `Option (MatchedSym elf name)`;
+                           witnesses (lt_size / isDef / nameEq / isFirst) on the struct
+    Resolve/Bfs.lean       `bfsOrder g` BFS traversal of LoadGraph + nodup / head witnesses
+    Resolve/Lookup.lean    `resolveByName g order name` + first-match-along-order theorems
+    Resolve/Table.lean     `Resolution` / `Table` / `buildTable` — per-graph aggregation
     Reloc.lean             per-arch formula → `Patch` list with `coversRela` witness
                            + psABI 32-bit overflow check
     Aggregate.lean         top-level `Aggregate.ofGraph` — strong-undef rejection +
@@ -321,19 +331,23 @@ LeanLoad/
                            records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
     Safety.lean            `SegmentSafe` / `ElfSafe` / `LoadSafe` mirror the tree;
                            `LoadOps.runSafe` is the IO trust seam
+    Apply.lean             pure denotation of the materialize pipeline:
+                           `Memory` + `File` types + per-op `apply` (formal mirror of
+                           `Op.run`) + tree-level `SegmentOps`/`ElfOps`/`LoadOps.apply`
+    ApplyLemmas.lean       inside/outside reusable lemmas about `apply`
     Build.lean             builder: `BoundPlan` → safety-witnessed `LoadOps` tree;
                            DFS post-order ctor / fini address lists
-  Spec/                    soundness — pure byte-level memory model
-    Memory.lean            abstract byte + perm `Memory` type
-    Apply.lean             per-op pure denotation over `Memory`
-    ApplyLemmas.lean       reusable lemmas about `Apply`
-    File.lean              file-content reads
-    FFI.lean               opaque `runSafe_image` axiomatized to match Apply
-    Soundness.lean         end-to-end soundness theorems
   Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
                            mmapAnonAlloc, mprotect, write, zeroout, mmapStack,
                            callCtor, execAndJump
+  RuntimeAxiom.lean        the FFI axiom: `runSafe_image rsv lo safe fs =
+                           LoadOps.apply fs lo Memory.zero` — the single formal
+                           statement about `runtime/runtime.c`'s extern primitives
   Runtime.c                C shims behind the @[extern] declarations
+  Soundness.lean           byte-level apply preservation lemmas (outside-reservation,
+                           no-touch, at-target) plus the three end-to-end target
+                           theorems (`bytes_preserved` / `bss_zeroed` /
+                           `relocs_applied`)
   Example.lean             cross-stage `#guard` walkthrough (synthetic fixtures)
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)
 third_party/               submodules (musl, gabi, glibc, elfutils, …)

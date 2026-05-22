@@ -23,6 +23,11 @@ structure RawSym where
 /-- Size of one `Elf64_Sym` on disk: 4+1+1+2+8+8 = 24. -/
 def RawSymSize : Nat := 24
 
+
+/-- Dynamic symbol table — the on-disk array of `RawSym` entries
+    pointed at by `DT_SYMTAB`. Count comes from `DT_HASH.nchain`. -/
+abbrev RawSymtab := Array RawSym
+
 /-- 48-byte symbol-table fixture: the mandatory NULL symbol at index 0
     and a global undefined `printf` reference at index 1. Real
     `.dynsym` always reserves index 0 for the all-zero NULL entry

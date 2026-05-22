@@ -16,8 +16,8 @@ The low nibble of `st_info` (the symbol-type field) and `st_size` are
 not lifted — no consumer reads them.
 -/
 
-import LeanLoad.Parse.RawSym
-import LeanLoad.Parse.RawStrtab
+import LeanLoad.Parse.Dynamic.RawSym
+import LeanLoad.Parse.Dynamic.RawStrtab
 
 namespace LeanLoad.Elaborate
 
@@ -122,7 +122,8 @@ def Symbol.ofRaw (strtab : RawStrtab) (s : RawSym) : Except String Symbol := do
   let bindRaw := s.st_info >>> 4
   let some bind := SymBind.ofRaw bindRaw
     | .error s!"unknown st_info binding={bindRaw}"
-  return { name  := strtab.lookup s.st_name.toNat
+  -- `st_name` is a UInt32 strtab offset; wrap it at this boundary.
+  return { name  := strtab.lookup ⟨s.st_name.toUInt64⟩
            bind
            shndx := ShnIdx.ofRaw s.st_shndx
            value := s.st_value }

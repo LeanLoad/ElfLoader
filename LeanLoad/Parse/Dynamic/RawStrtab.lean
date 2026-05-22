@@ -8,7 +8,14 @@ them as UTF-8. gabi specifies the table as "byte sequence" — UTF-8
 is LeanLoad's interpretation, consistent with how every Linux
 toolchain emits names. Returns `none` on out-of-range offset or
 decode failure.
+
+The lookup-offset parameter is typed `StrtabOff` (see
+`Parse/Offsets.lean`) — a distinct nominal wrapper over `UInt64`.
+That makes accidental confusion with a `Vaddr` or file offset a
+type error rather than a silent runtime mis-read.
 -/
+
+import LeanLoad.Parse.Offsets
 
 namespace LeanLoad.Parse
 
@@ -19,12 +26,13 @@ abbrev RawStrtab := ByteArray
     as UTF-8. The result excludes the null. Defined under the
     `RawStrtab` namespace prefix so dot notation `tab.lookup off`
     resolves. -/
-def RawStrtab.lookup (tab : RawStrtab) (offset : Nat) : Option String :=
-  if offset >= tab.size then
+def RawStrtab.lookup (tab : RawStrtab) (offset : StrtabOff) : Option String :=
+  let o := offset.toNat
+  if o >= tab.size then
     none
   else
-    let endIdx := tab.findIdx? (· == 0) offset |>.getD tab.size
-    String.fromUTF8? (tab.extract offset endIdx)
+    let endIdx := tab.findIdx? (· == 0) o |>.getD tab.size
+    String.fromUTF8? (tab.extract o endIdx)
 
 /-- 32-byte string-table fixture holding four NUL-terminated names.
     Coordinated with the consolidated `Parse.RawElf.fixtureBytes`: the
@@ -57,19 +65,20 @@ open RawStrtab
 #guard fixtureBytes[0x1b]? = some 0x6c  -- 'l' of "lib"
 
 -- ── `lookup` over canonical offsets ─────────────────────────────────
-#guard lookup fixtureBytes 0x00 = some ""           -- empty string at 0
-#guard lookup fixtureBytes 0x01 = some "libc.so.6"
-#guard lookup fixtureBytes 0x0b = some "printf"
-#guard lookup fixtureBytes 0x12 = some "mylib.so"
-#guard lookup fixtureBytes 0x1b = some "lib"
+-- Numeric literals in `StrtabOff` position resolve via `OfNat`.
+#guard lookup fixtureBytes (0x00 : StrtabOff) = some ""           -- empty string at 0
+#guard lookup fixtureBytes (0x01 : StrtabOff) = some "libc.so.6"
+#guard lookup fixtureBytes (0x0b : StrtabOff) = some "printf"
+#guard lookup fixtureBytes (0x12 : StrtabOff) = some "mylib.so"
+#guard lookup fixtureBytes (0x1b : StrtabOff) = some "lib"
 
 -- Mid-string offsets: gabi allows them (the trailing suffix is a valid
 -- entry too — the NUL ends *any* lookup starting before it).
-#guard lookup fixtureBytes 0x04 = some "c.so.6"
+#guard lookup fixtureBytes (0x04 : StrtabOff) = some "c.so.6"
 
 -- ── Out-of-range / past-end ─────────────────────────────────────────
-#guard lookup fixtureBytes 32  = none   -- exactly at size
-#guard lookup fixtureBytes 99  = none   -- way past
+#guard lookup fixtureBytes (32 : StrtabOff) = none   -- exactly at size
+#guard lookup fixtureBytes (99 : StrtabOff) = none   -- way past
 
 end Example
 

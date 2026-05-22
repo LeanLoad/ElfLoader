@@ -9,9 +9,11 @@ navigationally (find each section in the `.dynamic` array).
 Interpretive constants (`DT_FLAGS`, `DF_*`, etc.) live in `Elaborate`.
 
 The `.dynamic` array is `DT_NULL`-terminated, so it can't use the
-generic `decodeArray` (fixed-count) — `parseTable` below is the
-dedicated parser. `findAll` / `val?` / `pair?` are post-parse
-lookups over the resulting `Array RawDyn`.
+generic `decodeArray` (fixed-count) — `RawDyntab.parseTable` below
+is the dedicated parser. `RawDyntab.findAll / val? / pair?` are
+post-parse lookups over the resulting `RawDyntab`. The one-shot
+projection into a record of section pointers lives in
+`Parse/DynInfo.lean`.
 -/
 
 import LeanLoad.Parse.Decode
@@ -29,6 +31,12 @@ structure RawDyn where
 
 /-- Size of one `Elf64_Dyn` on disk: 8+8 = 16. -/
 def RawDynSize : Nat := 16
+
+
+/-- Parsed `.dynamic` array — `DT_NULL`-terminated sequence of
+    `RawDyn` entries. Lookups via `RawDyntab.findAll / val? / pair?`;
+    one-shot projection into `DynInfo` via `DynInfo.ofTable`. -/
+abbrev RawDyntab := Array RawDyn
 
 -- ============================================================================
 -- DT_* tag constants. Only the values `Parse.RawElf.parse` uses to
@@ -53,7 +61,7 @@ def DT_INIT_ARRAYSZ  : UInt64 := 27
 def DT_FINI_ARRAYSZ  : UInt64 := 28
 def DT_RUNPATH       : UInt64 := 29
 
-namespace RawDyn
+namespace RawDyntab
 
 -- ============================================================================
 -- `.dynamic` array parser. `parseTable` chains a fuel-bounded loop
@@ -63,8 +71,8 @@ namespace RawDyn
 
 /-- Read entries up to and including `DT_NULL`, or until `limit`
     bytes have been consumed. -/
-private def collect (fuel : Nat) (limit : Nat) (acc : Array RawDyn) :
-    Parser (Array RawDyn) := do
+private def collect (fuel : Nat) (limit : Nat) (acc : RawDyntab) :
+    Parser RawDyntab := do
   match fuel with
   | 0 => return acc
   | fuel + 1 =>
@@ -80,7 +88,7 @@ private def collect (fuel : Nat) (limit : Nat) (acc : Array RawDyn) :
 /-- Parse the `.dynamic` array. `offset` is the file offset (typically
     `p_offset` of the `PT_DYNAMIC` program header) and `bytes` is its
     `p_filesz`. -/
-def parseTable (offset bytes : Nat) : Parser (Array RawDyn) := do
+def parseTable (offset bytes : Nat) : Parser RawDyntab := do
   seek offset
   collect bytes (offset + bytes) (Array.mkEmpty 16)
 
@@ -89,17 +97,17 @@ def parseTable (offset bytes : Nat) : Parser (Array RawDyn) := do
 -- ============================================================================
 
 /-- All entries matching a tag (e.g. all `DT_NEEDED`). -/
-def findAll (tab : Array RawDyn) (tag : UInt64) : Array RawDyn :=
+def findAll (tab : RawDyntab) (tag : UInt64) : RawDyntab :=
   tab.filter (·.d_tag == tag)
 
 /-- Value of the first entry with `tag`, or `none`. -/
-def val? (tab : Array RawDyn) (tag : UInt64) : Option UInt64 :=
+def val? (tab : RawDyntab) (tag : UInt64) : Option UInt64 :=
   (tab.find? (·.d_tag == tag)).map (·.d_un)
 
 /-- Values of two tags as a pair, `none` if either is absent.
     Used to read `(addr, size)`-style sized sections like
     `(DT_RELA, DT_RELASZ)` in one shot. -/
-def pair? (tab : Array RawDyn) (tagA tagB : UInt64) : Option (UInt64 × UInt64) := do
+def pair? (tab : RawDyntab) (tagA tagB : UInt64) : Option (UInt64 × UInt64) := do
   let a ← val? tab tagA
   let b ← val? tab tagB
   return (a, b)
@@ -209,6 +217,6 @@ private def parsedTable : Option (Array RawDyn) :=
 
 end Example
 
-end RawDyn
+end RawDyntab
 
 end LeanLoad.Parse

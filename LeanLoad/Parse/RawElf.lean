@@ -15,18 +15,34 @@ gnu`, which would emit only `DT_GNU_HASH` and require chain walking;
 the build (`Makefile`) requests `--hash-style=both` so `DT_HASH` is
 always available, letting this parser stay simple.
 
-Raw types live in `Parse.Raw{Ehdr,Strtab,Sym,Rela,Phdr,Dyn}`. The
-`.dynamic` array's variable-length parser and by-tag lookups share
-a file with the `RawDyn` struct (`Parse.RawDyn`).
+Raw types live in `Parse.Raw{Ehdr,Strtab,Sym,Rela,Phdr,Dyn,Hash}`.
+The `.dynamic` array's variable-length parser and by-tag lookups
+share a file with the `RawDyn` struct (`Parse.RawDyn`); the
+`DynInfo` projection (`.dynamic` resolved into one record of vaddr
+pointers + size pairs) lives in `Parse.DynInfo`.
+
+`parse` is monad-polymorphic over a `FileReader m` (see
+`Parse/Reader.lean`):
+
+  • Production — `FileReader IO` backed by `Runtime.pread`. The
+    public `parse : FileHandle → IO RawElf` is a thin wrapper.
+
+  • Fixture — `FileReader Id` over an in-memory `ByteArray`. The
+    same `parseM` runs over the hand-crafted bytes downstream of
+    every per-struct `Raw*.fixtureBytes`. There is no parallel
+    walker; `fixture` *is* `parseM (pureReader fixtureBytes)`.
 -/
 
 import LeanLoad.Parse.Decode
-import LeanLoad.Parse.RawEhdr
-import LeanLoad.Parse.RawStrtab
-import LeanLoad.Parse.RawSym
-import LeanLoad.Parse.RawRela
-import LeanLoad.Parse.RawPhdr
-import LeanLoad.Parse.RawDyn
+import LeanLoad.Parse.Reader
+import LeanLoad.Parse.Header.RawEhdr
+import LeanLoad.Parse.Dynamic.RawStrtab
+import LeanLoad.Parse.Dynamic.RawSym
+import LeanLoad.Parse.Dynamic.RawRela
+import LeanLoad.Parse.Header.RawPhdr
+import LeanLoad.Parse.Dynamic.RawDyn
+import LeanLoad.Parse.Dynamic.RawHash
+import LeanLoad.Parse.Dynamic.DynInfo
 import LeanLoad.Runtime
 
 namespace LeanLoad.Parse
@@ -35,7 +51,7 @@ namespace LeanLoad.Parse
 -- RawElf — output of `parse`. Bytes decoded only; no witnesses.
 --
 -- The phdr-array helper `vaToOffset` (virtual-address ↔ file-offset
--- translation, used below by `parseAtVaddr`) lives with the type it
+-- translation, used below by `parseAtVa`) lives with the type it
 -- operates on, in `Parse/RawPhdr.lean`.
 -- ============================================================================
 
@@ -50,13 +66,15 @@ structure RawElf where
   strtab  : RawStrtab
   /-- Dynamic symbol table (`DT_SYMTAB`). Empty if no hash entry
       tells us the count. -/
-  symtab  : Array RawSym
-  /-- `DT_NEEDED` offsets into `strtab`, in dynamic-array order. -/
-  needed  : Array UInt64
-  /-- `DT_SONAME` offset into `strtab`, if present. -/
-  soname  : Option UInt64
-  /-- `DT_RUNPATH` offset into `strtab`, falling back to `DT_RPATH`. -/
-  runpath : Option UInt64
+  symtab  : RawSymtab
+  /-- `DT_NEEDED` strtab byte-offsets, in dynamic-array order. -/
+  needed  : Array StrtabOff
+  /-- `DT_SONAME` strtab byte-offset, if present. -/
+  soname  : Option StrtabOff
+  /-- `DT_RUNPATH` strtab byte-offset, if present. `DT_RPATH` is
+      **not** consulted (gabi 08 deprecates it; Discover refuses
+      it too). A DT_RPATH-only object yields `none`. -/
+  runpath : Option StrtabOff
   /-- General `Rela` relocations from `DT_RELA`, ungrouped. -/
   rela    : Array RawRela
   /-- PLT relocations from `DT_JMPREL`, ungrouped. -/
@@ -79,98 +97,178 @@ namespace LeanLoad.Parse.RawElf
 
 open LeanLoad
 open LeanLoad.Parse
-open LeanLoad.Parse.RawDyn (parseTable findAll val? pair?)
 
-/-- Parse an ELF file via per-section `pread`s on a `FileHandle`.
-    Each section's bytes live in their own small `ByteArray` and are
-    GC'd after parsing — no whole-file `ByteArray` is constructed.
+-- ============================================================================
+-- Vaddr-aware reader helpers — phdr-routed counterparts of `parseAt`
+-- from `Parse/Reader.lean`. They live here (not in `Reader.lean`)
+-- because vaddr→offset translation is ELF-specific (`vaToOffset` over
+-- a `RawPhdr` array). All three are monad-polymorphic over the reader.
+-- ============================================================================
 
-    Internal helpers live as local `let`-bindings that close over `h`
-    (always) and `phdrs` / `dyn` (after they're parsed) — so the
-    section-reading calls below don't have to thread those args.
+/-- Resolve `va` to a file offset via `vaToOffset` over PT_LOAD
+    coverage, then defer to `parseAt`. Throws if no PT_LOAD covers
+    `va`. The vaddr is typed `Vaddr` — a raw file offset cannot be
+    passed by mistake. -/
+def parseAtVa [Monad m] (r : FileReader m) (phdrs : Array RawPhdr)
+    (va : Vaddr) (len : UInt64) (parser : Parser α) : ExceptT String m α :=
+  match vaToOffset phdrs va with
+  | some off => parseAt r off.toUInt64 len parser
+  | none     => throw s!"va 0x{va.toNat} not in any PT_LOAD"
 
-    Three layers; each `--` block names where the section's
-    (offset, size) comes from:
+/-- Workhorse for vaddr-routed fixed-size tables. Reads `count`
+    entries of `entrySize` bytes each, starting at `va`. Each entry
+    is decoded via the `BytesDecode α` instance. -/
+def parseArrayAtVa [Monad m] [BytesDecode α]
+    (r : FileReader m) (phdrs : Array RawPhdr)
+    (entrySize : Nat) (va : Vaddr) (count : Nat) : ExceptT String m (Array α) :=
+  parseAtVa r phdrs va (count * entrySize).toUInt64
+    (decodeArray (α := α) 0 count)
 
-      Layer 1: chained off the ELF header — offset is literal or from
-               `ehdr`'s fields.
-      Layer 2: pure projections out of the parsed `.dynamic` array.
-      Layer 3: vaddr-keyed reads via `.dynamic` tags, routed through
-               `vaToOffset` over the parsed phdrs. -/
-def parse (h : Runtime.FileHandle) : IO RawElf := do
-  -- ── Helper for the direct-offset case (only `h` in scope yet). ────
-  let parseAt {α} (offset len : UInt64) (parser : Parser α) : IO α := do
-    let bytes ← Runtime.pread h offset len
-    match Parser.run bytes parser with
-    | .ok v    => pure v
-    | .error e => throw (IO.userError s!"parse: {e}")
+/-- Read a gabi-08 `(DT_X, DT_XSZ)`-keyed sized table. `loc` is the
+    `(vaddr, size)` pair already projected out of `DynInfo`; `none`
+    yields an empty array (tag absent in `.dynamic`). Entry count
+    derives from `size / entrySize`. -/
+def parseSized [Monad m] [BytesDecode α]
+    (r : FileReader m) (phdrs : Array RawPhdr) (entrySize : Nat)
+    (loc : Option (Vaddr × UInt64)) : ExceptT String m (Array α) :=
+  match loc with
+  | none       => pure #[]
+  | some (v,s) => parseArrayAtVa r phdrs entrySize v (s.toNat / entrySize)
 
-  -- ── Layer 1: header → phdrs → .dynamic ────────────────────────────
-  let header ← parseAt 0 RawEhdrSize.toUInt64
+-- ============================================================================
+-- Layer 3 read helpers — one per section whose read isn't already a
+-- one-liner `parseSized`. Lifting these out of `parseM` keeps Layer 3
+-- a flat list-of-sections; each helper documents one section's read
+-- contract independently.
+-- ============================================================================
+
+/-- Read `DT_HASH`'s `nchain` field — the authoritative count for
+    the dynamic symbol table (the only section whose size doesn't
+    pair with a `DT_*SZ` tag). Returns `0` if `DT_HASH` is absent;
+    `--hash-style=both` in the build ensures it's present. -/
+def readSymCount [Monad m] (r : FileReader m) (phdrs : Array RawPhdr)
+    (hashVa : Option Vaddr) : ExceptT String m Nat := do
+  match hashVa with
+  | none    => pure 0
+  | some va =>
+      let hdr ← parseAtVa r phdrs va RawHashSize.toUInt64
+                  (BytesDecode.decode : Parser RawHash)
+      pure hdr.nchain.toNat
+
+/-- Read the dynamic string table (`.dynstr`) as a raw `ByteArray`.
+    Empty if `DT_STRTAB` is absent. UTF-8 decoding lives in
+    `RawStrtab.lookup`. -/
+def readStrtab [Monad m] (r : FileReader m) (phdrs : Array RawPhdr)
+    (loc : Option (Vaddr × UInt64)) : ExceptT String m RawStrtab :=
+  match loc with
+  | none       => pure (ByteArray.mk #[])
+  | some (v,s) => parseAtVa r phdrs v s buffer
+
+/-- Read the dynamic symbol table. Returns empty if `DT_SYMTAB` is
+    absent or `count` is 0 (e.g., missing `DT_HASH`). -/
+def readSymtab [Monad m] (r : FileReader m) (phdrs : Array RawPhdr)
+    (symVa : Option Vaddr) (count : Nat) : ExceptT String m RawSymtab := do
+  if count == 0 then return #[]
+  match symVa with
+  | none    => pure #[]
+  | some va => parseArrayAtVa r phdrs RawSymSize va count
+
+-- ============================================================================
+-- Three-stage parse pipeline. Each stage has a named function and a
+-- typed intermediate; `parseM` is the assembly.
+--
+--   Stage 1: `parseHeaders` — file-offset reads chained off the ELF
+--     header. Produces `RawHeaders`. Offsets come from `ehdr`'s fields
+--     or `PT_DYNAMIC`'s `p_offset` directly — no PT_LOAD navigation.
+--
+--   Stage 2: `DynInfo.ofTable` — pure projection of `.dynamic` into
+--     a record of section-locating pointers. Lives in `DynInfo.lean`.
+--
+--   Stage 3: `fetchDynContents` — vaddr-keyed reads via `DynInfo`
+--     fields. Produces `DynContents`. Each vaddr is routed through
+--     `parseAtVa` over PT_LOAD coverage.
+--
+-- Both intermediate types (`RawHeaders`, `DynContents`) are local to
+-- this file — `RawElf` stays flat for downstream consumers.
+-- ============================================================================
+
+/-- Output of stage 1. Bundles the three file-offset-keyed reads. -/
+private structure RawHeaders where
+  header : RawEhdr
+  phdrs  : Array RawPhdr
+  dyn    : RawDyntab
+
+/-- Output of stage 3. Bundles the six vaddr-keyed section reads.
+    Field types are concrete and already exist — this is just a
+    function-result carrier, not a new semantic concept. -/
+private structure DynContents where
+  strtab  : RawStrtab
+  symtab  : RawSymtab
+  rela    : Array RawRela
+  jmprel  : Array RawRela
+  initArr : Array UInt64
+  finiArr : Array UInt64
+
+/-- Stage 1: read everything addressable by direct file offsets —
+    `ehdr` (offset 0), the phdr table (`ehdr.e_phoff`), and the
+    `.dynamic` array (`PT_DYNAMIC.p_offset`). No PT_LOAD navigation. -/
+def parseHeaders [Monad m] (r : FileReader m) : ExceptT String m RawHeaders := do
+  let header ← parseAt r 0 RawEhdrSize.toUInt64
                  (BytesDecode.decode : Parser RawEhdr)
-  let phdrs ← parseAt header.e_phoff
+  let phdrs ← parseAt r header.e_phoff
                 (header.e_phnum.toNat * RawPhdrSize).toUInt64
                 (decodeArray (α := RawPhdr) 0 header.e_phnum.toNat)
   let dyn ← match phdrs.find? (·.p_type == PT_DYNAMIC) with
     | none    => pure #[]
-    | some ph => parseAt ph.p_offset ph.p_filesz
-                   (parseTable 0 ph.p_filesz.toNat)
+    | some ph => parseAt r ph.p_offset ph.p_filesz
+                   (RawDyntab.parseTable 0 ph.p_filesz.toNat)
+  return { header, phdrs, dyn }
 
-  -- ── Vaddr-aware helpers; close over `phdrs` now that it exists. ───
-  -- `parseAtVaddr` resolves a vaddr to a file offset via `vaToOffset`
-  -- over PT_LOAD coverage, then defers to `parseAt`.
-  let parseAtVaddr {α} (vaddr len : UInt64) (parser : Parser α) : IO α :=
-    match vaToOffset phdrs vaddr with
-    | some off => parseAt off.toUInt64 len parser
-    | none     => throw (IO.userError s!"parse: va 0x{vaddr.toNat} not in any PT_LOAD")
+/-- Stage 3: read every section pointed at by `DynInfo`, routing each
+    vaddr through `vaToOffset` over `phdrs`' PT_LOAD coverage. Per-
+    section helpers (`readSymCount`/`readStrtab`/`readSymtab`/
+    `parseSized`) handle the absent-tag fallbacks. -/
+def fetchDynContents [Monad m] (r : FileReader m)
+    (phdrs : Array RawPhdr) (info : DynInfo) : ExceptT String m DynContents := do
+  let symCount ← readSymCount r phdrs info.hash
+  let strtab   ← readStrtab   r phdrs info.strtab
+  let symtab   ← readSymtab   r phdrs info.symtab symCount
+  let rela     ← parseSized   r phdrs RawRelaSize info.rela
+  let jmprel   ← parseSized   r phdrs RawRelaSize info.jmprel
+  let initArr  ← parseSized   r phdrs 8           info.initArr
+  let finiArr  ← parseSized   r phdrs 8           info.finiArr
+  return { strtab, symtab, rela, jmprel, initArr, finiArr }
 
-  -- `parseArrayAt`: the workhorse for vaddr-routed fixed-size tables.
-  -- Args read as "each entry is `entrySize` bytes, table starts at
-  -- `vaddr`, has `count` entries"; result is `Array α` decoded
-  -- field-by-field via `BytesDecode`.
-  let parseArrayAt {α} [BytesDecode α]
-      (entrySize : Nat) (vaddr : UInt64) (count : Nat) : IO (Array α) :=
-    parseAtVaddr vaddr (count * entrySize).toUInt64
-      (decodeArray (α := α) 0 count)
-
-  -- ── Layer 2: pure .dynamic projections ────────────────────────────
-  let needed  := (findAll dyn DT_NEEDED).map (·.d_un)
-  let soname  := val? dyn DT_SONAME
-  let runpath := val? dyn DT_RUNPATH <|> val? dyn DT_RPATH
-
-  -- ── Layer 3: vaddr-keyed sections via `.dynamic` tags ─────────────
-  -- symtab count: `nchain` from DT_HASH (`--hash-style=both` ensures
-  -- DT_HASH is present; GNU-only would need chain walking).
-  let symCount ← match val? dyn DT_HASH with
-    | none    => pure 0
-    | some va => parseAtVaddr va 8
-                   (do skip 4 /- nbucket -/; let nchain ← u32le; return nchain.toNat)
-  -- strtab: raw bytes; UTF-8 lookup lives in `RawStrtab.lookup`.
-  let strtab ← match pair? dyn DT_STRTAB DT_STRSZ with
-    | none       => pure (ByteArray.mk #[])
-    | some (v,s) => parseAtVaddr v s buffer
-  -- symtab: vaddr from DT_SYMTAB, count from DT_HASH.nchain (the only
-  -- section whose size doesn't pair with a DT_*SZ tag).
-  let symtab ← if symCount == 0 then pure #[]
-               else match val? dyn DT_SYMTAB with
-                 | none    => pure #[]
-                 | some va => parseArrayAt RawSymSize va symCount
-  -- Sized tables — gabi-08's `(DT_X, DT_XSZ)`-keyed cluster: count
-  -- comes from `sizeTag / entrySize`.
-  let parseSizedTable {α} [BytesDecode α]
-      (entrySize : Nat) (addrTag sizeTag : UInt64) : IO (Array α) :=
-    match pair? dyn addrTag sizeTag with
-    | none       => pure #[]
-    | some (v,s) => parseArrayAt entrySize v (s.toNat / entrySize)
-  let rela    ← parseSizedTable RawRelaSize DT_RELA       DT_RELASZ
-  let jmprel  ← parseSizedTable RawRelaSize DT_JMPREL     DT_PLTRELSZ
-  let initArr ← parseSizedTable 8           DT_INIT_ARRAY DT_INIT_ARRAYSZ
-  let finiArr ← parseSizedTable 8           DT_FINI_ARRAY DT_FINI_ARRAYSZ
-
+/-- Monad-polymorphic byte-parse of an ELF — assembly of the three
+    stages. The `FileReader m` abstracts how bytes arrive (kernel
+    `pread` in production, slice of an in-memory `ByteArray` in the
+    fixture). Errors flow as `ExceptT String m`. -/
+def parseM [Monad m] (r : FileReader m) : ExceptT String m RawElf := do
+  let h ← parseHeaders r
+  let info := DynInfo.ofTable h.dyn
+  let c ← fetchDynContents r h.phdrs info
   return {
-    header, phdrs, strtab, symtab, needed, soname, runpath,
-    rela, jmprel, initArr, finiArr
+    header  := h.header,
+    phdrs   := h.phdrs,
+    strtab  := c.strtab,
+    symtab  := c.symtab,
+    needed  := info.needed,
+    soname  := info.soname,
+    runpath := info.runpath,
+    rela    := c.rela,
+    jmprel  := c.jmprel,
+    initArr := c.initArr,
+    finiArr := c.finiArr
   }
+
+/-- Production entry point: parse the ELF behind an open kernel
+    `FileHandle` via per-section `pread`s. Each section's bytes live
+    in their own small `ByteArray` and are GC'd after parsing — no
+    whole-file `ByteArray` is ever constructed. -/
+def parse (h : Runtime.FileHandle) : IO RawElf := do
+  match ← (parseM (Runtime.fileReader h)).run with
+  | .ok r    => pure r
+  | .error e => throw (IO.userError s!"parse: {e}")
 
 -- ============================================================================
 -- Integration example — a hand-crafted 488-byte ET_DYN that exercises
@@ -182,9 +280,12 @@ def parse (h : Runtime.FileHandle) : IO RawElf := do
 -- demonstrates *cross-section coordination* — PT_DYNAMIC's `p_offset`
 -- matches the dynamic table's actual position, DT_STRTAB's `d_un`
 -- matches the strtab's vaddr, DT_HASH's `nchain` matches the symtab's
--- entry count, and so on. Manually walking these chains is what
--- `parse` does over a real `FileHandle`; here we do it over the same
--- ByteArray.
+-- entry count, and so on.
+--
+-- Crucially, the fixture exercises *the same `parseM`* that
+-- production uses — only the `FileReader` instance changes (`pureReader`
+-- vs `Runtime.fileReader`). Section offsets are no longer hand-walked
+-- here; `parseM` discovers them via `vaToOffset` over the parsed phdrs.
 --
 -- The fixture is also engineered to satisfy `elaborate`'s gabi-07
 -- checks downstream: the lone PT_LOAD has `vaddr = offset = 0` and
@@ -199,12 +300,12 @@ section Example
 -- The struct-typed sections come from each Raw*.lean's `fixtureBytes`
 -- (so a byte change in any per-struct file ripples here automatically).
 -- `hashBytes` and `initArrBytes` aren't `RawX`-typed (just raw u32/u64
--- arrays read by `parseSymCount` / `parseSizedTable` in the production
--- path), so they live inline here.
+-- arrays read inline by `parseM`'s `RawHash` decode / `parseSized`),
+-- so they live inline here.
 
--- Hash section (8 bytes): `nbucket = 1`, `nchain = 2`. `parseSymCount`
--- only reads `nchain` to size the symtab; the bucket/chain arrays a
--- real ELF appends are unused by LeanLoad and omitted.
+-- Hash section (8 bytes): `nbucket = 1`, `nchain = 2`. `parseM` reads
+-- only the first 8 bytes via the `RawHash` decoder; the bucket/chain
+-- arrays a real ELF appends are unused by LeanLoad and omitted.
 private def hashBytes : ByteArray := ⟨#[
   0x01, 0x00, 0x00, 0x00,                                       -- nbucket = 1
   0x02, 0x00, 0x00, 0x00                                        -- nchain  = 2
@@ -215,19 +316,6 @@ private def hashBytes : ByteArray := ⟨#[
 private def initArrBytes : ByteArray := ⟨#[
   0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ]⟩
-
--- ---- File layout — section offsets within `fixtureBytes` ──────────────
--- The lone PT_LOAD has `vaddr = offset`, so `vaToOffset` is the
--- identity on this fixture. Sizes derive from each section's bytes
--- so renaming a section's content elsewhere doesn't desync offsets.
-private def ehdrEnd    : Nat := RawEhdr.fixtureBytes.size                       -- 64
-private def phdrsEnd   : Nat := ehdrEnd + RawPhdr.fixtureBytes.size             -- 0xb0
-private def strtabEnd  : Nat := phdrsEnd + RawStrtab.fixtureBytes.size          -- 0xd0
-private def symtabEnd  : Nat := strtabEnd + RawSym.fixtureBytes.size            -- 0x100
-private def hashEnd    : Nat := symtabEnd + hashBytes.size                      -- 0x108
-private def relaEnd    : Nat := hashEnd + RawRela.fixtureBytes.size             -- 0x120
-private def initArrEnd : Nat := relaEnd + initArrBytes.size                     -- 0x128
-private def fileEnd    : Nat := initArrEnd + RawDyn.fixtureBytes.size           -- 0x1e8
 
 /-- Hand-crafted 488-byte ET_DYN ELF used as the integration fixture.
     Concatenation of every per-struct `fixtureBytes` in file-order,
@@ -242,76 +330,46 @@ def fixtureBytes : ByteArray :=
     ++ hashBytes
     ++ RawRela.fixtureBytes
     ++ initArrBytes
-    ++ RawDyn.fixtureBytes
+    ++ RawDyntab.fixtureBytes
 
--- Section size sanity (catches any byte miscount across files).
-#guard fixtureBytes.size = fileEnd
-#guard fileEnd = 0x1e8                  -- 488 bytes total
-#guard ehdrEnd = 0x040                  -- 64
-#guard phdrsEnd = 0x0b0                 -- 64 + 2*56
-#guard strtabEnd = 0x0d0                -- 0xb0 + 32
-#guard symtabEnd = 0x100                -- 0xd0 + 48
-#guard hashEnd = 0x108                  -- 0x100 + 8
-#guard relaEnd = 0x120                  -- 0x108 + 24
-#guard initArrEnd = 0x128               -- 0x120 + 8
+-- Total size: sum of each section's `fixtureBytes`.
+#guard fixtureBytes.size = 0x1e8                  -- 488 bytes total
 
--- ---- Walk the fixture in `parse`-order, then reassemble ──────────────
-
-/-- Parse-side counterpart to `Parse.RawElf.parse`, but pure: each
-    section's offset is plucked from the fixture instead of issued
-    through `Runtime.pread`. Returns `none` if any decode step fails.
+/-- Parse-side counterpart to `Parse.RawElf.parse`, but pure: built by
+    running the same `parseM` over a `pureReader` of `fixtureBytes`.
+    Returns `Except String RawElf` — the same error channel production
+    surfaces, just without IO wrapping.
 
     This is what `LeanLoad/Example.lean` runs through `elaborate` for
     the real-world acceptance check at the parse → elaborate boundary. -/
-def fixture : Option Parse.RawElf := do
-  let header  ← (Parser.run fixtureBytes (BytesDecode.decode : Parser RawEhdr)).toOption
-  let phdrs   ← (Parser.run fixtureBytes
-                    (decodeArray (α := RawPhdr) ehdrEnd header.e_phnum.toNat)).toOption
-  let dyn     ← (Parser.run fixtureBytes
-                    (parseTable initArrEnd 0xc0)).toOption
-  let symtab  ← (Parser.run fixtureBytes
-                    (decodeArray (α := RawSym) strtabEnd 2)).toOption
-  let rela    ← (Parser.run fixtureBytes
-                    (decodeArray (α := RawRela) hashEnd 1)).toOption
-  let initArr ← (Parser.run fixtureBytes
-                    (decodeArray (α := UInt64) relaEnd 1)).toOption
-  return {
-    header,
-    phdrs,
-    strtab  := fixtureBytes.extract phdrsEnd strtabEnd,
-    symtab,
-    needed  := (findAll dyn DT_NEEDED).map (·.d_un),
-    soname  := val? dyn DT_SONAME,
-    runpath := val? dyn DT_RUNPATH,
-    rela,
-    jmprel  := #[],
-    initArr,
-    finiArr := #[] }
+def fixture : Except String RawElf :=
+  (parseM (pureReader fixtureBytes)).run
 
 -- ---- Cross-section coordination `#guard`s ────────────────────────────
 -- Per-struct field decoding is checked standalone in each Raw*.lean.
 -- Here we verify the multi-section invariants the fixture is engineered
--- to satisfy.
+-- to satisfy — and, because `fixture` calls the *production* `parseM`,
+-- these guards also exercise that production code on a synthetic ELF.
 
 #guard match fixture with
-  | some r =>
-       r.header.e_phnum.toNat == r.phdrs.size                -- ehdr.phnum ↔ phdrs.size
-    && r.symtab.size == 2                                    -- DT_HASH.nchain ↔ symtab entries
-    && r.needed == #[1]                                      -- one DT_NEEDED → strtab[0x01]
-    && r.soname == some 0x12                                 -- DT_SONAME → strtab[0x12]
-    && r.runpath == some 0x1b                                -- DT_RUNPATH → strtab[0x1b]
+  | .ok r =>
+       r.header.e_phnum.toNat == r.phdrs.size                       -- ehdr.phnum ↔ phdrs.size
+    && r.symtab.size == 2                                           -- DT_HASH.nchain ↔ symtab entries
+    && r.needed == #[(1 : StrtabOff)]                               -- one DT_NEEDED → strtab[0x01]
+    && r.soname == some (0x12 : StrtabOff)                          -- DT_SONAME → strtab[0x12]
+    && r.runpath == some (0x1b : StrtabOff)                         -- DT_RUNPATH → strtab[0x1b]
     && r.rela.size == 1
     && r.initArr.size == 1
-  | none   => false
+  | .error _ => false
 
 -- `vaToOffset` is the identity on this fixture (PT_LOAD vaddr = offset).
 #guard match fixture with
-  | some r =>
-       vaToOffset r.phdrs 0x0b0 == some 0xb0    -- strtab vaddr (DT_STRTAB)
-    && vaToOffset r.phdrs 0x100 == some 0x100   -- hash vaddr / e_entry
-    && vaToOffset r.phdrs 0x1e7 == some 0x1e7   -- last covered byte
-    && vaToOffset r.phdrs 0x1e8 == none         -- one past the end
-  | none   => false
+  | .ok r =>
+       vaToOffset r.phdrs (0x0b0 : Vaddr) == some 0xb0    -- strtab vaddr (DT_STRTAB)
+    && vaToOffset r.phdrs (0x100 : Vaddr) == some 0x100   -- hash vaddr / e_entry
+    && vaToOffset r.phdrs (0x1e7 : Vaddr) == some 0x1e7   -- last covered byte
+    && vaToOffset r.phdrs (0x1e8 : Vaddr) == none         -- one past the end
+  | .error _ => false
 
 end Example
 

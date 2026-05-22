@@ -46,6 +46,7 @@ structure RawEhdr where
 /-- Size of `Elf64_Ehdr` on disk: 16-byte e_ident + 48 bytes = 64. -/
 def RawEhdrSize : Nat := 64
 
+
 /-- 64-byte ELF header fixture: 64-bit, little-endian, x86-64, ET_DYN,
     with two program headers at file offset 0x40 (matching the
     `Parse.RawPhdr.fixtureBytes` layout downstream). `e_entry = 0x100`

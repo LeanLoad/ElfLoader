@@ -1,29 +1,51 @@
 /-
 Soundness theorems for the loader's byte-level effect on memory.
 
-Three target statements, each phrased about the pure denotation
-`LoadOps.apply`. To lift any of them to a statement about the
-real loaded image, rewrite `runSafe_image …` via the FFI axiom
-`runSafe_image_eq` and the same conclusion drops out of the pure
-proof.
+Each theorem is stated about the pure denotation `LoadOps.apply`
+over a byte-level `Memory` model (in `Materialize/Apply.lean`). To
+lift to the real loaded image, rewrite `runSafe_image …` via the
+FFI axiom `runSafe_image_eq` (in `LeanLoad/RuntimeAxiom.lean`) and
+the same conclusion drops out of the pure proof.
+
+The file is laid out bottom-up:
+
+  1. Per-op `apply_preserves_outside` — outside the reservation,
+     each `Op.apply` is a `mem.byte`-identity.
+
+  2. Tree-level "outside-reservation" preservation (`SegmentOps`,
+     `ElfOps`, `LoadOps`). Each composes the per-op lemmas via
+     `LoadSafe`'s `InRange` field witnesses.
+
+  3. Tree-level "no-touch" / "at-target" — strictly more general:
+     take explicit per-op no-touch hypotheses instead of deriving
+     them from `LoadSafe` + outside-reservation. Substrate for
+     `bss_zeroed` (no op touching the BSS address) and the
+     "post-m" propagation in `bytes_preserved`. The "at-target"
+     form pins a specific byte to a target value given the
+     responsible `(elf, segment)` index.
+
+  4. The three end-to-end target theorems:
+
+       · `bytes_preserved`  — every file-overlaid byte equals its
+                              source-file byte.
+       · `bss_zeroed`       — every byte in a PT_LOAD's
+                              `[vaddr+filesz, vaddr+memsz)` reads 0.
+       · `relocs_applied`   — every byte in a `StoreOp`'s patch
+                              window reads its LE byte.
+
+`Memory` does not model permissions, so there is no
+`permissions_correct` here; a future perm-tracking `Memory` plus a
+`LoadSafe.mprotectsPairwiseDisjoint` extension would reintroduce it.
 
 Status:
 
   · `LoadOps.apply_preserves_outside_reservation` — proved.
-    A byte outside the reservation is preserved by every level of
-    `apply`, by induction over the tree, using `LoadSafe`'s in-range
-    witnesses.
-
-  · `bytes_preserved` / `bss_zeroed` / `relocs_applied` —
-    *stated*, proofs deferred (`sorry`). The final statements
-    will quantify over PT_LOAD ranges through the `BoundPlan`
-    interface; that interface is in flux (concurrent
-    `Layout` / `Build` / `Reloc` work). When it settles, the
-    statements gain their `BoundPlan` preconditions and the
-    proofs fill in by composing the per-op `apply_inside`
-    lemmas with `LoadSafe.mmapsDisjoint` (plus a
-    `storesPairwiseDisjoint` extension to `LoadSafe` for
-    `relocs_applied`).
+  · `bytes_preserved` / `bss_zeroed` / `relocs_applied` — *stated*,
+    proofs lean on the supporting lemmas. The hypotheses currently
+    take explicit disjointness witnesses; a future `LoadSafe`
+    extension (`zeroDisjointFromMmap` / `storesPairwiseDisjoint`)
+    derived from `Plan/Layout.lean` geometry would discharge them
+    from safety alone.
 
 Proof recipe (for each big theorem):
 
@@ -35,25 +57,22 @@ Proof recipe (for each big theorem):
      that op runs.
   3. For every *later* op in the tree, use `Op.apply_outside`
      to preserve the value. The "outside" preconditions come
-     from `LoadSafe`'s disjointness / in-range fields.
+     from `LoadSafe`'s disjointness / in-range fields plus the
+     explicit per-call hypotheses.
   4. Conclude with extensional rewriting.
 -/
 
-import LeanLoad.Spec.ApplyLemmas
-import LeanLoad.Spec.FFI
+import LeanLoad.Materialize.ApplyLemmas
 import LeanLoad.Materialize.Safety
+import LeanLoad.RuntimeAxiom
 
-namespace LeanLoad.Spec
+namespace LeanLoad
 
-open LeanLoad
 open LeanLoad.Materialize
 
 -- ============================================================================
--- Tree-level structural lemma: bytes outside the reservation are
--- preserved by `LoadOps.apply`. Used as a stepping stone for the
--- three big soundness theorems (each of which restricts attention
--- to bytes *inside* the reservation, and uses this lemma's "outside"
--- companion to ignore unrelated cross-segment effects).
+-- Per-op preservation. Outside the reservation, each op is a
+-- byte-identity. Used as the leaf of every tree-level induction below.
 -- ============================================================================
 
 /-- An address inside the reservation. -/
@@ -157,8 +176,7 @@ private theorem stores_foldl_no_touch
     leaves byte `a` at that store's LE byte. The within-stores
     workhorse for `relocs_applied`. Same motive shape as
     `LoadOps.apply_at_responsible_mmap` (past target index ⇒ byte
-    fixed). The `h_eq` case uses `Subsingleton.elim` to unify the
-    two `idx.val < stores.size` proofs. -/
+    fixed). -/
 private theorem stores_foldl_at_responsible_store
     (stores : Array StoreOp) (mem : Memory)
     {store_idx : Nat} (h_idx : store_idx < stores.size)
@@ -531,194 +549,8 @@ theorem LoadOps.apply_preserves_outside_reservation
   exact h_full
 
 -- ============================================================================
--- Perm-level analogues for `permissions_correct`. Same structural
--- shape as the byte-level family, but everything is about `.perm`
--- instead of `.byte`. Stores and zeros are perm-identity (by
--- `ZeroOp.apply_perm` / `StoreOp.apply_perm` from ApplyLemmas), so
--- only mmaps and mprotects move perm.
--- ============================================================================
-
-/-- Stores fold preserves perm at every address: stores are
-    perm-identity by `StoreOp.apply_perm`. -/
-private theorem stores_foldl_perm (stores : Array StoreOp) (mem : Memory) (a : UInt64) :
-    (stores.foldl (init := mem) fun m s => s.apply m).perm a = mem.perm a := by
-  let motive : Nat → Memory → Prop := fun _ mem' => mem'.perm a = mem.perm a
-  have h_full : motive stores.size (stores.foldl (init := mem) fun m s => s.apply m) := by
-    refine Array.foldl_induction motive ?_ ?_
-    · rfl
-    · intro idx acc ih
-      show (stores[idx].apply acc).perm a = mem.perm a
-      rw [LeanLoad.StoreOp.apply_perm]
-      exact ih
-  exact h_full
-
-/-- Within a segment, perm at `a` reaches `so.mprotect.prot` if `a` is
-    in `so.mprotect`'s range. mmap → zero → stores all bypass: the
-    final mprotect step sets perm definitively. -/
-theorem SegmentOps.apply_perm_inside_mprotect
-    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
-    {a : UInt64}
-    (h_a_lo : so.mprotect.addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat < so.mprotect.addr.toNat + so.mprotect.len.toNat) :
-    (Materialize.SegmentOps.apply fs so mem).perm a = so.mprotect.prot := by
-  unfold Materialize.SegmentOps.apply
-  exact LeanLoad.MprotectOp.apply_perm_inside h_a_lo h_a_hi
-
-/-- Within a segment, perm at `a` is preserved if neither the mmap
-    nor the mprotect of this segment touches `a`. Zero and store are
-    perm-identity so they need no hypothesis. -/
-theorem SegmentOps.apply_perm_no_touch
-    {n : Nat} {fs : File} {so : Materialize.SegmentOps n} {mem : Memory}
-    {a : UInt64}
-    (h_no_mmap : ∀ m, so.mmap = some m →
-      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
-    (h_no_mprotect : ¬ (so.mprotect.addr.toNat ≤ a.toNat ∧
-                        a.toNat < so.mprotect.addr.toNat + so.mprotect.len.toNat)) :
-    (Materialize.SegmentOps.apply fs so mem).perm a = mem.perm a := by
-  unfold Materialize.SegmentOps.apply
-  rw [LeanLoad.MprotectOp.apply_perm_outside h_no_mprotect]
-  rw [stores_foldl_perm so.stores _ a]
-  cases h_zero : so.zero with
-  | none =>
-    dsimp only
-    cases h_mmap : so.mmap with
-    | none => dsimp only
-    | some m => exact LeanLoad.MmapOp.apply_perm_outside (h_no_mmap m h_mmap)
-  | some z =>
-    dsimp only
-    rw [LeanLoad.ZeroOp.apply_perm]
-    cases h_mmap : so.mmap with
-    | none => dsimp only
-    | some m => exact LeanLoad.MmapOp.apply_perm_outside (h_no_mmap m h_mmap)
-
-/-- Per-elf perm preservation: if no segment of this elf perm-touches
-    a, the elf's apply leaves perm at a unchanged. -/
-theorem ElfOps.apply_perm_no_touch
-    {n : Nat} {fs : File} {eo : Materialize.ElfOps n} {mem : Memory}
-    {a : UInt64}
-    (h_no_mmap : ∀ (k : Nat) (h_k : k < eo.segments.size) (m : MmapOp),
-      (eo.segments[k]'h_k).mmap = some m →
-      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
-    (h_no_mprotect : ∀ (k : Nat) (h_k : k < eo.segments.size),
-      ¬ ((eo.segments[k]'h_k).mprotect.addr.toNat ≤ a.toNat ∧
-         a.toNat < (eo.segments[k]'h_k).mprotect.addr.toNat +
-                   (eo.segments[k]'h_k).mprotect.len.toNat)) :
-    (Materialize.ElfOps.apply fs eo mem).perm a = mem.perm a := by
-  unfold Materialize.ElfOps.apply
-  let motive : Nat → Memory → Prop := fun _ mem' => mem'.perm a = mem.perm a
-  have h_full : motive eo.segments.size
-      (eo.segments.foldl (init := mem) fun m so => Materialize.SegmentOps.apply fs so m) := by
-    refine Array.foldl_induction motive ?_ ?_
-    · rfl
-    · intro idx acc ih
-      show (Materialize.SegmentOps.apply fs (eo.segments[idx.val]'idx.isLt) acc).perm a = mem.perm a
-      rw [SegmentOps.apply_perm_no_touch
-            (fun m h => h_no_mmap idx.val idx.isLt m h)
-            (h_no_mprotect idx.val idx.isLt)]
-      exact ih
-  exact h_full
-
-/-- Top-level perm preservation: if no segment of any elf
-    perm-touches a, the materialize pipeline leaves perm at a
-    unchanged. -/
-theorem LoadOps.apply_perm_no_touch
-    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
-    {a : UInt64}
-    (h_no_mmap : ∀ (i : Nat) (h_i : i < lo.size)
-                  (k : Nat) (h_k : k < (lo[i]'h_i).segments.size) (m : MmapOp),
-      ((lo[i]'h_i).segments[k]'h_k).mmap = some m →
-      ¬ (m.addr.toNat ≤ a.toNat ∧ a.toNat < m.addr.toNat + m.len.toNat))
-    (h_no_mprotect : ∀ (i : Nat) (h_i : i < lo.size)
-                      (k : Nat) (h_k : k < (lo[i]'h_i).segments.size),
-      ¬ (((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat ≤ a.toNat ∧
-         a.toNat < ((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat +
-                   ((lo[i]'h_i).segments[k]'h_k).mprotect.len.toNat)) :
-    (Materialize.LoadOps.apply fs lo mem).perm a = mem.perm a := by
-  unfold Materialize.LoadOps.apply
-  let motive : Nat → Memory → Prop := fun _ mem' => mem'.perm a = mem.perm a
-  have h_full : motive lo.size
-      (lo.foldl (init := mem) fun m eo => Materialize.ElfOps.apply fs eo m) := by
-    refine Array.foldl_induction motive ?_ ?_
-    · rfl
-    · intro idx acc ih
-      show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).perm a = mem.perm a
-      rw [ElfOps.apply_perm_no_touch
-            (fun k h_k m h => h_no_mmap idx.val idx.isLt k h_k m h)
-            (fun k h_k => h_no_mprotect idx.val idx.isLt k h_k)]
-      exact ih
-  exact h_full
-
-/-- Top-level positional preservation for perm: same shape as
-    `apply_at_target` but on the `.perm` field. Used by
-    `permissions_correct`. -/
-theorem LoadOps.apply_perm_at_target
-    {n : Nat} {fs : File} {lo : Materialize.LoadOps n} {mem : Memory}
-    {i : Nat} (h_i : i < lo.size)
-    {k : Nat} (h_k : k < (lo[i]'h_i).segments.size)
-    {a : UInt64} {target : Perm}
-    (h_within : ∀ (acc : Memory),
-      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k]'h_k) acc).perm a = target)
-    (h_other_segs : ∀ (k' : Nat) (h_k' : k' < (lo[i]'h_i).segments.size), k' ≠ k →
-      ∀ (acc : Memory),
-      (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[k']'h_k') acc).perm a = acc.perm a)
-    (h_other_elves : ∀ (i' : Nat) (h_i' : i' < lo.size), i' ≠ i →
-      ∀ (acc : Memory),
-      (Materialize.ElfOps.apply fs (lo[i']'h_i') acc).perm a = acc.perm a) :
-    (Materialize.LoadOps.apply fs lo mem).perm a = target := by
-  have h_elf_i_apply : ∀ (acc : Memory),
-      (Materialize.ElfOps.apply fs (lo[i]'h_i) acc).perm a = target := by
-    intro acc
-    unfold Materialize.ElfOps.apply
-    let inner_motive : Nat → Memory → Prop := fun j_idx mem' =>
-      k < j_idx → mem'.perm a = target
-    have h_inner : inner_motive (lo[i]'h_i).segments.size
-        ((lo[i]'h_i).segments.foldl (init := acc)
-          fun acc' so => Materialize.SegmentOps.apply fs so acc') := by
-      refine Array.foldl_induction inner_motive ?_ ?_
-      · intro h_lt; omega
-      · intro jdx acc' ih h_lt
-        by_cases h_eq : k = jdx.val
-        · subst h_eq
-          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc').perm a = target
-          exact h_within acc'
-        · have h_post_k : k < jdx.val := by
-            have : k < jdx.val + 1 := h_lt
-            omega
-          have h_jdx_ne_k : jdx.val ≠ k := fun h => h_eq h.symm
-          show (Materialize.SegmentOps.apply fs ((lo[i]'h_i).segments[jdx.val]'jdx.isLt) acc').perm a = target
-          rw [h_other_segs jdx.val jdx.isLt h_jdx_ne_k acc']
-          exact ih h_post_k
-    exact h_inner h_k
-  unfold Materialize.LoadOps.apply
-  let outer_motive : Nat → Memory → Prop := fun idx mem' =>
-    i < idx → mem'.perm a = target
-  have h_outer : outer_motive lo.size
-      (lo.foldl (init := mem) fun acc eo => Materialize.ElfOps.apply fs eo acc) := by
-    refine Array.foldl_induction outer_motive ?_ ?_
-    · intro h_lt; omega
-    · intro idx acc ih h_lt
-      by_cases h_eq : i = idx.val
-      · subst h_eq
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).perm a = target
-        exact h_elf_i_apply acc
-      · have h_post_i : i < idx.val := by
-          have : i < idx.val + 1 := h_lt
-          omega
-        have h_idx_ne_i : idx.val ≠ i := fun h => h_eq h.symm
-        show (Materialize.ElfOps.apply fs (lo[idx.val]'idx.isLt) acc).perm a = target
-        rw [h_other_elves idx.val idx.isLt h_idx_ne_i acc]
-        exact ih h_post_i
-  exact h_outer h_i
-
--- ============================================================================
--- The four target soundness theorems.
---
--- Stated about `LoadOps.apply` over `Memory.zero`. To lift to a
--- statement about the real loaded image, replace
---   `(LoadOps.apply fs lo Memory.zero).byte a`  (or `.perm a`)
--- with
---   `(runSafe_image rsv lo safe fs).byte a`  (or `.perm a`)
--- via `runSafe_image_eq`.
+-- Cross-tree disjointness helper: derive "no other mmap touches `a`"
+-- from `LoadSafe` plus `a ∈ m`'s range. Used by `bytes_preserved`.
 -- ============================================================================
 
 /-- Helper: derive "no other mmap in the tree touches `a`" from
@@ -762,6 +594,17 @@ private theorem other_mmap_not_touches
     intro ⟨h_lo', h_hi'⟩
     rcases h_disj with h₁ | h₂ <;> omega
 
+-- ============================================================================
+-- The three target soundness theorems.
+--
+-- Stated about `LoadOps.apply` over `Memory.zero`. To lift to a
+-- statement about the real loaded image, replace
+--   `(LoadOps.apply fs lo Memory.zero).byte a`
+-- with
+--   `(runSafe_image rsv lo safe fs).byte a`
+-- via `runSafe_image_eq`.
+-- ============================================================================
+
 /-- **bytes_preserved** — every byte in every mmap's file-backed
     range equals the corresponding source-file byte, *outside* any
     `ZeroOp` or `StoreOp` patch window across the whole tree.
@@ -769,14 +612,14 @@ private theorem other_mmap_not_touches
     Recipe: derive "no other mmap touches `a`" from
     `LoadSafe.mmapsDisjoint` (cross-elf) + `ElfSafe.mmapsDisjoint`
     (within-elf) via `other_mmap_not_touches`, then apply
-    `LoadOps.apply_at_responsible_mmap`.
+    `LoadOps.apply_at_target`.
 
     The two explicit hypotheses `h_no_zero` and `h_no_store` carry
     the disjointness witnesses that `LoadSafe` does not currently
     provide. A future `LoadSafe.zeroDisjointFromMmap` /
-    `LoadSafe.storesPairwiseDisjoint` extension (recommended in
-    `docs/plan.md`) would derive both internally from the
-    `Plan/Layout.lean` segment-geometry invariants. -/
+    `LoadSafe.storesPairwiseDisjoint` extension would derive both
+    internally from the `Plan/Layout.lean` segment-geometry
+    invariants. -/
 theorem bytes_preserved
     {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
     {rsvAddr rsvLen : UInt64} (safe : Materialize.LoadSafe rsvAddr rsvLen lo)
@@ -829,7 +672,7 @@ theorem bytes_preserved
     any later `StoreOp`'s patch window.
 
     Decomposes into three byte ranges that read 0 for different
-    reasons (see `docs/plan.md` plus the soundness write-up):
+    reasons:
       · Partial-page tail covered by `ZeroOp`     — `ZeroOp.apply_inside`.
       · Full anon pages past the file overlay     — `Memory.zero` initial.
       · No-overlap with subsequent segment mmaps  — `LoadSafe.mmapsDisjoint`.
@@ -943,61 +786,4 @@ theorem relocs_applied
     · intro k' h_k' s h_s
       exact h_other_stores i' h_i' k' h_k' s h_s (fun ⟨h, _⟩ => h_i'_ne h)
 
-/-- **permissions_correct** — every byte in segments[k].mprotect's
-    range ends up with `perm = segments[k].mprotect.prot`. The
-    natural soundness statement enabled by the perm model: the
-    loaded program, immediately before the trampoline jumps, sees
-    R/W/X permissions matching what each segment's PT_LOAD `p_flags`
-    requested (via the `Plan.SegmentLayout.prot` field that flows
-    into `MprotectOp.prot`).
-
-    The two explicit hypotheses (`h_other_mmaps`, `h_other_mprotects`)
-    say "no mmap or mprotect from outside segment k of elf i touches
-    a." Mmaps would re-widen perm to PROT_WRITE; later mprotects
-    would overwrite our final perm. Zeros and stores are perm-
-    identity and need no hypothesis.
-
-    A future `LoadSafe` extension witnessing that all segment
-    `[mprotect.addr, mprotect.addr + mprotect.len)` ranges are
-    pairwise disjoint would discharge both hypotheses from the safety
-    proof alone. -/
-theorem permissions_correct
-    {n : Nat} (lo : Materialize.LoadOps n) (fs : File)
-    (i : Nat) (h_i : i < lo.size)
-    (k : Nat) (h_k : k < (lo[i]'h_i).segments.size)
-    (a : UInt64)
-    (h_a_lo : ((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat ≤ a.toNat)
-    (h_a_hi : a.toNat < ((lo[i]'h_i).segments[k]'h_k).mprotect.addr.toNat +
-                        ((lo[i]'h_i).segments[k]'h_k).mprotect.len.toNat)
-    (h_other_mmaps : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                       (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size) (m' : MmapOp),
-      ((lo[i']'h_i').segments[k']'h_k').mmap = some m' →
-      ¬ (i' = i ∧ k' = k) →
-      ¬ (m'.addr.toNat ≤ a.toNat ∧ a.toNat < m'.addr.toNat + m'.len.toNat))
-    (h_other_mprotects : ∀ (i' : Nat) (h_i' : i' < lo.size)
-                          (k' : Nat) (h_k' : k' < (lo[i']'h_i').segments.size),
-      ¬ (i' = i ∧ k' = k) →
-      ¬ (((lo[i']'h_i').segments[k']'h_k').mprotect.addr.toNat ≤ a.toNat ∧
-         a.toNat < ((lo[i']'h_i').segments[k']'h_k').mprotect.addr.toNat +
-                   ((lo[i']'h_i').segments[k']'h_k').mprotect.len.toNat)) :
-    (Materialize.LoadOps.apply fs lo Memory.zero).perm a
-      = ((lo[i]'h_i).segments[k]'h_k).mprotect.prot := by
-  apply LoadOps.apply_perm_at_target h_i h_k
-  · -- Responsible segment k of elf i: any acc → mprotect.prot at a.
-    intro acc
-    exact SegmentOps.apply_perm_inside_mprotect h_a_lo h_a_hi
-  · -- Other segments of elf i: perm at a preserved (no mmap, no mprotect touches).
-    intro k' h_k' h_k'_ne acc
-    apply SegmentOps.apply_perm_no_touch
-    · intro m' h_m'
-      exact h_other_mmaps i h_i k' h_k' m' h_m' (fun ⟨_, h⟩ => h_k'_ne h)
-    · exact h_other_mprotects i h_i k' h_k' (fun ⟨_, h⟩ => h_k'_ne h)
-  · -- Other elves: perm at a preserved.
-    intro i' h_i' h_i'_ne acc
-    apply ElfOps.apply_perm_no_touch
-    · intro k' h_k' m' h_m'
-      exact h_other_mmaps i' h_i' k' h_k' m' h_m' (fun ⟨h, _⟩ => h_i'_ne h)
-    · intro k' h_k'
-      exact h_other_mprotects i' h_i' k' h_k' (fun ⟨h, _⟩ => h_i'_ne h)
-
-end LeanLoad.Spec
+end LeanLoad
