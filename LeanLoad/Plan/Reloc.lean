@@ -24,7 +24,7 @@ Key types:
     collapses both unresolved cases via `Target.symRef?`.
   • `Entry objCount seg` — parameterised by the owning `Segment` so
     the `coversRela seg.eaddr seg.memsz r_offset` witness from
-    `Segment.rela` / `Segment.jmprel` propagates forward into the
+    `Elf.Relocs` propagates forward into the
     planned tree. `SegmentSafe.storesInRange` reads this witness
     structurally (via `BoundPlan.segment_storeRange_in_rsv`).
 
@@ -37,7 +37,6 @@ so there's no parallel relocation tree to construct or zip later.
 import LeanLoad.Plan.Resolve
 import LeanLoad.ABI.Reloc
 import LeanLoad.Parse.Elf
-import LeanLoad.Parse.ImageView.Segment.Checked
 
 namespace LeanLoad.Plan.Reloc
 
@@ -47,7 +46,7 @@ open LeanLoad.Parse (Elf RawRela Segment Eaddr coversRela)
 -- ============================================================================
 -- Entry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `coversRela` witness
--- (inherited from `Segment.rela` / `Segment.jmprel`) can be
+-- (inherited from `Elf.Relocs`) can be
 -- preserved through planning. `SegmentSafe.storesInRange` needs
 -- `r_offset + 8 ≤ seg.eaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
@@ -100,8 +99,8 @@ structure Entry (objCount : Nat) (seg : Segment) where
   /-- Resolution outcome — see `Target`. -/
   target   : Target objCount
   /-- 8-byte write window fits in `[seg.eaddr, seg.eaddr + seg.memsz)`.
-      Inherited from the checked `Rela.covered` field on `Segment.rela` /
-      `Segment.jmprel`; preserved through `planOne` so the
+      Inherited from the checked `Rela.covered` field on `Elf.Relocs`;
+      preserved through `planOne` so the
       materializer can prove `StoresContained` structurally. -/
   covered  : coversRela seg.eaddr seg.memsz r_offset
 
@@ -117,8 +116,8 @@ structure Entry (objCount : Nat) (seg : Segment) where
     principle but not in well-formed inputs:
       • `symtab[symIdx]? = none` — malformed ELF whose rela's `r.sym`
         index exceeds the dynsym size. Could be ruled out structurally
-        by adding `r.sym.toNat < symtab.size` to the `Segment.rela` /
-        `jmprel` checked entries; cascade through Segment/SegmentLayout/ElfLayout.
+        by adding `r.sym.toNat < symtab.size` to checked relocation entries;
+        cascade through Relocs/SegmentLayout/ElfLayout.
       • `.strongUndef` — `Plan.ofObjects` rejects layout when any
         strong-undef remains, but the *type* of `Resolve.Table` does
         not yet witness "no strongUndef". A `noStrongUndef` field
@@ -156,15 +155,14 @@ def planOne (elfs : Array Elf) (rt : Resolve.Table elfs.size)
 /-- Plan one segment's relas (then jmprel — both go through the same
     formula at materialize time). Used by `Plan.Layout` when
     constructing each `SegmentLayout`. The `coversRela` witness on each
-    `seg.rela` / `seg.jmprel` entry is threaded into the planned
-    `Entry`'s `covered` field. -/
+    `Elf.Relocs` entry is threaded into the planned `Entry`'s `covered` field. -/
 def planSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
-    (objectIdx : Fin elfs.size) (seg : Segment) :
+    (objectIdx : Fin elfs.size) (seg : Segment) (relocs : Elf.Relocs seg) :
     Array (Entry elfs.size seg) := Id.run do
   let mut acc : Array (Entry elfs.size seg) := #[]
-  for entry in seg.rela do
+  for entry in relocs.rela do
     acc := acc.push (planOne elfs rt objectIdx seg entry.raw entry.covered)
-  for entry in seg.jmprel do
+  for entry in relocs.jmprel do
     acc := acc.push (planOne elfs rt objectIdx seg entry.raw entry.covered)
   return acc
 

@@ -34,7 +34,7 @@ def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count RawRelaSize
 
 /-- Parse `count` consecutive `Elf64_Rela` entries. -/
-def parseTable (count : Nat) : Parser (Array RawRela) :=
+def parseTable (count : Nat) : Decoder (Array RawRela) :=
   decodeArray (α := RawRela) count
 
 /-- Convert a `DT_RELASZ`/`DT_PLTRELSZ` byte size into an entry count,

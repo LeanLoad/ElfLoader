@@ -6,7 +6,7 @@ This module checks each decoded function pointer against the final checked
 PT_LOAD array and attaches the executable-target witness consumed by `Elf`.
 -/
 
-import LeanLoad.Parse.ImageView.Segment.Properties
+import LeanLoad.Parse.FileView.SegmentTable.Properties
 
 namespace LeanLoad.Parse
 
@@ -14,29 +14,26 @@ namespace Elf
 
 /-- A constructor/destructor function pointer that is zero or targets an
     executable PT_LOAD in `segments`. -/
-abbrev InitFiniEntry (segments : Segments) :=
+abbrev InitFiniEntry (segments : SegmentTable) :=
   { entry : Eaddr // callTargetInExecSeg segments entry }
 
 /-- `DT_INIT_ARRAY` / `DT_FINI_ARRAY` entries. The array is ELF-owned
     because call order is table order, while each entry carries the
     witness that it targets an executable segment. -/
-abbrev InitFiniArray (segments : Segments) :=
+abbrev InitFiniArray (segments : SegmentTable) :=
   Array (InitFiniEntry segments)
-
-end Elf
-
-namespace Elf
 
 /-- Check one dynamic constructor/destructor array. Zero is accepted by
     `callTargetInExecSeg`; non-zero entries must point into an executable
     PT_LOAD segment. -/
-def checkInitFiniArray (label : String) (segments : Segments) (entries : Array Eaddr) :
+def checkInitFiniArray (label : String) (segments : SegmentTable) (entries : Array Eaddr) :
     Except String (InitFiniArray segments) := do
   let mut checked : InitFiniArray segments := #[]
   for h : i in [:entries.size] do
     let entry := entries[i]
     let decExec : Decidable (callTargetInExecSeg segments entry) := by
-      unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsEaddr Segment.ContainsEaddr
+      unfold callTargetInExecSeg SegmentTable.ExecAddr SegmentTable.ContainsEaddr
+        Segment.ContainsEaddr
       infer_instance
     match decExec with
     | .isTrue h_exec =>

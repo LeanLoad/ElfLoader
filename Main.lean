@@ -30,11 +30,11 @@ private def realize (bp : Materialize.BoundPlan)
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
-  let phdrNbytes : Nat := Parse.ProgramHeaderSize * mainElf.header.e_phnum.toNat
-  let phdrMap ← IO.ofExcept <|
-    Parse.PhdrMap.ofSegments mainElf.segments mainElf.header.e_phoff phdrNbytes
+  let programHeaderNbytes : Nat := Parse.ProgramHeaderSize * mainElf.header.e_phnum.toNat
+  let programHeaderMap ← IO.ofExcept <|
+    Parse.ProgramHeaderMap.ofSegments mainElf.segments mainElf.header.e_phoff programHeaderNbytes
   let entry  := mainBase + mainElf.header.e_entry.val
-  let phdrVa := mainBase + phdrMap.eaddr.val
+  let programHeaderVa := mainBase + programHeaderMap.eaddr.val
   Materialize.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
   -- Ctors run after the address space is fully realized — they're
   -- user code, not kernel ops.
@@ -42,7 +42,7 @@ private def realize (bp : Materialize.BoundPlan)
   let stack ← Reserve.run stackBytes
   let phnum  := mainElf.header.e_phnum.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
-  Runtime.execAndJump entry phdrVa phent phnum 0 stack.val.addr stack.val.len path
+  Runtime.execAndJump entry programHeaderVa phent phnum 0 stack.val.addr stack.val.len path
 
 /-- Right-pad a string to `objCount` chars with `c`. -/
 private def padR (s : String) (objCount : Nat) (c : Char := ' ') : String :=
@@ -109,12 +109,13 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"  segments   ({elf.segments.items.size}):"
     for h2 : segI in [:elf.segments.items.size] do
       let seg := elf.segments.items[segI]
+      let relocs := elf.relocs ⟨segI, h2.upper⟩
       let prot := reprStr seg.perm
       IO.eprintln s!"    [{segI}] eaddr=0x{Nat.hex12 seg.eaddr.toNat} \
         offset=0x{Nat.hex seg.offset.toNat} \
         filesz=0x{Nat.hex seg.filesz.toNat} \
         memsz=0x{Nat.hex seg.memsz.toNat} \
-        prot={prot}  rela={seg.rela.size}  jmprel={seg.jmprel.size}"
+        prot={prot}  rela={relocs.rela.size}  jmprel={relocs.jmprel.size}"
 
   -- One-shot pure-pipeline build. Every later stage reads from `plan`.
   let plan ← IO.ofExcept (Plan.Aggregate.ofGraph g)

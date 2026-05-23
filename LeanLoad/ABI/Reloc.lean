@@ -21,7 +21,7 @@ to write). Parse only sees `r_info` as bytes.
 -/
 
 import LeanLoad.Parse.Dynamic.Reloc.Raw
-import LeanLoad.Parse.ImageView.ElfHeader.Fields
+import LeanLoad.Parse.FileView.ElfHeader.Fields
 
 -- ============================================================================
 -- `r_info` bit-field accessors — unpack the packed `(sym, type)`

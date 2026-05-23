@@ -3,9 +3,9 @@ gabi 02 § ELF Header — `Elf64_Ehdr`. Field layout matches the C
 struct one-for-one, including the inlined 16-byte `e_ident` prefix
 (gabi 02 § ELF Identification).
 
-The identification fields are typed in `Parse/ImageView/ElfHeader/Ident.lean`; the
+The identification fields are typed in `Parse/FileView/ElfHeader/Ident.lean`; the
 remaining header tag/version/sentinel fields are typed in
-`Parse/ImageView/ElfHeader/Fields.lean`. Their decoders fold validation and sentinel
+`Parse/FileView/ElfHeader/Fields.lean`. Their decoders fold validation and sentinel
 decoding into byte decode, so later stages consume semantic fields
 rather than raw integers.
 -/
@@ -13,8 +13,8 @@ rather than raw integers.
 import LeanLoad.Parse.Decode
 import LeanLoad.Parse.Deriving
 import LeanLoad.Parse.Address
-import LeanLoad.Parse.ImageView.ElfHeader.Ident
-import LeanLoad.Parse.ImageView.ElfHeader.Fields
+import LeanLoad.Parse.FileView.ElfHeader.Ident
+import LeanLoad.Parse.FileView.ElfHeader.Fields
 
 namespace LeanLoad.Parse
 
@@ -63,7 +63,7 @@ namespace ElfHeader
 def byteSize : ByteSize := ByteSize.ofNat ElfHeaderSize
 
 /-- Parse one ELF header from the current cursor. -/
-def parse : Parser ElfHeader :=
+def parse : Decoder ElfHeader :=
   BytesDecode.decode
 
 end ElfHeader

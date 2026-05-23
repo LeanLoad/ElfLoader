@@ -33,7 +33,7 @@ def empty : Strtab := ByteArray.mk #[]
 
 /-- Parse a string table: preserve bytes exactly. gabi 04 string tables have
     no fixed-width record structure; offsets are validated by `lookup`. -/
-def parse : Parser Strtab := buffer
+def parse : Decoder Strtab := buffer
 
 end Strtab
 

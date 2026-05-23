@@ -1,18 +1,18 @@
 /-
-Examples and fixture bytes for `Parse/ImageView/ElfHeader/Basic.lean`.
+Examples and fixture bytes for `Parse/FileView/ElfHeader/Basic.lean`.
 -/
 
-import LeanLoad.Parse.ImageView.ElfHeader.Basic
+import LeanLoad.Parse.FileView.ElfHeader.Basic
 
 namespace LeanLoad.Parse.Example
 
 /-- 64-byte ELF header fixture: 64-bit, little-endian, x86-64, ET_DYN,
     with two program headers at file offset 0x40 (matching
-    `phdrBytes`). `e_entry = 0x100` points inside the
-    lone PT_LOAD of `Elf.Example.fixtureBytes` so the checked-parse
+    `programHeaderBytes`). `e_entry = 0x100` points inside the
+    lone PT_LOAD of `Parse.Example.fixtureBytes` so the checked-parse
     entry-in-segment check passes. Section headers stripped
     (`e_shoff = 0`, `e_shnum = 0`); a loader doesn't need them. -/
-def ehdrBytes : ByteArray := ⟨#[
+def elfHeaderBytes : ByteArray := ⟨#[
   -- e_ident (16 bytes) ──────────────────────────────────────────────────
   0x7f, 0x45, 0x4c, 0x46,                           -- magic "\x7fELF"
   0x02,                                             -- EI_CLASS    = ELFCLASS64
@@ -35,10 +35,10 @@ def ehdrBytes : ByteArray := ⟨#[
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00                -- e_shentsize/num/strndx
 ]⟩
 
-#guard ehdrBytes.size == ElfHeaderSize
+#guard elfHeaderBytes.size == ElfHeaderSize
 
 def ehdr? : Option ElfHeader :=
-  parseBytes? ehdrBytes ElfHeader.parse
+  decodeWith? elfHeaderBytes ElfHeader.parse
 
 #guard ehdr?.isSome
 
@@ -62,67 +62,67 @@ def ehdr : ElfHeader :=
 -- ── RawDecode rejection: unknown header tags fail decode ───────────
 -- Fixture with `e_type = 0xff00` (not in gabi-named set) and otherwise
 -- valid bytes — parsing fails inside the `e_type` decode.
-def badEhdrTypeBytes : ByteArray :=
-  let bytes := ehdrBytes.toList.toArray
+def badElfHeaderTypeBytes : ByteArray :=
+  let bytes := elfHeaderBytes.toList.toArray
   let bytes := bytes.set! 0x10 0x00  -- e_type low byte
   let bytes := bytes.set! 0x11 0xff  -- e_type high byte = 0xff00
   ⟨bytes⟩
-#guard (parseBytes? badEhdrTypeBytes ElfHeader.parse).isNone
+#guard (decodeWith? badElfHeaderTypeBytes ElfHeader.parse).isNone
 
 -- Unknown EI_CLASS rejects before the post-ident fields are decoded.
-def badEhdrClassBytes : ByteArray :=
-  let bytes := ehdrBytes.toList.toArray
+def badElfHeaderClassBytes : ByteArray :=
+  let bytes := elfHeaderBytes.toList.toArray
   let bytes := bytes.set! 0x04 0xff
   ⟨bytes⟩
-#guard (parseBytes? badEhdrClassBytes ElfHeader.parse).isNone
+#guard (decodeWith? badElfHeaderClassBytes ElfHeader.parse).isNone
 
 -- Invalid EV_NONE in either version field fails decode; ElfHeader only
 -- carries the currently valid `EV_CURRENT` case (gabi 02).
-def badEhdrIdentVersionBytes : ByteArray :=
-  let bytes := ehdrBytes.toList.toArray
+def badElfHeaderIdentVersionBytes : ByteArray :=
+  let bytes := elfHeaderBytes.toList.toArray
   let bytes := bytes.set! 0x06 0x00
   ⟨bytes⟩
-#guard (parseBytes? badEhdrIdentVersionBytes ElfHeader.parse).isNone
+#guard (decodeWith? badElfHeaderIdentVersionBytes ElfHeader.parse).isNone
 
-def badEhdrFileVersionBytes : ByteArray :=
-  let bytes := ehdrBytes.toList.toArray
+def badElfHeaderFileVersionBytes : ByteArray :=
+  let bytes := elfHeaderBytes.toList.toArray
   let bytes := bytes.set! 0x14 0x00
   let bytes := bytes.set! 0x15 0x00
   let bytes := bytes.set! 0x16 0x00
   let bytes := bytes.set! 0x17 0x00
   ⟨bytes⟩
-#guard (parseBytes? badEhdrFileVersionBytes ElfHeader.parse).isNone
+#guard (decodeWith? badElfHeaderFileVersionBytes ElfHeader.parse).isNone
 
 -- `EI_OSABI` is typed but permissive: the gABI reserves 64..255 for
 -- arch/psABI-specific meanings, so parsing preserves those values.
-def ehdrArchOsabiBytes : ByteArray :=
-  let bytes := ehdrBytes.toList.toArray
+def elfHeaderArchOsabiBytes : ByteArray :=
+  let bytes := elfHeaderBytes.toList.toArray
   let bytes := bytes.set! 0x07 0x40
   ⟨bytes⟩
-#guard (parseBytes? ehdrArchOsabiBytes ElfHeader.parse).map (·.ei_osabi) =
+#guard (decodeWith? elfHeaderArchOsabiBytes ElfHeader.parse).map (·.ei_osabi) =
   some (.archSpecific 0x40)
 
 -- `e_shstrndx` decodes the gABI extended-index sentinel.
-def ehdrXindexBytes : ByteArray :=
-  let bytes := ehdrBytes.toList.toArray
+def elfHeaderXindexBytes : ByteArray :=
+  let bytes := elfHeaderBytes.toList.toArray
   let bytes := bytes.set! 0x3e 0xff
   let bytes := bytes.set! 0x3f 0xff
   ⟨bytes⟩
-#guard (parseBytes? ehdrXindexBytes ElfHeader.parse).map (·.e_shstrndx) = some .xindex
+#guard (decodeWith? elfHeaderXindexBytes ElfHeader.parse).map (·.e_shstrndx) = some .xindex
 
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Wrong magic: first byte `0x00` instead of `0x7f`. The `Magic` field's
 -- own BytesDecode instance checks all four magic bytes up-front and
 -- short-circuits the whole ElfHeader decode before any other byte is read.
-#guard (parseBytes? ⟨#[0x00, 0x45, 0x4c, 0x46]⟩ ElfHeader.parse).isNone
+#guard (decodeWith? ⟨#[0x00, 0x45, 0x4c, 0x46]⟩ ElfHeader.parse).isNone
 
 -- Truncated ident: only 4 bytes of magic — `ei_class` read hits EOF.
-def truncatedEhdrMagicBytes : ByteArray := ⟨#[0x7f, 0x45, 0x4c, 0x46]⟩
-#guard (parseBytes? truncatedEhdrMagicBytes ElfHeader.parse).isNone
+def truncatedElfHeaderMagicBytes : ByteArray := ⟨#[0x7f, 0x45, 0x4c, 0x46]⟩
+#guard (decodeWith? truncatedElfHeaderMagicBytes ElfHeader.parse).isNone
 
 -- Partial decode: 32 bytes (full ident + 16 bytes of post-ident) when
 -- 64 needed. Magic + ident succeed; `e_entry`'s u64 read hits EOF.
-def halfEhdrBytes : ByteArray := ehdrBytes.extract 0 32
-#guard (parseBytes? halfEhdrBytes ElfHeader.parse).isNone
+def halfElfHeaderBytes : ByteArray := elfHeaderBytes.extract 0 32
+#guard (decodeWith? halfElfHeaderBytes ElfHeader.parse).isNone
 
 end LeanLoad.Parse.Example

@@ -35,7 +35,7 @@ def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count RawSymSize
 
 /-- Parse `count` consecutive dynamic-symbol entries. -/
-def parse (count : Nat) : Parser RawSymtab :=
+def parse (count : Nat) : Decoder RawSymtab :=
   decodeArray (α := RawSym) count
 
 end RawSymtab

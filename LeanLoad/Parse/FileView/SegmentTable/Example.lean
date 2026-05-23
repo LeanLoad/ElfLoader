@@ -2,7 +2,7 @@
 Examples for checked PT_LOAD segments and checked segment arrays.
 -/
 
-import LeanLoad.Parse.ImageView.Segment.Properties
+import LeanLoad.Parse.FileView.SegmentTable.Properties
 
 namespace LeanLoad.Parse.Example
 
@@ -49,7 +49,7 @@ private def shiftedProgramHeader : ProgramHeader :=
     p_align := 0x1000 }
 
 private def execSeg? : Option Segment :=
-  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize with
   | .ok seg => some seg
   | .error _ => none
 
@@ -58,79 +58,79 @@ private def execSeg? : Option Segment :=
   | some s => s.perm.read && s.perm.exec && !s.perm.write && s.eaddr == 0
   | none => false
 
-private def checkedSegments? : Option Segments :=
-  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[],
-      Segment.ofPhdr dataProgramHeader exampleFileSize #[] #[] with
+private def checkedSegments? : Option SegmentTable :=
+  match Segment.ofPhdr execProgramHeader exampleFileSize,
+      Segment.ofPhdr dataProgramHeader exampleFileSize with
   | .ok execSeg, .ok dataSeg =>
-      match Segments.ofArray #[execSeg, dataSeg] with
+      match SegmentTable.ofArray #[execSeg, dataSeg] with
       | .ok segs => some segs
       | .error _ => none
   | _, _ => none
 
 #guard checkedSegments?.map (·.items.size) = some 2
 
--- `Segments.ofArray` rejects unsorted PT_LOAD arrays.
+-- `SegmentTable.ofArray` rejects unsorted PT_LOAD arrays.
 #guard
-  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[],
-      Segment.ofPhdr dataProgramHeader exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize,
+      Segment.ofPhdr dataProgramHeader exampleFileSize with
   | .ok execSeg, .ok dataSeg =>
-      match Segments.ofArray #[dataSeg, execSeg] with
+      match SegmentTable.ofArray #[dataSeg, execSeg] with
       | .error _ => true
       | .ok _ => false
   | _, _ => false
 
--- `Segments.ofArray` rejects overlapping sorted PT_LOAD arrays.
+-- `SegmentTable.ofArray` rejects overlapping sorted PT_LOAD arrays.
 #guard
-  match Segment.ofPhdr execProgramHeader exampleFileSize #[] #[],
-      Segment.ofPhdr overlapProgramHeader exampleFileSize #[] #[] with
+  match Segment.ofPhdr execProgramHeader exampleFileSize,
+      Segment.ofPhdr overlapProgramHeader exampleFileSize with
   | .ok execSeg, .ok overlapSeg =>
-      match Segments.ofArray #[execSeg, overlapSeg] with
+      match SegmentTable.ofArray #[execSeg, overlapSeg] with
       | .error _ => true
       | .ok _ => false
   | _, _ => false
 
-private def shiftedSegments? : Option Segments :=
-  match Segment.ofPhdr shiftedProgramHeader exampleFileSize #[] #[] with
+private def shiftedSegments? : Option SegmentTable :=
+  match Segment.ofPhdr shiftedProgramHeader exampleFileSize with
   | .ok seg =>
-      match Segments.ofArray #[seg] with
+      match SegmentTable.ofArray #[seg] with
       | .ok segs => some segs
       | .error _ => none
   | .error _ => none
 
-private def phdrMapped? (segments : Segments) (phoff : FileOff) (nbytes : Nat) : Bool :=
-  match PhdrMap.ofSegments segments phoff nbytes with
+private def programHeaderMapped? (segments : SegmentTable) (phoff : FileOff) (nbytes : Nat) : Bool :=
+  match ProgramHeaderMap.ofSegments segments phoff nbytes with
   | .ok _    => true
   | .error _ => false
 
 #guard
   match checkedSegments? with
-  | some segs => phdrMapped? segs 0x40 0x80
+  | some segs => programHeaderMapped? segs 0x40 0x80
   | none => false
 
 #guard
   match checkedSegments? with
-  | some segs => !(phdrMapped? segs 0x3000 0x10)
+  | some segs => !(programHeaderMapped? segs 0x3000 0x10)
   | none => false
 
--- `PhdrMap` requires file-backed bytes, not just BSS memory coverage.
+-- `ProgramHeaderMap` requires file-backed bytes, not just BSS memory coverage.
 #guard
   match checkedSegments? with
-  | some segs => !(phdrMapped? segs 0x1150 0x10)
+  | some segs => !(programHeaderMapped? segs 0x1150 0x10)
   | none => false
 
--- Non-identity `p_offset`/`p_vaddr` phdr coverage is accepted, and the checked
+-- Non-identity `p_offset`/`p_vaddr` program-header coverage is accepted, and the checked
 -- map records the translated ELF address used for `AT_PHDR`.
 #guard
   match shiftedSegments? with
   | some segs =>
-      match PhdrMap.ofSegments segs 0x2040 0x20 with
+      match ProgramHeaderMap.ofSegments segs 0x2040 0x20 with
       | .ok m    => m.eaddr == 0x3040
       | .error _ => false
   | none => false
 
-private def callTargetInExecSeg? (segments : Segments) (entry : Eaddr) : Bool :=
+private def callTargetInExecSeg? (segments : SegmentTable) (entry : Eaddr) : Bool :=
   letI : Decidable (callTargetInExecSeg segments entry) := by
-    unfold callTargetInExecSeg Segments.ExecAddr Segments.ContainsEaddr Segment.ContainsEaddr
+    unfold callTargetInExecSeg SegmentTable.ExecAddr SegmentTable.ContainsEaddr Segment.ContainsEaddr
     infer_instance
   if _ : callTargetInExecSeg segments entry then true else false
 

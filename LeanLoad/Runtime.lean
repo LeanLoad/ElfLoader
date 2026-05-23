@@ -144,7 +144,7 @@ opaque callCtor (addr : UInt64) : IO Unit
 @[extern "leanload_exec_run"]
 opaque execAndJump
   (entry  : UInt64)
-  (phdrVa : UInt64)
+  (programHeaderVa : UInt64)
   (phent  : UInt64)
   (phnum  : UInt64)
   (baseVa : UInt64)

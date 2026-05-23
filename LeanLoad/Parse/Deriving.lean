@@ -13,7 +13,7 @@ type. For primitive widths we provide instances in `Parse.Decode`
 (`UInt8/16/32/64`); composite fields work as long as their type
 has its own `BytesDecode` instance (typically also derived).
 
-Used by every struct under `LeanLoad/Parse/` whose parser is a
+Used by every struct under `LeanLoad/Parse/` whose decoder is a
 left-to-right sequence of fixed-width field decodes. Pre/post
 checks ride in via field *types* (e.g. `ElfHeader`'s magic prefix is
 a `Magic [0x7f, 0x45, 0x4c, 0x46]` field, whose own `BytesDecode`

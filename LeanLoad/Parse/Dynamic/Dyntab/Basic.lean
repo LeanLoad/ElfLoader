@@ -1,15 +1,15 @@
 /-
 gabi 08 § Dynamic Section — `Elf64_Dyn` entry, plus the `.dynamic`
-array parser and by-tag lookups.
+array decoder and by-tag lookups.
 
 Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`).
 
 `DynTag` lives in `Parse/Dynamic/Dyntab/Fields.lean`; this file owns the entry
-shape and the `DT_NULL`-terminated table parser.
+shape and the `DT_NULL`-terminated table decoder.
 
 The `.dynamic` array is `DT_NULL`-terminated, so it can't use the
 generic `decodeArray` (fixed-count) — `Dyntab.parse` below is
-the dedicated parser. It rejects unterminated or non-entry-sized tables
+the dedicated decoder. It rejects unterminated or non-entry-sized tables
 instead of silently treating malformed tails as absent dynamic state.
 `Dyntab.findAll / val?` are post-parse lookups over the resulting table;
 small accessors project the dynamic-content ranges that drive later reads.
@@ -49,7 +49,7 @@ namespace Dyntab
 /-- Read entries up to and including `DT_NULL`; fail if the entry budget is
     exhausted first. gABI 08 § Dynamic Section requires a terminating
     `DT_NULL` entry. -/
-private def collect (fuel : Nat) (acc : Dyntab) : Parser Dyntab := do
+private def collect (fuel : Nat) (acc : Dyntab) : Decoder Dyntab := do
   match fuel with
   | 0 => throw "dynamic table missing DT_NULL terminator (gabi 08 § Dynamic Section)"
   | fuel + 1 =>
@@ -62,7 +62,7 @@ private def collect (fuel : Nat) (acc : Dyntab) : Parser Dyntab := do
 /-- Parse the `.dynamic` array from the current cursor. `bytes` is the
     section byte length, typically the `p_filesz` of the `PT_DYNAMIC`
     program header. -/
-def parse (bytes : ByteSize) : Parser Dyntab := do
+def parse (bytes : ByteSize) : Decoder Dyntab := do
   let n := bytes.toNat
   if n == 0 then
     throw "dynamic table has zero byte size; expected at least one DT_NULL entry"
@@ -105,7 +105,7 @@ private def rawRange? (tab : Dyntab) (addrTag sizeTag : DynTag) :
   | none, some _     => .error s!"parse: {sizeTag.label} present without {addrTag.label}"
 
 /-- Validate a present `DT_*ENT`-style byte-size tag against the entry size
-    consumed by the parser's fixed Elf64 readers. -/
+    consumed by the decoder's fixed Elf64 readers. -/
 private def validateEntrySize (tag : DynTag) (expected : Nat) (value : Option UInt64) :
     Except String Unit :=
   match value with
@@ -143,7 +143,7 @@ def strtab? (tab : Dyntab) : Except String (Option EaddrRange) :=
   rawRange? tab .strtab .strsz
 
 /-- `DT_SYMTAB` ELF address, when present. `DT_SYMENT` is required because the
-    fixed-width symbol parser assumes Elf64_Sym entries. -/
+    fixed-width symbol decoder assumes Elf64_Sym entries. -/
 def symtab? (tab : Dyntab) : Except String (Option Eaddr) := do
   let symtabRaw ← single? tab .symtab
   let symentRaw ← single? tab .syment

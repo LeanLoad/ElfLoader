@@ -65,7 +65,7 @@ private def dynLookupTab : Dyntab := #[
 -- ── `Dyntab.parse` over `dynBytes` + post-parse lookups ───────────────
 
 def dyntab? : Option Dyntab :=
-  parseBytes? dynBytes (Dyntab.parse (ByteSize.ofNat dynBytes.size))
+  decodeWith? dynBytes (Dyntab.parse (ByteSize.ofNat dynBytes.size))
 
 #guard dyntab?.isSome
 
@@ -161,12 +161,12 @@ private def symtabWithoutSymentTab : Dyntab := #[
 
 -- Zero-byte `.dynamic` has no mandatory DT_NULL terminator, so parsing fails.
 #guard
-  (parseBytes? dynBytes (Dyntab.parse 0)).isNone
+  (decodeWith? dynBytes (Dyntab.parse 0)).isNone
 
 -- `Dyntab.parse` short-circuits at DT_NULL even if more bytes follow:
 -- here we point it at 224 bytes; DT_NULL sits at offset 208 (entry 13).
 -- The returned array has 14 entries (13 real + the terminator).
 #guard
-  (parseBytes? dynBytes (Dyntab.parse 224)).map (·.size) = some 14
+  (decodeWith? dynBytes (Dyntab.parse 224)).map (·.size) = some 14
 
 end LeanLoad.Parse.Example

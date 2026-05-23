@@ -2,13 +2,13 @@
 gabi 07 § Program Header — `Elf64_Phdr` entry.
 
 The semantic `p_type` and `p_flags` field types live in
-`Parse/ImageView/ProgramHeader/Fields.lean`; this file owns the concrete struct layout.
-Checked ELF-address translation lives in `Parse/ImageView/Basic.lean`.
+`Parse/FileView/ProgramHeader/Fields.lean`; this file owns the concrete struct layout.
+Checked ELF-address translation lives in `Parse/FileView/Basic.lean`.
 -/
 
 import LeanLoad.Parse.Decode
 import LeanLoad.Parse.Deriving
-import LeanLoad.Parse.ImageView.ProgramHeader.Fields
+import LeanLoad.Parse.FileView.ProgramHeader.Fields
 import LeanLoad.Parse.Address
 
 namespace LeanLoad.Parse
@@ -35,11 +35,11 @@ def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count ProgramHeaderSize
 
 /-- Parse one program-header entry from the current cursor. -/
-def parse : Parser ProgramHeader :=
+def parse : Decoder ProgramHeader :=
   BytesDecode.decode
 
 /-- Parse `count` consecutive program-header entries from the current cursor. -/
-def parseTable (count : Nat) : Parser (Array ProgramHeader) :=
+def parseTable (count : Nat) : Decoder (Array ProgramHeader) :=
   decodeArray (α := ProgramHeader) count
 
 end ProgramHeader

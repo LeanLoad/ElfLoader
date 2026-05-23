@@ -1,9 +1,9 @@
 /-
-Parser monad and byte-decode infrastructure.
+Decoder monad and byte-decode infrastructure.
 
 Three layers, all in the `LeanLoad.Parse` namespace:
 
-1. **Parser monad** — `StateT State (Except String)`. A read cursor
+1. **Decoder monad** — `StateT DecodeState (Except String)`. A read cursor
    over a `ByteArray` that may fail with a string error.
 
 2. **Byte primitives** — fixed-width little-endian reads (`u8`,
@@ -23,33 +23,33 @@ allows either, but LeanLoad targets x86-64 / AArch64 (both LE); the
 namespace LeanLoad.Parse
 
 -- ============================================================================
--- Parser monad
+-- Decoder monad
 -- ============================================================================
 
-structure State where
+structure DecodeState where
   bytes : ByteArray
   pos   : Nat
 
-abbrev Parser (α : Type) : Type := StateT State (Except String) α
+abbrev Decoder (α : Type) : Type := StateT DecodeState (Except String) α
 
-def Parser.run (b : ByteArray) (p : Parser α) : Except String α :=
-  Prod.fst <$> StateT.run p ({ bytes := b, pos := 0 } : State)
+def Decoder.run (b : ByteArray) (p : Decoder α) : Except String α :=
+  Prod.fst <$> StateT.run p ({ bytes := b, pos := 0 } : DecodeState)
 
 -- ============================================================================
 -- Byte primitives
 -- ============================================================================
 
 /-- Current cursor offset. -/
-def cursor : Parser Nat := return (← get).pos
+def cursor : Decoder Nat := return (← get).pos
 
 /-- Move the cursor to an absolute offset. -/
-def seek (off : Nat) : Parser Unit := modify ({ · with pos := off })
+def seek (off : Nat) : Decoder Unit := modify ({ · with pos := off })
 
 /-- Skip `n` bytes from the current position. -/
-def skip (n : Nat) : Parser Unit := modify (fun s => { s with pos := s.pos + n })
+def skip (n : Nat) : Decoder Unit := modify (fun s => { s with pos := s.pos + n })
 
 /-- Read one byte. Fails on EOF. -/
-def u8 : Parser UInt8 := do
+def u8 : Decoder UInt8 := do
   let s ← get
   if s.pos < s.bytes.size then
     set { s with pos := s.pos + 1 }
@@ -58,31 +58,31 @@ def u8 : Parser UInt8 := do
     throw s!"u8: EOF at offset {s.pos}/{s.bytes.size}"
 
 /-- Read a little-endian 16-bit unsigned. -/
-def u16le : Parser UInt16 := do
+def u16le : Decoder UInt16 := do
   let lo ← u8; let hi ← u8
   return lo.toUInt16 ||| (hi.toUInt16 <<< 8)
 
 /-- Read a little-endian 32-bit unsigned. -/
-def u32le : Parser UInt32 := do
+def u32le : Decoder UInt32 := do
   let lo ← u16le; let hi ← u16le
   return lo.toUInt32 ||| (hi.toUInt32 <<< 16)
 
 /-- Read a little-endian 64-bit unsigned. -/
-def u64le : Parser UInt64 := do
+def u64le : Decoder UInt64 := do
   let lo ← u32le; let hi ← u32le
   return lo.toUInt64 ||| (hi.toUInt64 <<< 32)
 
 /-- Read an exact byte sequence; fail if any byte mismatches. -/
-def expect (expected : Array UInt8) : Parser Unit := do
+def expect (expected : Array UInt8) : Decoder Unit := do
   for byte in expected do
     let actual ← u8
     if actual != byte then throw s!"expect: got {actual}, want {byte}"
 
-/-- Return the parser's entire input buffer (cursor unchanged). Used
+/-- Return the decoder's entire input buffer (cursor unchanged). Used
     by callers that want the raw bytes of a section — e.g., a string
     table whose contents are byte-level artifacts with no internal
     structure to decode field-by-field. -/
-def buffer : Parser ByteArray := return (← get).bytes
+def buffer : Decoder ByteArray := return (← get).bytes
 
 -- ============================================================================
 -- BytesDecode typeclass
@@ -90,7 +90,7 @@ def buffer : Parser ByteArray := return (← get).bytes
 
 /-- Type-driven byte decode. Per-struct instances are auto-derived
     by `deriving BytesDecode` (handler in `Parse/Deriving.lean`). -/
-class BytesDecode (α : Type) where decode : Parser α
+class BytesDecode (α : Type) where decode : Decoder α
 
 instance : BytesDecode UInt8  := ⟨u8⟩
 instance : BytesDecode UInt16 := ⟨u16le⟩
@@ -106,7 +106,7 @@ class RawDecode (α : Type) (Backing : outParam Type) [BytesDecode Backing] wher
   ofRaw : Backing → Except String α
 
 /-- `BytesDecode α` derived from `RawDecode`: decode the backing scalar
-    and classify it, surfacing classifier failures as parser failures. -/
+    and classify it, surfacing classifier failures as decoder failures. -/
 instance [BytesDecode Backing] [M : RawDecode α Backing] : BytesDecode α where
   decode := do
     let raw : Backing ← BytesDecode.decode
@@ -130,36 +130,36 @@ instance (bs : List UInt8) : BytesDecode (Magic bs) :=
 
 /-- Decode `count` consecutive `α` entries from the current cursor,
     using the `BytesDecode α` instance for each. -/
-def decodeArray (count : Nat) [BytesDecode α] : Parser (Array α) := do
+def decodeArray (count : Nat) [BytesDecode α] : Decoder (Array α) := do
   let mut entries : Array α := Array.mkEmpty count
   for _ in [:count] do
     entries := entries.push (← BytesDecode.decode)
   return entries
 
-/-- Run an arbitrary parser over a whole byte buffer, returning `none`
-    on parse failure. Intended for examples and `#guard`s; production
-    code should use `Parser.run`/`parseAt` so it can preserve error
+/-- Run an arbitrary decoder over a whole byte buffer, returning `none`
+    on decode failure. Intended for examples and `#guard`s; production
+    code should use `Decoder.run`/`decodeAt` so it can preserve error
     messages. -/
-def parseBytes? (bytes : ByteArray) (parser : Parser α) : Option α :=
-  (Parser.run bytes parser).toOption
+def decodeWith? (bytes : ByteArray) (decoder : Decoder α) : Option α :=
+  (Decoder.run bytes decoder).toOption
 
 /-- Run the `BytesDecode` instance for `α` over a whole byte buffer,
-    returning `none` on parse failure. Intended for examples and
-    `#guard`s; production code should use `Parser.run`/`parseAt` so it
+    returning `none` on decode failure. Intended for examples and
+    `#guard`s; production code should use `Decoder.run`/`decodeAt` so it
     can preserve error messages. -/
 def decodeBytes? [BytesDecode α] (bytes : ByteArray) : Option α :=
-  parseBytes? bytes (BytesDecode.decode : Parser α)
+  decodeWith? bytes (BytesDecode.decode : Decoder α)
 
 /-- Run `decodeArray` from offset 0 over a whole byte buffer, returning
-    `none` on parse failure. Intended for examples and `#guard`s. -/
+    `none` on decode failure. Intended for examples and `#guard`s. -/
 def decodeArrayBytes? [BytesDecode α] (bytes : ByteArray) (count : Nat) :
     Option (Array α) :=
-  parseBytes? bytes (decodeArray (α := α) count)
+  decodeWith? bytes (decodeArray (α := α) count)
 
 section Example
-#guard (Parser.run (ByteArray.mk #[0x12]) u8).toOption == some 0x12
-#guard (Parser.run (ByteArray.mk #[0x34, 0x12]) u16le).toOption == some 0x1234
-#guard (Parser.run (ByteArray.mk #[0x78, 0x56, 0x34, 0x12]) u32le).toOption == some 0x12345678
+#guard (Decoder.run (ByteArray.mk #[0x12]) u8).toOption == some 0x12
+#guard (Decoder.run (ByteArray.mk #[0x34, 0x12]) u16le).toOption == some 0x1234
+#guard (Decoder.run (ByteArray.mk #[0x78, 0x56, 0x34, 0x12]) u32le).toOption == some 0x12345678
 end Example
 
 end LeanLoad.Parse

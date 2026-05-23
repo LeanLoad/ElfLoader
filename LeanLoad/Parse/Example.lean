@@ -9,16 +9,16 @@ symtab's entry count, and so on.
 Crucially, `fixture` exercises the same checked `parseM` that
 production uses. Only the `FileReader` instance changes (`pureReader`
 vs `Runtime.fileReader`); section offsets are discovered via
-the checked `ImageView` over the parsed phdrs.
+the checked `FileView` over the parsed program headers.
 
 The fixture is also engineered to satisfy checked-parse gabi-07 checks:
 the lone PT_LOAD has `eaddr = offset = 0` and file-backs every dynamic
 table, rela offset, and init_array entry.
 -/
 
-import LeanLoad.Parse.Elf
-import LeanLoad.Parse.ImageView.ElfHeader.Example
-import LeanLoad.Parse.ImageView.ProgramHeader.Example
+import LeanLoad.Parse.Driver
+import LeanLoad.Parse.FileView.ElfHeader.Example
+import LeanLoad.Parse.FileView.ProgramHeader.Example
 import LeanLoad.Parse.Dynamic.Dyntab.Example
 
 namespace LeanLoad.Parse.Example
@@ -49,8 +49,8 @@ private def initArrBytes : ByteArray := ⟨#[
     Concatenation of every per-section fixture in file order,
     interleaved with the non-struct-typed hash + init-array sections. -/
 def fixtureBytes : ByteArray :=
-  ehdrBytes
-    ++ phdrBytes
+  elfHeaderBytes
+    ++ programHeaderBytes
     ++ Strtab.fixtureBytes
     ++ RawSym.fixtureBytes
     ++ hashBytes
@@ -72,17 +72,17 @@ def fixture : Except String _root_.LeanLoad.Parse.Elf :=
 -- Per-struct field decoding is checked standalone in each Raw*.lean.
 -- Here we verify the multi-section invariants the fixture is engineered
 -- to satisfy — and, because `fixture` calls the production checked
--- parser, these guards also exercise validation on a synthetic ELF.
+-- driver, these guards also exercise validation on a synthetic ELF.
 
 #guard match fixture with
   | .ok r =>
        r.header.e_phnum.toNat == 2                                  -- ehdr.phnum preserved
-    && r.symtab.size == 2                                           -- DT_HASH.nchain ↔ symtab entries
+    && r.symtab.size == 2                                           -- DT_HASH.nchain
     && r.needed == #["libc.so.6"]                                   -- DT_NEEDED → strtab[0x01]
     && r.soname == some "mylib.so"                                  -- DT_SONAME → strtab[0x12]
     && r.runpath == some "lib"                                      -- DT_RUNPATH → strtab[0x1b]
     && r.segments.items.size == 1
-    && (r.segments.items[0]?.map (·.rela.size) == some 1)
+    && (if h : 0 < r.segments.items.size then (r.relocs ⟨0, h⟩).rela.size == 1 else false)
     && r.initArr.size == 1
   | .error _ => false
 

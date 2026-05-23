@@ -30,8 +30,8 @@ import LeanLoad.Plan.Align
 import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Resolve
 import LeanLoad.Parse.Elf
-import LeanLoad.Parse.ImageView.Segment.Checked
-import LeanLoad.Parse.ImageView.ProgramHeader.Basic
+import LeanLoad.Parse.FileView.Segment.Basic
+import LeanLoad.Parse.FileView.ProgramHeader.Basic
 
 namespace LeanLoad.Plan
 
@@ -395,8 +395,8 @@ structure SegmentLayout (objCount : Nat) where
       the zero slot's absolute address simplify to `base + eaddr +
       filesz` for proofs. -/
   pageInset_eq_vaddr : pageEaddr.toNat + pageInset.toNat = segment.eaddr.toNat
-  /-- Planned relocations targeting this segment, in `seg.rela ++
-      seg.jmprel` order. Each entry carries its `coversRela` witness
+  /-- Planned relocations targeting this segment, in `Elf.Relocs.rela ++
+      Elf.Relocs.jmprel` order. Each entry carries its `coversRela` witness
       keyed to `segment` so `SegmentSafe.storesInRange` is
       structurally provable. `Materialize.bakeSegmentRelocs` reads
       this directly. -/
@@ -433,8 +433,9 @@ def ofSegmentCore (objCount : Nat) (s : Segment) (relocs : Array (Entry objCount
 /-- Compute the loader view of a `Segment`, planning its relocations
     against the global elf array. -/
 def ofSegment (elfs : Array Elf) (rt : Resolve.Table elfs.size)
-    (objectIdx : Fin elfs.size) (s : Segment) : SegmentLayout elfs.size :=
-  ofSegmentCore elfs.size s (Reloc.planSegment elfs rt objectIdx s)
+    (objectIdx : Fin elfs.size) (s : Segment) (relocs : Elf.Relocs s) :
+    SegmentLayout elfs.size :=
+  ofSegmentCore elfs.size s (Reloc.planSegment elfs rt objectIdx s relocs)
 
 /-- One past the last byte of the mmap'd range, base-relative. -/
 def pageEndAddr (sp : SegmentLayout objCount) : UInt64 := sp.pageEaddr + sp.pageLength

@@ -1,17 +1,17 @@
 /-
-Examples for checked `Parse/ImageView/Basic.lean`.
+Examples for checked `Parse/FileView/Basic.lean`.
 -/
 
-import LeanLoad.Parse.ImageView.Basic
+import LeanLoad.Parse.FileView.Basic
 
-namespace LeanLoad.Parse.ImageView.Example
+namespace LeanLoad.Parse.FileView.Example
 
 open LeanLoad.Parse
 
 -- Two non-contiguous PT_LOADs (handcrafted, not byte-decoded) exercise
 -- the `eaddr ≠ offset` case that the consolidated fixture's single PT_LOAD
 -- (with `eaddr = offset = 0`) cannot surface alone.
-def phdrVaTestSegments : Array ProgramHeader := #[
+def programHeaderVaTestSegments : Array ProgramHeader := #[
   { (default : ProgramHeader) with
     p_type := .load,
     p_vaddr := 0x1000, p_memsz := 0x1000,
@@ -29,14 +29,14 @@ private def fileViewHeader : ElfHeader :=
     e_ehsize := 64,
     e_phentsize := 56 }
 
-private def phdrFileView? : Except String ImageView :=
-  ImageView.ofHeaders 0x4000 fileViewHeader phdrVaTestSegments
+private def programHeaderFileView? : Except String FileView :=
+  FileView.ofHeaders 0x4000 fileViewHeader programHeaderVaTestSegments
 
 private def mappedOff? (va : Eaddr) : Option FileOff :=
-  match phdrFileView? with
+  match programHeaderFileView? with
   | .ok map =>
       let range : EaddrRange := { start := va, size := 1 }
-      match ImageView.mapRange map 0x4000 range with
+      match FileView.mapRange map 0x4000 range with
       | .ok mapped => some mapped.fileOff
       | .error _   => none
   | .error _ => none
@@ -48,11 +48,11 @@ private def mappedOff? (va : Eaddr) : Option FileOff :=
 #guard mappedOff? 0x2500 = none         -- gap between segments
 #guard mappedOff? 0x3500 = none         -- past the second segment
 
-private def wrongElfHeaderSize? : Except String ImageView :=
-  ImageView.ofHeaders 0x4000 { fileViewHeader with e_ehsize := 32 } phdrVaTestSegments
+private def wrongElfHeaderSize? : Except String FileView :=
+  FileView.ofHeaders 0x4000 { fileViewHeader with e_ehsize := 32 } programHeaderVaTestSegments
 
-private def wrongPhentsize? : Except String ImageView :=
-  ImageView.ofHeaders 0x4000 { fileViewHeader with e_phentsize := 64 } phdrVaTestSegments
+private def wrongPhentsize? : Except String FileView :=
+  FileView.ofHeaders 0x4000 { fileViewHeader with e_phentsize := 64 } programHeaderVaTestSegments
 
 #guard
   match wrongElfHeaderSize? with
@@ -64,4 +64,4 @@ private def wrongPhentsize? : Except String ImageView :=
   | .ok _    => false
   | .error _ => true
 
-end LeanLoad.Parse.ImageView.Example
+end LeanLoad.Parse.FileView.Example

@@ -60,7 +60,8 @@ instance : Inhabited Elf where
         e_entry := 0, e_phoff := 0, e_phnum := 0 },
       symtab := #[], needed := #[],
       soname := Option.none, runpath := Option.none,
-      segments := Segments.empty,
+      segments := SegmentTable.empty,
+      relocs := fun i => nomatch i,
       initArr := #[], finiArr := #[] }
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
@@ -68,13 +69,16 @@ def synthElf
     (elfType : Parse.ElfType            := .none)
     (needed  : Array String             := #[])
     (symtab  : Array Parse.Symbol       := #[])
-    (segments : Parse.Segments          := Segments.empty) : Elf :=
+    (segments : Parse.SegmentTable          := SegmentTable.empty)
+    (relocs : (i : Fin segments.items.size) → Elf.Relocs segments.items[i] :=
+      fun _ => { rela := #[], jmprel := #[] }) : Elf :=
   { (default : Elf) with
     header := { (default : ElfHeader) with
       e_type := elfType, e_machine := .x86_64,
       e_entry := 0, e_phoff := 0, e_phnum := 0 },
     needed, symtab,
     segments,
+    relocs,
     initArr := #[], finiArr := #[] }
 
 -- ============================================================================
@@ -145,14 +149,14 @@ private def emptyResolveTable (objCount : Nat) : Resolve.Table objCount :=
 -- ---- 3b. Layout: base assignment + page-aligned stacking. ------------------
 
 /-- Synthetic PT_LOAD segment built via `Segment.ofPhdr`. Returns
-    `Option` because `ofPhdr` returns `Except` for ill-formed phdrs;
+    `Option` because `ofPhdr` returns `Except` for ill-formed programHeaders;
     well-formed inputs always succeed. -/
 private def synthSegment? (eaddr : Eaddr) (memsz : ByteSize) : Option Parse.Segment :=
   let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
     p_type := .load,
     p_vaddr := eaddr, p_memsz := memsz,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Parse.Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
+  (Parse.Segment.ofPhdr phdr exampleFileSize).toOption
 
 -- ET_EXEC is rejected during checked parse, so every elf reaching
 -- planning is ET_DYN. `assignBases` takes the reservation base
@@ -169,18 +173,18 @@ private def synthSegment? (eaddr : Eaddr) (memsz : ByteSize) : Option Parse.Segm
 -- proofs since `synthElf`'s `by decide` defaults can't discharge a
 -- type containing a free `Segment` variable.
 private theorem sorted_singleton (seg : Segment) :
-    Segments.Sorted #[seg] := by
+    SegmentTable.Sorted #[seg] := by
   intro i hi j hj h_ij
   simp at hi hj
   omega
 
 private theorem nonOverlap_singleton (seg : Segment) :
-    Segments.NonOverlap #[seg] := by
+    SegmentTable.NonOverlap #[seg] := by
   intro i hi j hj h_ij
   simp at hi hj
   omega
 
-private def singletonSegments (seg : Segment) : Segments :=
+private def singletonSegments (seg : Segment) : SegmentTable :=
   { items := #[seg],
     sorted := sorted_singleton seg,
     nonOverlap := nonOverlap_singleton seg }
@@ -217,7 +221,7 @@ private def bssOnlySeg : Option Segment :=
     p_type := .load,
     p_vaddr := 0, p_memsz := 0x2000,
     p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
+  (Segment.ofPhdr phdr exampleFileSize).toOption
 
 private def bssOnlyPlan : Option (SegmentLayout 0) :=
   bssOnlySeg.map (fun s => SegmentLayout.ofSegmentCore 0 s #[])
@@ -259,7 +263,7 @@ private def synthSeg? (eaddr : Eaddr) (memsz filesz : ByteSize) : Option Segment
     p_type := .load,
     p_vaddr := eaddr, p_memsz := memsz,
     p_filesz := filesz, p_offset := 0, p_align := 0x1000 }
-  (Segment.ofPhdr phdr exampleFileSize #[] #[]).toOption
+  (Segment.ofPhdr phdr exampleFileSize).toOption
 
 private def fileOnlySeg     : Option Segment := synthSeg? 0 0x1000 0x1000  -- file fills page
 private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- partial-page BSS only

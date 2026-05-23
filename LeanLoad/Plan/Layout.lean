@@ -137,15 +137,16 @@ namespace ElfLayout
     segments onto the same page (modern toolchains never emit this,
     but it's not statically excluded by gabi-level invariants).
 
-    Reloc planning happens here too: each segment's `relocs` field is
-    filled by `Reloc.planSegment`. -/
+    Reloc planning happens here too: each segment's `relocs` field is filled
+    from `Elf.relocs`. -/
 def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
     (objectIdx : Fin elfs.size) : Except String (ElfLayout elfs.size) :=
   let e := elfs[objectIdx]
   let segs : Array (SegmentLayout elfs.size) :=
-    e.segments.items.map fun s =>
+    Array.ofFn fun idx : Fin e.segments.items.size =>
+      let s := e.segments.items[idx]
       SegmentLayout.ofSegmentCore elfs.size s
-        (Reloc.planSegment elfs rt objectIdx s)
+        (Reloc.planSegment elfs rt objectIdx s (e.relocs idx))
   if h_sorted : Sorted segs then
     let objectSpan : UInt64 := segs.foldl (init := 0) fun acc sp =>
       max acc sp.pageEndAddr
@@ -191,9 +192,9 @@ def ofElf (elfs : Array Elf) (rt : Resolve.Table elfs.size)
         have h_lt_e : k < e.segments.items.size := h_size_eq ▸ h_lt
         have h_get : segs[k]'h_lt = SegmentLayout.ofSegmentCore elfs.size
             (e.segments.items[k]'h_lt_e)
-            (Reloc.planSegment elfs rt objectIdx (e.segments.items[k]'h_lt_e)) := by
-          show (e.segments.items.map _)[k]'h_lt = _
-          rw [Array.getElem_map]
+            (Reloc.planSegment elfs rt objectIdx (e.segments.items[k]'h_lt_e)
+              (e.relocs ⟨k, h_lt_e⟩)) := by
+          simp [segs]
         rw [h_get]
         exact SegmentLayout.ofSegmentCore_segment elfs.size _ _
       .ok { elf := e, segments := segs, advance,

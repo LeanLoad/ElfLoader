@@ -46,6 +46,7 @@ stage re-checks it — the witness travels in the type.
     `bss_zeroed`, `relocs_applied`) consume.
  -/
 import LeanLoad.Parse
+import LeanLoad.Parse.Examples
 import LeanLoad.ABI.Reloc
 
 import LeanLoad.Runtime

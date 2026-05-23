@@ -10,42 +10,16 @@ Carried as struct fields:
     `alignCong`),
   - typed memory/file range witnesses and the page-layout no-wrap bound that
     let `Plan.SegmentLayout` ignore UInt64 wrap without a platform-sized
-    address-space shortcut,
-  - the per-segment dynamic relocations grouped by their `coversRela`
-    witness.
+    address-space shortcut.
 
 This file is *gabi-only*. mmap semantics (page-aligned addresses, BSS bounds,
 POSIX `PROT_*`) live on `Plan.SegmentLayout`, which couples a segment with its
 chosen mmap base.
 -/
 
-import LeanLoad.Parse.Dynamic.Reloc.Raw
-import LeanLoad.Parse.ImageView.ProgramHeader.Basic
+import LeanLoad.Parse.FileView.ProgramHeader.Basic
 
 namespace LeanLoad.Parse
-
--- ============================================================================
--- coversRela — segment-relative containment witness for a rela's
--- 8-byte write window. Pure gabi: bounds the offset relative to
--- `[eaddr, eaddr + memsz)`.
--- ============================================================================
-
-/-- The segment's memory range fully contains an 8-byte write window
-    starting at `r_offset`. Conservatively reserves 8 bytes. -/
-def coversRela (eaddr : Eaddr) (memsz : ByteSize) (r_offset : Eaddr) : Prop :=
-  eaddr.toNat ≤ r_offset.toNat ∧
-  r_offset.toNat + 8 ≤ eaddr.toNat + memsz.toNat
-
-instance (eaddr : Eaddr) (memsz : ByteSize) (r_offset : Eaddr) :
-    Decidable (coversRela eaddr memsz r_offset) := by
-  unfold coversRela; infer_instance
-
-/-- A checked relocation whose 8-byte write window is contained in the segment
-    range `[eaddr, eaddr + memsz)`. -/
-structure Rela (eaddr : Eaddr) (memsz : ByteSize) where
-  raw     : RawRela
-  covered : coversRela eaddr memsz raw.r_offset
-  deriving Repr
 
 -- ============================================================================
 -- Segment — gabi-07 byte fields + invariants. mmap-stage semantics
@@ -63,8 +37,7 @@ structure Segment.FileImageRange (fileSize : UInt64) (phdr : ProgramHeader) wher
   inFile : phdr.p_offset.toNat + phdr.p_filesz.toNat ≤ fileSize.toNat
 
 /-- A PT_LOAD segment: gabi-07 byte fields, the gabi per-segment
-    invariants, range/layout no-wrap witnesses, and the dynamic relocations
-    grouped by `coversRela` witness. -/
+    invariants, and range/layout no-wrap witnesses. -/
 structure Segment where
   /-- Observed size of the file this segment came from. -/
   fileSize : UInt64
@@ -89,10 +62,6 @@ structure Segment where
       loader arithmetic bound, not a 48-bit platform policy. -/
   pageLayoutNoWrap :
     phdr.p_vaddr.toNat + phdr.p_memsz.toNat + (segmentLayoutAlign phdr.p_align).toNat < 2 ^ 64
-  /-- General `Rela` relocations. -/
-  rela   : Array (Rela phdr.p_vaddr phdr.p_memsz)
-  /-- PLT relocations. -/
-  jmprel : Array (Rela phdr.p_vaddr phdr.p_memsz)
   deriving Repr
 
 namespace Segment
@@ -167,12 +136,6 @@ def fileOffOfEaddr (s : Segment) (addr : Eaddr) : FileOff :=
 def eaddrOfFileOff (s : Segment) (off : FileOff) : Eaddr :=
   ⟨s.eaddr.val + (off.val - s.offset.val)⟩
 
-/-- Keep a checked segment's established byte-layout witnesses while attaching
-    the relocations that parse located inside its memory range. -/
-def withRelocs (s : Segment)
-    (rela jmprel : Array (Rela s.phdr.p_vaddr s.phdr.p_memsz)) : Segment :=
-  { s with rela, jmprel }
-
 end Segment
 
 -- ============================================================================
@@ -185,12 +148,10 @@ private def assertProp (p : Prop) [Decidable p] (msg : String) :
     Except String (PLift p) :=
   if h : p then .ok ⟨h⟩ else .error msg
 
-/-- Smart constructor: build a `Segment` from a `ProgramHeader` and pre-located rela
-    arrays. Decidably checks each gabi-07 per-segment invariant plus the
-    memory/file/page-layout no-wrap witnesses, failing with a typed error. -/
-def Segment.ofPhdr (phdr : ProgramHeader) (fileSize : UInt64)
-    (rela jmprel : Array (Rela phdr.p_vaddr phdr.p_memsz)) :
-    Except String Segment := do
+/-- Smart constructor: build a `Segment` from a `ProgramHeader`. Decidably
+    checks each gabi-07 per-segment invariant plus the memory/file/page-layout
+    no-wrap witnesses, failing with a typed error. -/
+def Segment.ofPhdr (phdr : ProgramHeader) (fileSize : UInt64) : Except String Segment := do
   let ⟨isLoad⟩ ← assertProp (phdr.p_type = .load)
     s!"p_type={reprStr phdr.p_type} is not PT_LOAD"
   let ⟨memNoWrap⟩ ← assertProp
@@ -221,7 +182,7 @@ def Segment.ofPhdr (phdr : ProgramHeader) (fileSize : UInt64)
     fileSize, phdr, isLoad,
     eaddrRange := { noWrap := memNoWrap },
     fileRange := { inFile := fileInBounds },
-    fileszLeMemsz, alignPow2, alignCong, pageLayoutNoWrap, rela, jmprel
+    fileszLeMemsz, alignPow2, alignCong, pageLayoutNoWrap
   }
 
 end LeanLoad.Parse

@@ -60,7 +60,8 @@ def mockElf (soname : Option String := some "anon")
   needed
   soname
   runpath
-  segments := Parse.Segments.empty
+  segments := Parse.SegmentTable.empty
+  relocs := fun i => nomatch i
   initArr  := #[]
   finiArr  := #[] }
 

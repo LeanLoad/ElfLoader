@@ -15,7 +15,7 @@ captures exactly that contract, monad-polymorphic over `m`:
 
 Errors flow through `ExceptT String m`: the reader does the I/O (`m`);
 `readSlice` first checks `(FileOff, ByteSize)` into a `FileRange` against the
-known file size, then rejects short/oversized reads before `Parser.run`.
+known file size, then rejects short/oversized reads before `Decoder.run`.
 Decode failures get caught and rethrown as the ExceptT error.
 -/
 
@@ -40,9 +40,9 @@ def Runtime.fileReader (f : LeanLoad.Runtime.File) : FileReader IO :=
     read := fun off len _span => LeanLoad.Runtime.pread f off.val len.val }
 
 /-- Pure reader over an in-memory `ByteArray`. Out-of-range reads
-    return a truncated slice — the downstream `Parser` then fails
+    return a truncated slice — the downstream `Decoder` then fails
     with its own EOF message, so the truncation is observable, not
-    silently masked. Used by `Elf.Example.fixture` to run the
+    silently masked. Used by `Parse.Example.fixture` to run the
     production `parse` over the hand-crafted fixture bytes. -/
 def pureReader (bytes : ByteArray) : FileReader Id :=
   { fileSize := UInt64.ofNat bytes.size
@@ -92,7 +92,7 @@ private def guardRange3 : FileRange (3 : UInt64) (0 : FileOff) (3 : ByteSize) :=
 end FileSlice
 
 /-- Read a file range and carry the exact-length witness forward to
-    the parser boundary. -/
+    the decoder boundary. -/
 def readSliceAt [Monad m] (r : FileReader m)
     {off : FileOff} {len : ByteSize} (span : FileRange r.fileSize off len) :
     ExceptT String m (FileSlice r.fileSize off len) := do
@@ -112,22 +112,22 @@ def readSlice [Monad m] (r : FileReader m)
       past file size {r.fileSize.toNat}"
 
 /-- Read `(off, len)` via the reader and decode the result with
-    `parser`. The Parser's cursor starts at 0 within the returned
+    `decoder`. The Decoder's cursor starts at 0 within the returned
     slice — section-local, not file-absolute. Decode failure throws
-    the parser's error string into `ExceptT String m`. -/
-def parseAt [Monad m] (r : FileReader m)
-    (off : FileOff) (len : ByteSize) (parser : Parser α) : ExceptT String m α := do
+    the decoder's error string into `ExceptT String m`. -/
+def decodeAt [Monad m] (r : FileReader m)
+    (off : FileOff) (len : ByteSize) (decoder : Decoder α) : ExceptT String m α := do
   let slice ← readSlice r off len
-  match Parser.run slice.bytes parser with
+  match Decoder.run slice.bytes decoder with
   | .ok v    => pure v
   | .error e => throw e
 
 /-- Decode bytes from an already-checked file range. -/
-def parseAtFileRange [Monad m] (r : FileReader m)
+def decodeAtFileRange [Monad m] (r : FileReader m)
     {off : FileOff} {len : ByteSize} (span : FileRange r.fileSize off len)
-    (parser : Parser α) : ExceptT String m α := do
+    (decoder : Decoder α) : ExceptT String m α := do
   let slice ← readSliceAt r span
-  match Parser.run slice.bytes parser with
+  match Decoder.run slice.bytes decoder with
   | .ok v    => pure v
   | .error e => throw e
 

@@ -37,7 +37,7 @@ def byteSize : ByteSize := ByteSize.ofNat RawSysVHashSize
 
 /-- Parse the SysV hash header. Bucket/chain arrays follow, but LeanLoad only
     needs `nchain` to size `.dynsym`. -/
-def parse : Parser RawSysVHash := BytesDecode.decode
+def parse : Decoder RawSysVHash := BytesDecode.decode
 
 /-- Dynamic-symbol count recorded in the SysV hash header. -/
 def symCount (h : RawSysVHash) : Nat := h.nchain.toNat
