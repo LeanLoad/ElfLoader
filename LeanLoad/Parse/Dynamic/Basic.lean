@@ -19,7 +19,7 @@ import LeanLoad.Parse.ImageView.Basic
 
 namespace LeanLoad.Parse
 
-/-- Transient byte-decoded ELF. `Elf.checkImage` immediately checks this into
+/-- Transient byte-decoded ELF. `Elf.ofDynamic` immediately checks this into
     `LeanLoad.Parse.Elf`, so downstream code consumes the witnessed type. -/
 structure Dynamic where
   header  : ElfHeader
@@ -53,16 +53,6 @@ private def resolveStrtabOff? (label : String) (strtab : Strtab) :
   | some off => do
       let s ← resolveStrtabOff label strtab off
       pure (some s)
-
-/-- Dynamic content after following `.dynamic` ELF-address ranges. -/
-private structure DynamicData where
-  strtab  : Strtab
-  symtab  : RawSymtab
-  rela    : Array RawRela
-  jmprel  : Array RawRela
-  initArr : Array Eaddr
-  finiArr : Array Eaddr
-  deriving Repr, Inhabited
 
 /-- Resolve an ELF-address range through the checked load map before reading at the
     translated file offset. -/
@@ -149,20 +139,6 @@ private def readEaddrArray [Monad m] (label : String) (r : FileReader m)
       else
         throw s!"parse: {label}: byte size {bytes} is not a multiple of 8"
 
-/-- Stage 3: read all dynamic data pointed at by `.dynamic` accessors. -/
-private def fetchDynamicData [Monad m] (r : FileReader m)
-    (view : ImageView) (dyntab : Dyntab) : ExceptT String m DynamicData := do
-  let strtabLoc ← liftExcept dyntab.strtab?
-  let symtabVa ← liftExcept dyntab.symtab?
-  let hashVa ← liftExcept dyntab.hash?
-  let strtab   ← readStrtab   r view strtabLoc
-  let symtab   ← readSymtabData r view symtabVa hashVa
-  let rela     ← readRelas "DT_RELA" r view (← liftExcept dyntab.rela?)
-  let jmprel   ← readJmprel r view (← liftExcept dyntab.jmprel?) (← liftExcept dyntab.pltrel?)
-  let initArr  ← readEaddrArray "DT_INIT_ARRAY" r view (← liftExcept dyntab.initArr?)
-  let finiArr  ← readEaddrArray "DT_FINI_ARRAY" r view (← liftExcept dyntab.finiArr?)
-  return { strtab, symtab, rela, jmprel, initArr, finiArr }
-
 /-- Byte-decode an ELF into the transient raw staging image. -/
 def readM [Monad m] (r : FileReader m) : ExceptT String m Dynamic := do
   let header ← parseAt r 0 ElfHeader.byteSize ElfHeader.parse
@@ -177,25 +153,34 @@ def readM [Monad m] (r : FileReader m) : ExceptT String m Dynamic := do
     | none    => pure #[]
     | some ph => parseAt r ph.p_offset ph.p_filesz
                    (Dyntab.parse ph.p_filesz)
-  let c ← fetchDynamicData r view dyn
+  let strtabLoc ← liftExcept (Dyntab.strtab? dyn)
+  let symtabVa ← liftExcept (Dyntab.symtab? dyn)
+  let hashVa ← liftExcept (Dyntab.hash? dyn)
+  let strtab ← readStrtab r view strtabLoc
+  let symtab ← readSymtabData r view symtabVa hashVa
+  let rela ← readRelas "DT_RELA" r view (← liftExcept (Dyntab.rela? dyn))
+  let jmprel ←
+    readJmprel r view (← liftExcept (Dyntab.jmprel? dyn)) (← liftExcept (Dyntab.pltrel? dyn))
+  let initArr ← readEaddrArray "DT_INIT_ARRAY" r view (← liftExcept (Dyntab.initArr? dyn))
+  let finiArr ← readEaddrArray "DT_FINI_ARRAY" r view (← liftExcept (Dyntab.finiArr? dyn))
   let needed ← liftExcept <|
-    (Dyntab.needed dyn).mapM (resolveStrtabOff "DT_NEEDED" c.strtab)
+    (Dyntab.needed dyn).mapM (resolveStrtabOff "DT_NEEDED" strtab)
   let soname ← liftExcept <|
-    resolveStrtabOff? "DT_SONAME" c.strtab (← liftExcept (Dyntab.soname? dyn))
+    resolveStrtabOff? "DT_SONAME" strtab (← liftExcept (Dyntab.soname? dyn))
   let runpath ← liftExcept <|
-    resolveStrtabOff? "DT_RUNPATH" c.strtab (← liftExcept (Dyntab.runpath? dyn))
+    resolveStrtabOff? "DT_RUNPATH" strtab (← liftExcept (Dyntab.runpath? dyn))
   return {
     header := view.header,
     segments := view.segments,
-    strtab  := c.strtab,
-    symtab  := c.symtab,
+    strtab,
+    symtab,
     needed,
     soname,
     runpath,
-    rela    := c.rela,
-    jmprel  := c.jmprel,
-    initArr := c.initArr,
-    finiArr := c.finiArr }
+    rela,
+    jmprel,
+    initArr,
+    finiArr }
 
 end Dynamic
 

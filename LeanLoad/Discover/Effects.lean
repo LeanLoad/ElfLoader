@@ -19,7 +19,7 @@ consumer pulls in the driver's invariant machinery just to instantiate
 the record.
 -/
 
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Runtime
 
 namespace LeanLoad.Discover

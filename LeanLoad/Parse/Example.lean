@@ -1,5 +1,5 @@
 /-
-Integration example for `Parse/Elf`.
+Integration example for `Parse`.
 
 The fixture here demonstrates cross-section coordination: PT_DYNAMIC's
 `p_offset` matches the dynamic table's actual position, DT_STRTAB's
@@ -16,12 +16,12 @@ the lone PT_LOAD has `eaddr = offset = 0` and file-backs every dynamic
 table, rela offset, and init_array entry.
 -/
 
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Parse.ImageView.ElfHeader.Example
 import LeanLoad.Parse.ImageView.ProgramHeader.Example
 import LeanLoad.Parse.Dynamic.Dyntab.Example
 
-namespace LeanLoad.Parse.Elf.Example
+namespace LeanLoad.Parse.Example
 
 open LeanLoad.Parse
 
@@ -49,14 +49,14 @@ private def initArrBytes : ByteArray := ⟨#[
     Concatenation of every per-section fixture in file order,
     interleaved with the non-struct-typed hash + init-array sections. -/
 def fixtureBytes : ByteArray :=
-  Example.ehdrBytes
-    ++ Example.phdrBytes
+  ehdrBytes
+    ++ phdrBytes
     ++ Strtab.fixtureBytes
     ++ RawSym.fixtureBytes
     ++ hashBytes
     ++ RawRela.fixtureBytes
     ++ initArrBytes
-    ++ Example.dynBytes
+    ++ dynBytes
 
 -- Total size: sum of each section's fixture bytes.
 #guard fixtureBytes.size = 0x208                  -- 520 bytes total
@@ -93,4 +93,4 @@ def fixture : Except String _root_.LeanLoad.Parse.Elf :=
     && r.header.e_entry == 0x100
   | .error _ => false
 
-end LeanLoad.Parse.Elf.Example
+end LeanLoad.Parse.Example

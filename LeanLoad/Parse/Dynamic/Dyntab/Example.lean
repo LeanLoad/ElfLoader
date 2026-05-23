@@ -7,7 +7,7 @@ import LeanLoad.Parse.Dynamic.Dyntab.Basic
 namespace LeanLoad.Parse.Example
 
 /-- 224-byte `.dynamic` fixture: 14 entries (13 real + DT_NULL
-    terminator) describing the consolidated `Parse.Elf.Example.fixtureBytes`
+    terminator) describing the consolidated `Parse.Example.fixtureBytes`
     layout. Dynamic-content locating tags (`DT_STRTAB` / `DT_SYMTAB` /
     …) carry vaddrs that match the corresponding content's position in
     the consolidated fixture; strtab references (`DT_NEEDED` /

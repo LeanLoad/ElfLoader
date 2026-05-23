@@ -6,11 +6,26 @@ This module checks each decoded function pointer against the final checked
 PT_LOAD array and attaches the executable-target witness consumed by `Elf`.
 -/
 
-import LeanLoad.Parse.Elf.Checked
+import LeanLoad.Parse.ImageView.Segment.Properties
 
-namespace LeanLoad.Parse.Elf
+namespace LeanLoad.Parse
 
-open LeanLoad.Parse
+namespace Elf
+
+/-- A constructor/destructor function pointer that is zero or targets an
+    executable PT_LOAD in `segments`. -/
+abbrev InitFiniEntry (segments : Segments) :=
+  { entry : Eaddr // callTargetInExecSeg segments entry }
+
+/-- `DT_INIT_ARRAY` / `DT_FINI_ARRAY` entries. The array is ELF-owned
+    because call order is table order, while each entry carries the
+    witness that it targets an executable segment. -/
+abbrev InitFiniArray (segments : Segments) :=
+  Array (InitFiniEntry segments)
+
+end Elf
+
+namespace Elf
 
 /-- Check one dynamic constructor/destructor array. Zero is accepted by
     `callTargetInExecSeg`; non-zero entries must point into an executable
@@ -31,4 +46,6 @@ def checkInitFiniArray (label : String) (segments : Segments) (entries : Array E
           executable PT_LOAD ({entries.size} entries total)"
   return checked
 
-end LeanLoad.Parse.Elf
+end Elf
+
+end LeanLoad.Parse

@@ -36,7 +36,7 @@ so there's no parallel relocation tree to construct or zip later.
 
 import LeanLoad.Plan.Resolve
 import LeanLoad.ABI.Reloc
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Parse.ImageView.Segment.Checked
 
 namespace LeanLoad.Plan.Reloc

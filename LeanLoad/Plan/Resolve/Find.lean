@@ -32,7 +32,7 @@ BFS walk over `LoadGraph` lives in `Bfs.lean`; the across-elves
 wrapper lives in `Lookup.lean`.
 -/
 
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Parse.Dynamic.Symbol.Checked
 
 namespace LeanLoad.Plan.Resolve

@@ -1,18 +1,47 @@
 /-
-Relocation grouping for checked ELF construction.
+Final checked ELF parser product and entry points.
 
-Raw dynamic relocation tables are flat. The checked `Elf` stores relocs on the
-PT_LOAD segment whose memory range contains each relocation's 8-byte write
-window. This module owns that sigma-heavy bucketing; `Elf.Check` just consumes
-the attached segment array.
+`ImageView` establishes header and PT_LOAD facts, `Dynamic` reads dynamic
+content through that view, and this module performs the remaining whole-ELF
+checks before exposing the checked `Elf` type.
 -/
 
-import LeanLoad.Parse.ImageView.Segment.Array
+import LeanLoad.Parse.Dynamic.Basic
+import LeanLoad.Parse.Dynamic.InitFini
+import LeanLoad.Parse.Dynamic.Symbol.Checked
 import LeanLoad.Parse.Dynamic.Reloc.Raw
+import LeanLoad.Parse.ImageView.Segment.Array
+import LeanLoad.Runtime
 
-namespace LeanLoad.Parse.Elf
+namespace LeanLoad.Parse
 
-open LeanLoad.Parse
+/-- The checked form of an ELF.
+
+    `parseM` enforces ELF-class / endian sanity, gabi-07 PT_LOAD
+    well-formedness, per-rela segment containment, and init/fini target
+    coverage as preconditions on construction; the `Elf` type is the witness
+    that those checks passed. -/
+structure Elf where
+  /-- Parsed ELF header. `ElfHeader` is already semantically typed: magic,
+      identifiers, `e_type`, `e_machine`, addresses, and sentinels are decoded
+      to parse-layer field types. -/
+  header   : ElfHeader
+  symtab   : Array Symbol
+  needed   : Array String
+  soname   : Option String
+  runpath  : Option String
+  /-- Checked PT_LOAD array, in phdr order, with relas grouped by the segment
+      they target and array-level ordering/disjointness witnessed. -/
+  segments : Segments
+  /-- `DT_INIT_ARRAY` entries — ctors, walked forward on startup. Each entry is
+      zero or targets an executable PT_LOAD in `segments`. -/
+  initArr  : Elf.InitFiniArray segments
+  /-- `DT_FINI_ARRAY` entries — dtors, walked backward on exit. Each entry is
+      zero or targets an executable PT_LOAD in `segments`. -/
+  finiArr  : Elf.InitFiniArray segments
+  deriving Repr
+
+namespace Elf
 
 namespace RelocBuckets
 
@@ -70,7 +99,7 @@ private def attachedItems (segments : Segments)
 
 /-- Attach flat `DT_RELA` and `DT_JMPREL` tables to their checked PT_LOAD
     segments, preserving each segment's existing layout witnesses. -/
-def attach (segments : Segments) (rela jmprel : Array RawRela) :
+private def attach (segments : Segments) (rela jmprel : Array RawRela) :
     Except String Segments := do
   let relaBuckets   ← groupOne "DT_RELA" segments rela
   let jmprelBuckets ← groupOne "DT_JMPREL" segments jmprel
@@ -97,4 +126,39 @@ def attach (segments : Segments) (rela jmprel : Array RawRela) :
 
 end RelocBuckets
 
-end LeanLoad.Parse.Elf
+/-- Check a dynamic staging image into the final witness-carrying `Elf`. Header
+    policy, PT_LOAD well-formedness, and dynamic string resolution are already
+    carried by `Dynamic`. -/
+def ofDynamic (raw : Dynamic) : Except String Elf := do
+  let header := raw.header
+  let segments ← RelocBuckets.attach raw.segments raw.rela raw.jmprel
+  let symtab : Array Symbol ← raw.symtab.mapM (Symbol.ofRaw raw.strtab)
+  let initArr ← checkInitFiniArray "DT_INIT_ARRAY" segments raw.initArr
+  let finiArr ← checkInitFiniArray "DT_FINI_ARRAY" segments raw.finiArr
+  return {
+    header,
+    symtab,
+    needed := raw.needed,
+    soname := raw.soname,
+    runpath := raw.runpath,
+    segments,
+    initArr,
+    finiArr }
+
+end Elf
+
+/-- Monad-polymorphic checked parse. The `FileReader m` abstracts byte
+    delivery; all parse and validation errors flow through `ExceptT`. -/
+def parseM [Monad m] (r : FileReader m) : ExceptT String m Elf := do
+  let image ← Dynamic.readM r
+  match Elf.ofDynamic image with
+  | .ok elf  => pure elf
+  | .error e => throw e
+
+/-- Production entry point: parse and check an open file. -/
+def parse (f : Runtime.File) : IO Elf := do
+  match ← (parseM (Runtime.fileReader f)).run with
+  | .ok elf  => pure elf
+  | .error e => throw (IO.userError e)
+
+end LeanLoad.Parse

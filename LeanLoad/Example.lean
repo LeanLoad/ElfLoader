@@ -31,7 +31,7 @@ driven readability.
 import LeanLoad.Plan.Layout
 import LeanLoad.Plan.Resolve
 import LeanLoad.Materialize.Build
-import LeanLoad.Parse.Elf.Example
+import LeanLoad.Parse.Example
 
 namespace LeanLoad.Example
 
@@ -82,11 +82,11 @@ def synthElf
 -- ============================================================================
 
 -- Real-world acceptance: the 488-byte hand-crafted ELF fixture
--- (`Parse.Elf.Example.fixtureBytes` → `Parse.Elf.Example.fixture`) is a
+-- (`Parse.Example.fixtureBytes` → `Parse.Example.fixture`) is a
 -- library-shaped ET_DYN with strtab, symtab, DT_HASH, rela,
 -- init_array, and a 12-entry dynamic table — engineered to satisfy
 -- every checked-parse invariant.
-#guard match Parse.Elf.Example.fixture with
+#guard match Parse.Example.fixture with
        | .ok elf =>
            elf.header.e_type    == .dyn
         && elf.header.e_machine == .x86_64

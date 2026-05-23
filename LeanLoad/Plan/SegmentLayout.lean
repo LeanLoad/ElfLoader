@@ -29,7 +29,7 @@ Spec: gabi 07 § Program Header (page-aligned mmap views).
 import LeanLoad.Plan.Align
 import LeanLoad.Plan.Reloc
 import LeanLoad.Plan.Resolve
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Parse.ImageView.Segment.Checked
 import LeanLoad.Parse.ImageView.ProgramHeader.Basic
 

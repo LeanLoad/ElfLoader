@@ -34,7 +34,7 @@ File layout:
     LoadedObject`. Free function so `DfsState` can use it.
 -/
 
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Runtime
 
 namespace LeanLoad.Discover

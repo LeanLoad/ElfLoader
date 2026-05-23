@@ -27,7 +27,7 @@ Search rules (gabi 08 § Shared Object Dependencies) all live in
 -/
 
 import LeanLoad.Discover.Driver
-import LeanLoad.Parse.Elf.Entry
+import LeanLoad.Parse.Elf
 import LeanLoad.Runtime
 
 
