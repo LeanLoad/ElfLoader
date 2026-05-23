@@ -45,37 +45,8 @@ stage re-checks it — the witness travels in the type.
     three target soundness theorems (`bytes_preserved`,
     `bss_zeroed`, `relocs_applied`) consume.
  -/
-import LeanLoad.Parse.Address
-import LeanLoad.Parse.Reader
-import LeanLoad.Parse.ImageView.ElfHeader.Ident
-import LeanLoad.Parse.ImageView.ElfHeader.Fields
-import LeanLoad.Parse.ImageView.ElfHeader.Basic
-import LeanLoad.Parse.ImageView.ElfHeader.Example
-import LeanLoad.Parse.ImageView.ProgramHeader.Fields
-import LeanLoad.Parse.ImageView.ProgramHeader.Basic
-import LeanLoad.Parse.ImageView.ProgramHeader.Example
-import LeanLoad.Parse.Dynamic.Dyntab.Fields
-import LeanLoad.Parse.Dynamic.Dyntab.Basic
-import LeanLoad.Parse.Dynamic.Dyntab.Example
-import LeanLoad.Parse.Dynamic.Strtab
-import LeanLoad.Parse.Dynamic.Symbol.Raw
-import LeanLoad.Parse.Dynamic.Symbol.Checked
-import LeanLoad.Parse.Dynamic.Symbol.SysVHash
-import LeanLoad.Parse.Dynamic.Reloc.Raw
+import LeanLoad.Parse
 import LeanLoad.ABI.Reloc
-import LeanLoad.Parse.ImageView.Segment.Checked
-import LeanLoad.Parse.ImageView.Segment.Array
-import LeanLoad.Parse.ImageView.Segment.Properties
-import LeanLoad.Parse.ImageView.Segment.Example
-import LeanLoad.Parse.Elf.Checked
-import LeanLoad.Parse.ImageView.Basic
-import LeanLoad.Parse.ImageView.Example
-import LeanLoad.Parse.Dynamic.Basic
-import LeanLoad.Parse.Elf.Relocs
-import LeanLoad.Parse.Dynamic.InitFini
-import LeanLoad.Parse.Elf.Check
-import LeanLoad.Parse.Elf.Entry
-import LeanLoad.Parse.Elf.Example
 
 import LeanLoad.Runtime
 

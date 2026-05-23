@@ -26,9 +26,9 @@ structure Dynamic where
   segments : Segments
   strtab  : Strtab
   symtab  : RawSymtab
-  needed  : Array StrtabOff
-  soname  : Option StrtabOff
-  runpath : Option StrtabOff
+  needed  : Array String
+  soname  : Option String
+  runpath : Option String
   rela    : Array RawRela
   jmprel  : Array RawRela
   initArr : Array Eaddr
@@ -36,6 +36,23 @@ structure Dynamic where
   deriving Repr
 
 namespace Dynamic
+
+/-- Resolve a dynamic string-table offset while preserving diagnostic context
+    for the tag that supplied it. -/
+private def resolveStrtabOff (label : String) (strtab : Strtab) (off : StrtabOff) :
+    Except String String :=
+  match StrtabEntry.ofOff strtab off with
+  | .ok entry => .ok entry.value
+  | .error e  => .error s!"parse: {label}: {e}"
+
+/-- Resolve an optional dynamic string-table reference with the tag name in
+    diagnostics. -/
+private def resolveStrtabOff? (label : String) (strtab : Strtab) :
+    Option StrtabOff → Except String (Option String)
+  | none     => .ok none
+  | some off => do
+      let s ← resolveStrtabOff label strtab off
+      pure (some s)
 
 /-- Dynamic content after following `.dynamic` ELF-address ranges. -/
 private structure DynamicData where
@@ -161,14 +178,18 @@ def readM [Monad m] (r : FileReader m) : ExceptT String m Dynamic := do
     | some ph => parseAt r ph.p_offset ph.p_filesz
                    (Dyntab.parse ph.p_filesz)
   let c ← fetchDynamicData r view dyn
-  let soname ← liftExcept (Dyntab.soname? dyn)
-  let runpath ← liftExcept (Dyntab.runpath? dyn)
+  let needed ← liftExcept <|
+    (Dyntab.needed dyn).mapM (resolveStrtabOff "DT_NEEDED" c.strtab)
+  let soname ← liftExcept <|
+    resolveStrtabOff? "DT_SONAME" c.strtab (← liftExcept (Dyntab.soname? dyn))
+  let runpath ← liftExcept <|
+    resolveStrtabOff? "DT_RUNPATH" c.strtab (← liftExcept (Dyntab.runpath? dyn))
   return {
     header := view.header,
     segments := view.segments,
     strtab  := c.strtab,
     symtab  := c.symtab,
-    needed  := Dyntab.needed dyn,
+    needed,
     soname,
     runpath,
     rela    := c.rela,
