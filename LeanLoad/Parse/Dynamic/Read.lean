@@ -161,7 +161,7 @@ private def resolveDynamicStrings (dyn : Dyntab) (strtab : Strtab) :
 
 /-- Read an ELF into the transient dynamic staging image. -/
 def readM [Monad m] (r : FileReader m) : ExceptT String m Dynamic := do
-  let header ← decodeAt r 0 ElfHeader.byteSize ElfHeader.parse
+  let header ← decodeAt r 0 (ByteSize.ofNat ElfHeaderSize) ElfHeader.parse
   let programHeaders ← decodeAt r header.e_phoff
                  (ProgramHeader.tableByteSize header.e_phnum.toNat)
                  (ProgramHeader.parseTable header.e_phnum.toNat)
@@ -191,4 +191,3 @@ def readM [Monad m] (r : FileReader m) : ExceptT String m Dynamic := do
 end Dynamic
 
 end LeanLoad.Parse
-

@@ -27,27 +27,6 @@ instance : Inhabited FileView where
 
 namespace FileView
 
-/-- Validate ELF header policy and the fixed Elf64 record sizes that the byte
-    readers use. The size checks come from gabi 02 § ELF Header (`Elf64_Ehdr`)
-    and gabi 07 § Program Header (`Elf64_Phdr`). -/
-def checkHeader (header : ElfHeader) : Except String Unit := do
-  if header.ei_class != .class64 then
-    .error s!"parse: only ELFCLASS64 supported \
-      (got ei_class={reprStr header.ei_class})"
-  if header.ei_data != .lsb then
-    .error s!"parse: only little-endian supported \
-      (got ei_data={reprStr header.ei_data})"
-  if header.e_ehsize.toNat != ElfHeaderSize then
-    .error s!"parse: e_ehsize={header.e_ehsize} but Elf64_Ehdr is {ElfHeaderSize} bytes \
-      (gabi-02 § ELF Header)"
-  if header.e_phentsize.toNat != ProgramHeaderSize then
-    .error s!"parse: e_phentsize={header.e_phentsize} but Elf64_Phdr is {ProgramHeaderSize} bytes \
-      (gabi-07 § Program Header)"
-  if header.e_type == .exec then
-    .error s!"parse: ET_EXEC not supported — LeanLoad expects PIE \
-      (ET_DYN) inputs only. Recompile with -fPIE -pie."
-  return ()
-
 /-- Dynamic-table ELF-address range translated through a checked PT_LOAD into a
     checked file range. The segment range must be file-backed (`p_filesz`), not
     merely memory-backed (`p_memsz`), because the decoder is about to read bytes
@@ -73,7 +52,6 @@ end FileBackedEaddrRange
     construction, so dynamic reads consume witnessed load-map state. -/
 def ofHeaders (fileSize : UInt64) (header : ElfHeader) (programHeaders : Array ProgramHeader) :
     Except String FileView := do
-  checkHeader header
   let loadable := programHeaders.filter (·.p_type == .load)
   let mut segmentsAcc : Array Segment := #[]
   for h : i in [:loadable.size] do

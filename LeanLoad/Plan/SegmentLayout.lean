@@ -54,11 +54,11 @@ private theorem pageLayoutNoWrap (s : Segment) :
   simpa [Segment.eaddr, Segment.memsz, Segment.align, effectiveAlign, segmentLayoutAlign]
     using s.pageLayoutNoWrap
 
-/-- `eaddr + memsz` doesn't wrap, given `Segment.eaddrRange`. -/
+/-- `eaddr + memsz` doesn't wrap, given `Segment.eaddrNoWrap`. -/
 private theorem vaddr_add_memsz_toNat (s : Segment) :
     (s.eaddr.val + s.memsz.val).toNat = s.eaddr.toNat + s.memsz.toNat := by
   have h_no_wrap : s.eaddr.toNat + s.memsz.toNat < 2 ^ 64 := by
-    simpa [Segment.eaddr, Segment.memsz] using s.eaddrRange.noWrap
+    simpa [Segment.eaddr, Segment.memsz] using s.eaddrNoWrap
   rw [UInt64.toNat_add]
   exact Nat.mod_eq_of_lt h_no_wrap
 

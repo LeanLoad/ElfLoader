@@ -93,7 +93,46 @@ def badElfHeaderFileVersionBytes : ByteArray :=
   ⟨bytes⟩
 #guard (decodeWith? badElfHeaderFileVersionBytes ElfHeader.parse).isNone
 
--- `EI_OSABI` is typed but permissive: the gABI reserves 64..255 for
+  -- LeanLoad policy rejects non-64-bit, big-endian, ET_EXEC, and unexpected
+  -- fixed record sizes while checking `RawElfHeader` into `ElfHeader`.
+  def class32ElfHeaderBytes : ByteArray :=
+    let bytes := elfHeaderBytes.toList.toArray
+    let bytes := bytes.set! 0x04 0x01
+    ⟨bytes⟩
+  #guard (decodeBytes? (α := RawElfHeader) class32ElfHeaderBytes).isSome
+  #guard (decodeWith? class32ElfHeaderBytes ElfHeader.parse).isNone
+
+  def bigEndianElfHeaderBytes : ByteArray :=
+    let bytes := elfHeaderBytes.toList.toArray
+    let bytes := bytes.set! 0x05 0x02
+    ⟨bytes⟩
+  #guard (decodeBytes? (α := RawElfHeader) bigEndianElfHeaderBytes).isSome
+  #guard (decodeWith? bigEndianElfHeaderBytes ElfHeader.parse).isNone
+
+  def execElfHeaderBytes : ByteArray :=
+    let bytes := elfHeaderBytes.toList.toArray
+    let bytes := bytes.set! 0x10 0x02
+    ⟨bytes⟩
+  #guard (decodeBytes? (α := RawElfHeader) execElfHeaderBytes).isSome
+  #guard (decodeWith? execElfHeaderBytes ElfHeader.parse).isNone
+
+  def wrongElfHeaderSizeBytes : ByteArray :=
+    let bytes := elfHeaderBytes.toList.toArray
+    let bytes := bytes.set! 0x34 0x20
+    let bytes := bytes.set! 0x35 0x00
+    ⟨bytes⟩
+  #guard (decodeBytes? (α := RawElfHeader) wrongElfHeaderSizeBytes).isSome
+  #guard (decodeWith? wrongElfHeaderSizeBytes ElfHeader.parse).isNone
+
+  def wrongProgramHeaderSizeBytes : ByteArray :=
+    let bytes := elfHeaderBytes.toList.toArray
+    let bytes := bytes.set! 0x36 0x40
+    let bytes := bytes.set! 0x37 0x00
+    ⟨bytes⟩
+  #guard (decodeBytes? (α := RawElfHeader) wrongProgramHeaderSizeBytes).isSome
+  #guard (decodeWith? wrongProgramHeaderSizeBytes ElfHeader.parse).isNone
+
+  -- `EI_OSABI` is typed but permissive: the gABI reserves 64..255 for
 -- arch/psABI-specific meanings, so parsing preserves those values.
 def elfHeaderArchOsabiBytes : ByteArray :=
   let bytes := elfHeaderBytes.toList.toArray

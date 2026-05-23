@@ -21,13 +21,7 @@ def programHeaderVaTestSegments : Array ProgramHeader := #[
     p_vaddr := 0x3000, p_memsz := 0x500,
     p_offset := 0x2000, p_filesz := 0x500 } ]
 
-private def fileViewHeader : ElfHeader :=
-  { (default : ElfHeader) with
-    ei_class := .class64,
-    ei_data := .lsb,
-    e_type := .dyn,
-    e_ehsize := 64,
-    e_phentsize := 56 }
+private def fileViewHeader : ElfHeader := default
 
 private def programHeaderFileView? : Except String FileView :=
   FileView.ofHeaders 0x4000 fileViewHeader programHeaderVaTestSegments
@@ -47,21 +41,5 @@ private def mappedOff? (va : Eaddr) : Option FileOff :=
 #guard mappedOff? 0x0fff = none         -- before everything
 #guard mappedOff? 0x2500 = none         -- gap between segments
 #guard mappedOff? 0x3500 = none         -- past the second segment
-
-private def wrongElfHeaderSize? : Except String FileView :=
-  FileView.ofHeaders 0x4000 { fileViewHeader with e_ehsize := 32 } programHeaderVaTestSegments
-
-private def wrongPhentsize? : Except String FileView :=
-  FileView.ofHeaders 0x4000 { fileViewHeader with e_phentsize := 64 } programHeaderVaTestSegments
-
-#guard
-  match wrongElfHeaderSize? with
-  | .ok _    => false
-  | .error _ => true
-
-#guard
-  match wrongPhentsize? with
-  | .ok _    => false
-  | .error _ => true
 
 end LeanLoad.Parse.FileView.Example

@@ -26,16 +26,6 @@ namespace LeanLoad.Parse
 -- live on `Plan.SegmentLayout`.
 -- ============================================================================
 
-/-- A PT_LOAD program header's ELF-address memory range
-    `[p_vaddr, p_vaddr + p_memsz)` does not wrap UInt64. -/
-structure Segment.EaddrRange (phdr : ProgramHeader) where
-  noWrap : phdr.p_vaddr.toNat + phdr.p_memsz.toNat < 2 ^ 64
-
-/-- A PT_LOAD program header's file-backed byte range
-    `[p_offset, p_offset + p_filesz)` is contained in the source file. -/
-structure Segment.FileImageRange (fileSize : UInt64) (phdr : ProgramHeader) where
-  inFile : phdr.p_offset.toNat + phdr.p_filesz.toNat ≤ fileSize.toNat
-
 /-- A PT_LOAD segment: gabi-07 byte fields, the gabi per-segment
     invariants, and range/layout no-wrap witnesses. -/
 structure Segment where
@@ -47,10 +37,11 @@ structure Segment where
   phdr   : ProgramHeader
   /-- This checked segment is backed by a `PT_LOAD` phdr. -/
   isLoad : phdr.p_type = .load
-  /-- Virtual memory range `[p_vaddr, p_vaddr + p_memsz)`. -/
-  eaddrRange : Segment.EaddrRange phdr
-  /-- File-backed range `[p_offset, p_offset + p_filesz)`. -/
-  fileRange : Segment.FileImageRange fileSize phdr
+  /-- The ELF-address memory range `[p_vaddr, p_vaddr + p_memsz)` does not wrap UInt64. -/
+  eaddrNoWrap : phdr.p_vaddr.toNat + phdr.p_memsz.toNat < 2 ^ 64
+  /-- The file-backed byte range `[p_offset, p_offset + p_filesz)` is contained
+      in the source file. -/
+  fileInBounds : phdr.p_offset.toNat + phdr.p_filesz.toNat ≤ fileSize.toNat
   /-- gabi 07: `p_filesz ≤ p_memsz`. -/
   fileszLeMemsz : phdr.p_filesz.toNat ≤ phdr.p_memsz.toNat
   /-- gabi 07: `p_align` is `0` or a power of two. -/
@@ -180,8 +171,8 @@ def Segment.ofPhdr (phdr : ProgramHeader) (fileSize : UInt64) : Except String Se
        0x{(segmentLayoutAlign phdr.p_align).toNat})"
   return {
     fileSize, phdr, isLoad,
-    eaddrRange := { noWrap := memNoWrap },
-    fileRange := { inFile := fileInBounds },
+    eaddrNoWrap := memNoWrap,
+    fileInBounds,
     fileszLeMemsz, alignPow2, alignCong, pageLayoutNoWrap
   }
 
