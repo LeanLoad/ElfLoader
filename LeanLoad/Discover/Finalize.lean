@@ -26,13 +26,13 @@ open LeanLoad
 -- pointwise from `rowSum` + `pending = 0` everywhere.
 -- ============================================================================
 
-/-- Drive the DFS to completion against `finder`, starting from an already-loaded
+/-- Drive the DFS to completion against `finder`, starting from an already-discovered
     main object, then construct the public `Result`. The fuel cap is a Lean-termination concession
     (each new push strictly grows `objects.size`, so a true upper bound
     is "the total number of transitively-needed sonames"). -/
 private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
     (finder : ObjectFinder m) (fuel : Nat)
-    (mainObj : LoadedObject) : m Result := do
+    (mainObj : DiscoveredObject) : m Result := do
   let s0 := Discovered.initial mainObj
   let initialWork := WorkItem.ofNeededArray mainObj.elf.runpath mainObj.elf.needed
   -- Drive DFS over main's NEEDED via `discoverWorkList` with `newIdx = 0`. Each
@@ -52,7 +52,7 @@ private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
   have h_done_active_s0 : s0.DoneOrActive [0] := by
     intro i h_i
     have h_i_zero : i = 0 := by
-      have h_lt : i < (#[mainObj] : Array LoadedObject).size := h_i
+      have h_lt : i < (#[mainObj] : Array DiscoveredObject).size := h_i
       simp at h_lt
       omega
     right
@@ -102,7 +102,7 @@ private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
     rw [this]
     have h_mono := final.sizeMono
     have h_s0_size : s0.objects.size = 1 := by
-      show (#[mainObj] : Array LoadedObject).size = 1
+      show (#[mainObj] : Array DiscoveredObject).size = 1
       rfl
     omega
   have h_initBounds : ∀ x ∈ s_final.postOrder, x < s_final.objects.size :=
@@ -183,7 +183,7 @@ private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
   pure { graph := graph, initOrder := initOrder }
 
 /-- Fully monadic Discover entry point. The finder owns both the effectful
-    `mainPath → LoadedObject` step and dependency lookup; traversal/finalization
+    `mainPath → DiscoveredObject` step and dependency lookup; traversal/finalization
     are shared by production IO and pure examples. -/
 def discover {m : Type → Type} [Monad m] [MonadExceptOf String m]
     (finder : ObjectFinder m) (fuel : Nat)

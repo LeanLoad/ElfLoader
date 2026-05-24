@@ -7,7 +7,7 @@ we traverse pending `WorkItem`s. Its field naming intentionally mirrors
 `LoadGraph` so the graph half of final promotion is mostly structural.
 
 Carries the first four `LoadGraph` invariants plus `nameIxValid`
-(the HashMap accelerator's bridge to the spec-level `findLoadedIdx`)
+(the HashMap accelerator's bridge to the spec-level `findDiscoveredIdx`)
 plus the `rowSum` / `postOrder*` invariants that `Traversal` consumes.
 The fifth `LoadGraph` invariant — `closure` — is *not* carried
 here; individual push/recordDep steps break it. `closure` is
@@ -27,7 +27,7 @@ used by `Traversal.discoverWork` / `discoverWorkList` to discharge the
 -/
 
 import Std.Data.HashMap
-import LeanLoad.Discover.Graph
+import LeanLoad.Discover.Order
 
 namespace LeanLoad.Discover
 
@@ -92,18 +92,18 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
     exact h_bounds i h_lt_orig t h_mem
 
 -- ============================================================================
--- findLoadedIdx — name lookup over Array LoadedObject.
+-- findDiscoveredIdx — name lookup over Array DiscoveredObject.
 -- ============================================================================
 
 /-- Linear search for an object by name. Defined via `Array.findIdx?`
-    so the size bound (`findLoadedIdx_lt` below) drops out of the core
+    so the size bound (`findDiscoveredIdx_lt` below) drops out of the core
     `Array.of_findIdx?_eq_some` characterisation. -/
-def findLoadedIdx (objects : Array LoadedObject) (name : String) : Option Nat :=
+def findDiscoveredIdx (objects : Array DiscoveredObject) (name : String) : Option Nat :=
   objects.findIdx? (·.name == name)
 
-/-- The index returned by `findLoadedIdx` is `< objects.size`. -/
-theorem findLoadedIdx_lt {objects : Array LoadedObject} {name : String} {idx : Nat}
-    (h : findLoadedIdx objects name = some idx) : idx < objects.size := by
+/-- The index returned by `findDiscoveredIdx` is `< objects.size`. -/
+theorem findDiscoveredIdx_lt {objects : Array DiscoveredObject} {name : String} {idx : Nat}
+    (h : findDiscoveredIdx objects name = some idx) : idx < objects.size := by
   have h_match :=
     Array.of_findIdx?_eq_some (xs := objects) (p := (·.name == name)) h
   match h_get : objects[idx]? with
@@ -114,21 +114,21 @@ theorem findLoadedIdx_lt {objects : Array LoadedObject} {name : String} {idx : N
     rw [h_get] at h_match
     exact absurd h_match (by simp)
 
-/-- `findLoadedIdx = none` characterised: no object in `objects` carries
+/-- `findDiscoveredIdx = none` characterised: no object in `objects` carries
     the given name. -/
-theorem findLoadedIdx_none_iff (objects : Array LoadedObject) (name : String) :
-    findLoadedIdx objects name = none ↔ ∀ o ∈ objects, o.name ≠ name := by
-  unfold findLoadedIdx
+theorem findDiscoveredIdx_none_iff (objects : Array DiscoveredObject) (name : String) :
+    findDiscoveredIdx objects name = none ↔ ∀ o ∈ objects, o.name ≠ name := by
+  unfold findDiscoveredIdx
   rw [Array.findIdx?_eq_none_iff]
   simp
 
 /-- Pushing a freshly-resolved object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `Discovered.pushObject`
+    The precondition `findDiscoveredIdx = none` is what `Discovered.pushObject`
     discharges from `nameIx[obj.name]? = none` via `nameIxValid`. -/
-theorem nodup_names_push_of_findLoadedIdx_none
-    {objects : Array LoadedObject} {obj : LoadedObject}
+theorem nodup_names_push_of_findDiscoveredIdx_none
+    {objects : Array DiscoveredObject} {obj : DiscoveredObject}
     (h_nodup : (objects.map (·.name)).toList.Nodup)
-    (h_fresh : findLoadedIdx objects obj.name = none) :
+    (h_fresh : findDiscoveredIdx objects obj.name = none) :
     ((objects.push obj).map (·.name)).toList.Nodup := by
   rw [Array.map_push, Array.toList_push, List.nodup_append]
   refine ⟨h_nodup, by simp, ?_⟩
@@ -137,11 +137,11 @@ theorem nodup_names_push_of_findLoadedIdx_none
   subst hb
   obtain ⟨o, ho_mem, ho_name⟩ := Array.mem_map.mp (Array.mem_toList_iff.mp ha)
   have h_ne : o.name ≠ obj.name :=
-    (findLoadedIdx_none_iff objects obj.name).mp h_fresh o ho_mem
+    (findDiscoveredIdx_none_iff objects obj.name).mp h_fresh o ho_mem
   exact h_ne (ho_name.trans hab)
 
 -- ============================================================================
--- Discovered — all loaded objects and partially recorded dependency edges.
+-- Discovered — all discovered objects and partially recorded dependency edges.
 -- ============================================================================
 
 /-- Discovered-set state. Field naming intentionally mirrors `LoadGraph`
@@ -149,13 +149,13 @@ theorem nodup_names_push_of_findLoadedIdx_none
     structural — only `closure` is new (and falls out of `rowSum` once
     every `pending[i]` is `0`). -/
 structure Discovered where
-  /-- Loaded objects discovered so far, in DFS pre-order. -/
-  objects     : Array LoadedObject
+  /-- Objects discovered so far, in DFS pre-order. -/
+  objects     : Array DiscoveredObject
   /-- Per-object dep edges. May be partial during DFS: row `i` is fully
       populated only after the discoverWork call that pushed `objects[i]` has
       returned. -/
   deps        : Array (Array Nat)
-  /-- Name→idx dedup accelerator. Bridges to `findLoadedIdx` via
+  /-- Name→idx dedup accelerator. Bridges to `findDiscoveredIdx` via
       `nameIxValid`. -/
   nameIx      : Std.HashMap String Nat
   /-- Per-object count of `DT_NEEDED` entries still to be recorded into
@@ -179,8 +179,8 @@ structure Discovered where
   depsBounds  : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
   /-- `nameIx` is a faithful name→index map for `objects`. Lets dedup
       run in O(1) while invariants are stated in terms of the
-      spec-level `findLoadedIdx`. -/
-  nameIxValid : ∀ name : String, nameIx[name]? = findLoadedIdx objects name
+      spec-level `findDiscoveredIdx`. -/
+  nameIxValid : ∀ name : String, nameIx[name]? = findDiscoveredIdx objects name
   /-- `pending` parallel to `objects`. -/
   pendingSize : pending.size = objects.size
   /-- Per-row balance: `deps[i].size + pending[i] = needed_i.size`.
@@ -230,7 +230,7 @@ theorem edgeTarget_done_or_active (s : Discovered) {active : ActiveStack}
 
 /-- Initial state: main pushed at idx 0 with an empty deps row and
     `pending[0] = mainObj.elf.needed.size`. -/
-def initial (mainObj : LoadedObject) : Discovered :=
+def initial (mainObj : DiscoveredObject) : Discovered :=
   { objects := #[mainObj]
     deps := #[#[]]
     nameIx := (∅ : Std.HashMap String Nat).insert mainObj.name 0
@@ -248,24 +248,24 @@ def initial (mainObj : LoadedObject) : Discovered :=
     nameIxValid := by
       intro name
       show ((∅ : Std.HashMap String Nat).insert mainObj.name 0)[name]?
-            = findLoadedIdx #[mainObj] name
-      have h_find : findLoadedIdx (#[mainObj] : Array LoadedObject) name
+            = findDiscoveredIdx #[mainObj] name
+      have h_find : findDiscoveredIdx (#[mainObj] : Array DiscoveredObject) name
             = if mainObj.name = name then some 0 else none := by
-        unfold findLoadedIdx
-        show ((#[] : Array LoadedObject).push mainObj).findIdx? _ = _
+        unfold findDiscoveredIdx
+        show ((#[] : Array DiscoveredObject).push mainObj).findIdx? _ = _
         rw [Array.findIdx?_push]; simp
       rw [h_find, Std.HashMap.getElem?_insert]; simp
     pendingSize := rfl
     rowSum := by
       intro i h
       have h_i_zero : i = 0 := by
-        have h_lt' : i < (#[mainObj] : Array LoadedObject).size := h
+        have h_lt' : i < (#[mainObj] : Array DiscoveredObject).size := h
         simp at h_lt'; omega
       subst h_i_zero
       -- Goal: #[#[]][0].size + #[needed.size][0] = #[main][0].elf.needed.size
       show ((#[#[]] : Array (Array Nat))[0]).size
             + ((#[mainObj.elf.needed.size] : Array Nat)[0])
-            = ((#[mainObj] : Array LoadedObject)[0]).elf.needed.size
+            = ((#[mainObj] : Array DiscoveredObject)[0]).elf.needed.size
       simp
     postOrder := #[]
     postOrderBounds := by intro x h_mem; simp at h_mem
@@ -281,16 +281,16 @@ def initial (mainObj : LoadedObject) : Discovered :=
     caller's `discoverWorkList` over `elf.needed.toList` decrements it. The
     `h_fresh` precondition is the `nameIx[obj.name]? = none` check
     that `discoverWork` has already done. -/
-def pushObject (s : Discovered) (obj : LoadedObject)
+def pushObject (s : Discovered) (obj : DiscoveredObject)
     (h_fresh : s.nameIx[obj.name]? = none) : Discovered :=
-  have h_find_fresh : findLoadedIdx s.objects obj.name = none :=
+  have h_find_fresh : findDiscoveredIdx s.objects obj.name = none :=
     (s.nameIxValid obj.name).symm.trans h_fresh
   { objects := s.objects.push obj
     deps := s.deps.push #[]
     nameIx := s.nameIx.insert obj.name s.objects.size
     pending := s.pending.push obj.elf.needed.size
     sizePos := by rw [Array.size_push]; omega
-    namesNodup := nodup_names_push_of_findLoadedIdx_none s.namesNodup h_find_fresh
+    namesNodup := nodup_names_push_of_findDiscoveredIdx_none s.namesNodup h_find_fresh
     depsSize := by
       show (s.deps.push #[]).size = (s.objects.push obj).size
       rw [Array.size_push, Array.size_push, s.depsSize]
@@ -314,9 +314,9 @@ def pushObject (s : Discovered) (obj : LoadedObject)
     nameIxValid := by
       intro name
       show (s.nameIx.insert obj.name s.objects.size)[name]?
-            = findLoadedIdx (s.objects.push obj) name
+            = findDiscoveredIdx (s.objects.push obj) name
       rw [Std.HashMap.getElem?_insert]
-      unfold findLoadedIdx
+      unfold findDiscoveredIdx
       rw [Array.findIdx?_push]
       have h_old := s.nameIxValid name
       by_cases h : obj.name = name
@@ -325,7 +325,7 @@ def pushObject (s : Discovered) (obj : LoadedObject)
         simp [h, h_find_old]
       · simp [h]
         rw [h_old]
-        unfold findLoadedIdx
+        unfold findDiscoveredIdx
         cases s.objects.findIdx? (·.name == name) <;> rfl
     pendingSize := by
       show (s.pending.push obj.elf.needed.size).size = (s.objects.push obj).size
@@ -537,14 +537,14 @@ theorem edgeTarget_before_markComplete (s : Discovered)
     (markComplete s idx h_lt h_fresh h_deps_done).postOrder = s.postOrder.push idx := rfl
 
 /-- `pushObject` grows `objects` by one. -/
-@[simp] theorem pushObject_size (s : Discovered) (obj : LoadedObject)
+@[simp] theorem pushObject_size (s : Discovered) (obj : DiscoveredObject)
     (h_fresh : s.nameIx[obj.name]? = none) :
     (pushObject s obj h_fresh).objects.size = s.objects.size + 1 := by
   show (s.objects.push obj).size = _
   rw [Array.size_push]
 
 /-- `pushObject` doesn't touch `postOrder`. -/
-@[simp] theorem pushObject_postOrder (s : Discovered) (obj : LoadedObject)
+@[simp] theorem pushObject_postOrder (s : Discovered) (obj : DiscoveredObject)
     (h_fresh : s.nameIx[obj.name]? = none) :
     (pushObject s obj h_fresh).postOrder = s.postOrder := rfl
 
@@ -596,7 +596,7 @@ theorem recordDep_deps_other (s : Discovered) (src tgt : Nat)
   simpa [h_ne] using h_get
 
 /-- `pushObject` doesn't touch existing dep rows. -/
-theorem pushObject_deps_old (s : Discovered) (obj : LoadedObject)
+theorem pushObject_deps_old (s : Discovered) (obj : DiscoveredObject)
     (h_fresh : s.nameIx[obj.name]? = none) (j : Nat) (h_j : j < s.objects.size) :
     ((pushObject s obj h_fresh).deps[j]'(by
         rw [(pushObject s obj h_fresh).depsSize]
@@ -608,7 +608,7 @@ theorem pushObject_deps_old (s : Discovered) (obj : LoadedObject)
   rw [Array.getElem_push, dif_pos (by rw [s.depsSize]; exact h_j)]
 
 /-- At the new index, `pushObject`'s pending entry is `obj.elf.needed.size`. -/
-theorem pushObject_pending_new (s : Discovered) (obj : LoadedObject)
+theorem pushObject_pending_new (s : Discovered) (obj : DiscoveredObject)
     (h_fresh : s.nameIx[obj.name]? = none) :
     ((pushObject s obj h_fresh).pending[s.objects.size]'(by
         show s.objects.size < (s.pending.push obj.elf.needed.size).size
@@ -619,7 +619,7 @@ theorem pushObject_pending_new (s : Discovered) (obj : LoadedObject)
   rw [s.pendingSize]; exact Nat.lt_irrefl _
 
 /-- At old indices, `pushObject` doesn't change `pending`. -/
-theorem pushObject_pending_old (s : Discovered) (obj : LoadedObject)
+theorem pushObject_pending_old (s : Discovered) (obj : DiscoveredObject)
     (h_fresh : s.nameIx[obj.name]? = none) (j : Nat) (h_j : j < s.objects.size) :
     ((pushObject s obj h_fresh).pending[j]'(by
         show j < (s.pending.push obj.elf.needed.size).size

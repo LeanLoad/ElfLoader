@@ -20,7 +20,7 @@ witnessed tree. `Runtime/Run.lean` owns IO interpretation.
 import LeanLoad.Finalize.Range
 import LeanLoad.Layout
 import LeanLoad.Reloc
-import LeanLoad.Runtime.Basic
+import LeanLoad.Runtime
 
 namespace LeanLoad.Finalize
 

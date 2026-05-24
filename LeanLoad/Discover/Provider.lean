@@ -12,10 +12,10 @@ namespace LeanLoad.Discover
 /-- Object finder seam used by discovery traversal. -/
 structure ObjectFinder (m : Type → Type) where
   /-- Find and parse the main object. This owns the effectful boundary from a user
-      path to the checked `LoadedObject` that seeds traversal. -/
-  findMain : String → m LoadedObject
+      path to the checked `DiscoveredObject` that seeds traversal. -/
+  findMain : String → m DiscoveredObject
   /-- Find a dependency for this work item. `none` means "not found"; parse failures and
       policy failures escape through the monad's error mechanism. -/
-  findDependency : WorkItem → m (Option LoadedObject)
+  findDependency : WorkItem → m (Option DiscoveredObject)
 
 end LeanLoad.Discover

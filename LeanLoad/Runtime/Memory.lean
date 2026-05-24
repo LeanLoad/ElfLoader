@@ -6,19 +6,11 @@ file-backed pages, clear BSS tails, apply relocation stores, and set final
 permissions. The IO instance is the trusted FFI boundary for memory operations.
 -/
 
-import LeanLoad.Runtime.Basic
+import LeanLoad.Runtime
 
 namespace LeanLoad
 
 namespace Runtime
-
-/-- Memory operations needed to realize a finalized load plan. -/
-structure Memory (m : Type → Type) where
-  reserve  : (len : UInt64) → m { r : LeanLoad.Reserve // r.len = len }
-  mmapFile : File → UInt64 → UInt64 → UInt32 → UInt64 → m Unit
-  zero     : UInt64 → UInt64 → m Unit
-  store    : UInt64 → UInt8 → UInt64 → m Unit
-  mprotect : UInt64 → UInt64 → UInt32 → m Unit
 
 namespace Memory
 

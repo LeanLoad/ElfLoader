@@ -6,33 +6,11 @@ an open file already carries the observed file size. Pure fixtures use the same
 `File m` interface with `m = Id`.
 -/
 
-import LeanLoad.Basic
+import LeanLoad.Runtime
 
 namespace LeanLoad
 
 namespace Runtime
-
-/-- Byte range in an open file, checked against that file's observed size. -/
-structure FileRange (fileSize : ByteSize) where
-  off      : FileOff
-  size     : ByteSize
-  inBounds : off.toNat + size.toNat ≤ fileSize.toNat
-  deriving Repr
-
-/-- The concrete backing for a `Runtime.File m`. Only fd-backed files can be
-    interpreted by `Runtime.Memory.io` as file-backed mmap sources. -/
-inductive FileBacking where
-  | fd (fd : UInt32)
-  | virtual
-  deriving Repr
-
-/-- Open file-like byte source. `size` is captured when the source is created;
-    `read` accepts only ranges checked against that observed size. File-backed
-    mmap is a memory operation, not part of this read interface. -/
-structure File (m : Type → Type := IO) where
-  backing  : FileBacking
-  size     : ByteSize
-  read     : FileRange size → ExceptT String m ByteArray
 
 namespace File
 

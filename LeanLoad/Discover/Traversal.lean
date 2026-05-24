@@ -189,7 +189,7 @@ def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
         -- cycles, whose init order is undefined by gabi 08, so Discover rejects
         -- them rather than constructing a cyclic LoadGraph.
         have h_idx : idx < s0.objects.size :=
-          findLoadedIdx_lt ((s0.nameIxValid canonical).symm.trans h_lookup)
+          findDiscoveredIdx_lt ((s0.nameIxValid canonical).symm.trans h_lookup)
         if h_cycle : idx ∈ active then
           throw s!"discover: dependency cycle involving '{canonical}'"
         else

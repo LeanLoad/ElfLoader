@@ -10,7 +10,7 @@ range into a checked file-backed `FileRange`.
 import LeanLoad.Parse.LoadMap.ElfHeader.Basic
 import LeanLoad.Parse.LoadMap.ProgramHeader.Basic
 import LeanLoad.Parse.LoadMap.Segment.Table
-import LeanLoad.Runtime.File
+import LeanLoad.Runtime
 
 namespace LeanLoad.Parse
 

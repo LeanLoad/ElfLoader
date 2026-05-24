@@ -6,21 +6,11 @@ they run user code / transfer control and are not part of the pure finalized
 load-op tree.
 -/
 
+import LeanLoad.Runtime
+
 namespace LeanLoad
 
 namespace Runtime
-
-/-- Arguments for the final non-returning transfer to the loaded program. -/
-structure ExecArgs where
-  entry           : UInt64
-  programHeaderVa : UInt64
-  phent           : UInt64
-  phnum           : UInt64
-  baseVa          : UInt64
-  stackVa         : UInt64
-  stackLen        : UInt64
-  argv0           : String
-  deriving Repr, Inhabited
 
 @[extern "leanload_exec_call_ctor"]
 private opaque callCtorRaw (addr : UInt64) : IO Unit

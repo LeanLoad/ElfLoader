@@ -46,7 +46,7 @@ edge cases instead of papering over them), it's called out below.
 
 **Dependency resolution & dedup** (`Discover/`, `LeanLoad/Runtime.c`)
 
-- **Dedup by `DT_SONAME` — required for every NEEDED-loaded `.so`.**
+- **Dedup by `DT_SONAME` — required for every NEEDED dependency `.so`.**
   We *fail loud* on a SONAME-less library; ld.so falls back to
   realpath/inode. SONAME is universally set by modern linkers
   (`-Wl,-soname,…`); missing it almost always indicates a build
@@ -276,10 +276,10 @@ LeanLoad/
     LoadMap/               checked header / PT_LOAD map used before dynamic reads
     Dynamic/               .dynamic table, strtab/symtab, relocation staging
     Examples.lean          checked parse fixture and cross-section #guards
-  Discover.lean            public Discover interface: LoadedObject, LoadGraph,
+  Discover.lean            public Discover interface: DiscoveredObject, LoadGraph,
                            WorkItem, monadic ObjectFinder
   Discover/
-    Graph.lean             recordEdge / findLoadedIdx construction helpers
+    Graph.lean             recordEdge / findDiscoveredIdx construction helpers
     Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
                            recordDep/markComplete) + characterisation theorems
     Traversal.lean         WorkResult / WorkListAcc + mutual `discoverWork` /

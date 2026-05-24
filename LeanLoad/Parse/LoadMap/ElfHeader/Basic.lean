@@ -5,7 +5,7 @@ Checked ELF header after file-size-dependent range validation.
 import LeanLoad.Parse.LoadMap.ElfHeader.Raw
 import LeanLoad.Parse.LoadMap.ProgramHeader.Basic
 import LeanLoad.Parse.Basic
-import LeanLoad.Runtime.File
+import LeanLoad.Runtime
 
 namespace LeanLoad.Parse
 

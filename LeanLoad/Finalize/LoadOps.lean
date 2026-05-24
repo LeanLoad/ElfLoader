@@ -38,7 +38,7 @@ constructively by `Finalize.build` from `BoundPlan`'s per-(i, j)
 
 import LeanLoad.Finalize
 import LeanLoad.Layout.Basic
-import LeanLoad.Runtime.Basic
+import LeanLoad.Runtime
 
 namespace LeanLoad.Finalize
 

@@ -55,7 +55,7 @@ private def mockSegments : Parse.SegmentTable mockFileSize :=
     and `needed` are the only fields Discover observes; everything else is
     zeroed and the structural invariants discharge automatically.
     `soname` defaults to `some "anon"` because the production object finder
-    *requires* DT_SONAME on every NEEDED-loaded `.so`. Examples that want
+    *requires* DT_SONAME on every NEEDED dependency `.so`. Examples that want
     to exercise the SONAME-missing error path can pass `soname := none`
     explicitly. -/
 private def mockElf (soname : Option String := some "anon")
@@ -64,6 +64,9 @@ private def mockElf (soname : Option String := some "anon")
   fileSize := mockFileSize
   machine  := .x86_64
   segments := mockSegments
+  phdrOff := 0
+  phdrCount := 0
+  phdrMap := .empty rfl
   symtab   := #[]
   needed
   soname
@@ -113,7 +116,7 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
     ObjectFinder (Except String) :=
   { findMain := fun mainPath =>
       match store.getElf? mainPath with
-      | some mainElf => .ok (LoadedObject.ofMain mainPath dummyFile mainElf)
+      | some mainElf => .ok (DiscoveredObject.ofMain mainPath dummyFile mainElf)
       | none => .error s!"discoverExample: main {mainPath} not in store"
     findDependency := fun work => .ok <|
       (exampleSearchCandidates work.needed work.runpath envPath).findSome? fun path =>
@@ -129,7 +132,7 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
 /-- Run the fully monadic Discover entry against an `ExampleStore`. The main
     object is looked up directly by path (no soname search for it — same as
     production main lookup). Main's canonical name is `basename
-    mainPath` (via `LoadedObject.ofMain`, same as production). -/
+    mainPath` (via `DiscoveredObject.ofMain`, same as production). -/
 private def discoverExample (store : ExampleStore) (mainPath : String)
     (envPath : Option String := none) : Except String Result := do
   discover (exampleFinder store envPath) 64 mainPath
@@ -217,7 +220,7 @@ private def cycleResult : Except String Result := discoverExample cycleStore "/m
 -- main NEEDs both `/libfoo.so` and `/libfoo.so.1` — two different files
 -- in the store, but BOTH have `DT_SONAME = "libfoo.so.1"`. Production
 -- policy: dedup by SONAME. The second resolution hits the post-load
--- dedup branch via `findLoadedIdx`.
+-- dedup branch via `findDiscoveredIdx`.
 
 private def sonameStore : ExampleStore := [
   ("/main",        mockElf (soname := some "main")

@@ -40,7 +40,7 @@ Key types:
 `Result.entries` projection is total because `Result`'s constructor is private.
 -/
 
-import LeanLoad.Discover.Graph
+import LeanLoad.Discover.Order
 import LeanLoad.Reloc.Symbol
 import LeanLoad.Reloc.ABI
 import LeanLoad.Parse
@@ -203,7 +203,7 @@ structure Result where
 
 namespace Result
 
-/-- Number of loaded objects. -/
+/-- Number of discovered objects. -/
 abbrev objCount (p : Result) : Nat := p.graph.objects.size
 
 /-- Project the elf array of the discovered object list. -/

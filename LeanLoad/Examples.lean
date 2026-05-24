@@ -56,13 +56,13 @@ private def libcElf (template : Elf) : Elf :=
 private def libmElf (template : Elf) : Elf :=
   providerElf "libm.so.6" #[default] template
 
-private def dependencyObject (name : String) (elf : Elf) : Discover.LoadedObject :=
+private def dependencyObject (name : String) (elf : Elf) : Discover.DiscoveredObject :=
   { name := name, handle := dummyFile, elf := elf }
 
 private def fixtureFinder (main libc libm : Elf) :
     Discover.ObjectFinder (Except String) :=
   { findMain := fun path =>
-     .ok (Discover.LoadedObject.ofMain path dummyFile main)
+     .ok (Discover.DiscoveredObject.ofMain path dummyFile main)
     findDependency := fun work =>
       match work.needed with
       | "libc.so.6" => .ok (some (dependencyObject "libc.so.6" libc))

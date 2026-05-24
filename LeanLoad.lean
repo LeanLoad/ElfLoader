@@ -49,8 +49,13 @@ import LeanLoad.Parse.Examples
 import LeanLoad.Reloc.ABI
 
 import LeanLoad.Runtime
+import LeanLoad.Runtime.File
+import LeanLoad.Runtime.Memory
+import LeanLoad.Runtime.Exec
+import LeanLoad.Runtime.Run
 
 import LeanLoad.Discover
+import LeanLoad.Discover.Finalize
 import LeanLoad.Discover.Examples  -- pure #guard scenarios; elaborate on build
 
 import LeanLoad.Layout.Align

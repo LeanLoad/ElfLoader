@@ -9,24 +9,24 @@ instead of re-checking the same facts. Native IO is isolated in `Runtime`.
 | Stage        | Kind    | Input → Output | Main responsibility |
 | ------------ | ------- | -------------- | ------------------- |
 | **Parse**    | monadic | `Runtime.File m → ExceptT String m Parse.Elf` | Decode ELF64 ET_DYN, check load-map/dynamic ranges, attach relocs and call targets to checked segments. |
-| **Discover** | monadic | `ObjectFinder m → fuel → path → m LoadGraph` | DFS over `DT_NEEDED`, canonical-name dedup, dependency edges, init order, cycle rejection. |
-| **Reloc**    | pure    | `LoadGraph → Reloc.Result` | Resolve relocation-referenced symbols and reject referenced unresolved strong symbols. |
+| **Discover** | monadic | `ObjectFinder m → fuel → path → m Discover.Result` | DFS over `DT_NEEDED`, canonical-name dedup, complete dependency edges, graph-indexed init order, cycle rejection. |
+| **Reloc**    | pure    | `Discover.Result → Reloc.Result` | Resolve relocation-referenced symbols and reject referenced unresolved strong symbols. |
 | **Layout**   | pure    | `Reloc.Result → Layout.Layout` | Compute base-free per-segment/per-object placement and total span. |
 | **Finalize** | pure    | `BoundPlan → LoadOps rsv.addr rsv.len n` | Emit intrinsic-safe mmap/zero/store/mprotect ops. |
 | **Runtime**  | IO      | `LoadOps → IO Unit` | Run trusted syscalls, call ctors, build the startup stack, and jump. |
 
 The CLI wires these together in `ExceptT String IO`: production `ObjectFinder`
 opens/parses the main object, searches dependencies, and hands the resulting
-`LoadGraph` to Reloc → Layout → Finalize → Runtime.
+graph/init-order pair to Reloc → Layout → Finalize → Runtime.
 
 ## Witness flow
 
 - **Parse** establishes file-range validity, ELF policy, checked PT_LOAD
-  segment facts, dynamic-table range facts, relocation containment, and
-  executable call targets.
-- **Discover** produces a closed `LoadGraph`: nonempty objects, distinct names,
-  bounded dependency indices, one edge per `DT_NEEDED`, and an init order that
-  puts every dependency before its dependent.
+  segment facts, program-header table mapping for `AT_PHDR`, dynamic-table range
+  facts, relocation containment, and executable call targets.
+- **Discover** produces a closed `LoadGraph` plus `InitOrder graph`: nonempty
+  objects, distinct names, bounded dependency indices, one edge per
+  `DT_NEEDED`, and a schedule that puts every dependency before its dependent.
 - **Reloc** records the relocation formula selected by `e_machine` and resolves
   only symbols actually referenced by relocation records.
 - **Layout** carries page-math and cumulative-span facts needed to place every
@@ -50,8 +50,9 @@ inspection.
 - **ELF format**: ELF64 ET_DYN only.
 - **Architectures**: AArch64 and x86-64 dynamic relocation subsets selected by
   `e_machine`.
-- **Parsed data**: ELF header, program headers, `PT_DYNAMIC`, dynstr, dynsym
-  sized by `DT_HASH.nchain`, RELA/JMPREL, and init/fini arrays.
+- **Parsed data**: selected ELF-header metadata (`e_machine`, program-header
+  table location/count), program headers, `PT_DYNAMIC`, dynstr, dynsym sized by
+  `DT_HASH.nchain`, RELA/JMPREL, and init/fini arrays.
 - **Memory model**: in-process loading. Segments are mapped into leanload's
   address space, then `Runtime.execAndJump` transfers control without
   `execve(2)`.

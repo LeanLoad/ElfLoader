@@ -27,7 +27,7 @@ private def objectFinder : Discover.ObjectFinder CliM :=
       | none => throw s!"discover: cannot open main '{mainPath}'"
       | some mainFile => do
         let mainElf ← Parse.parseFile mainFile
-        pure (Discover.LoadedObject.ofMain mainPath mainFile mainElf)
+        pure (Discover.DiscoveredObject.ofMain mainPath mainFile mainElf)
     findDependency := fun work => do
       match ← Runtime.File.openByName work.needed work.runpath with
       | none => pure none
@@ -48,17 +48,14 @@ private def realize (bp : Finalize.BoundPlan)
     (ctorAddrs : Array UInt64) (path : String) : CliM Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
-  let programHeaderNbytes : Nat := Parse.ProgramHeaderSize * mainElf.header.e_phnum.toNat
-  let programHeaderMap ←
-    Parse.ProgramHeaderMap.ofSegments mainElf.segments mainElf.header.e_phoff programHeaderNbytes
   let entry  := mainBase + mainElf.callTargets.entry.val.val
-  let programHeaderVa := mainBase + programHeaderMap.eaddr.val
+  let programHeaderVa := mainBase + mainElf.phdrMap.eaddr.val
   let _ ← (Runtime.runLoadOps Runtime.Memory.io lo : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
   let _ ← (ctorAddrs.forM Runtime.callCtor : IO Unit)
   let stack ← Runtime.Memory.io.reserve stackBytes
-  let phnum  := mainElf.header.e_phnum.toUInt64
+  let phnum  := mainElf.phdrCount.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
   let _ ← (Runtime.execAndJump
     { entry
@@ -124,10 +121,9 @@ def debug (path : String) : CliM Unit := do
     let obj := g.objects[i]
     let elf := obj.elf
     IO.eprintln s!"[{i}] {obj.name}"
-    IO.eprintln s!"  elfType    = {repr elf.header.e_type}"
-    IO.eprintln s!"  machine    = {repr elf.header.e_machine}"
+    IO.eprintln s!"  machine    = {repr elf.machine}"
     IO.eprintln s!"  entry      = 0x{Nat.hex elf.callTargets.entry.val.toNat}"
-    IO.eprintln s!"  phnum      = {elf.header.e_phnum}"
+    IO.eprintln s!"  phnum      = {elf.phdrCount}"
     if let some sn := elf.soname  then IO.eprintln s!"  soname     = {sn}"
     if let some rp := elf.runpath then IO.eprintln s!"  runpath    = {rp}"
     if !elf.needed.isEmpty then

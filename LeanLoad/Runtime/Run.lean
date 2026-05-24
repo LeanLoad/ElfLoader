@@ -6,7 +6,7 @@ module interprets that tree through an explicit `Memory` capability, in
 protocol order.
 -/
 
-import LeanLoad.Runtime.Memory
+import LeanLoad.Runtime
 import LeanLoad.Finalize.LoadOps
 
 namespace LeanLoad.Runtime

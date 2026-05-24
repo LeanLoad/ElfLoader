@@ -9,7 +9,7 @@ observed file-size witness for the header's file image
 
 import LeanLoad.Parse.LoadMap.ProgramHeader.Raw
 import LeanLoad.Parse.Basic
-import LeanLoad.Runtime.File
+import LeanLoad.Runtime
 
 namespace LeanLoad.Parse
 

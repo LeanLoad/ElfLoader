@@ -2,7 +2,7 @@
 Init-order predicates used while building and after finalizing an `InitOrder`.
 -/
 
-import LeanLoad.Discover.Basic
+import LeanLoad.Discover
 
 namespace LeanLoad.Discover
 
@@ -40,14 +40,6 @@ private theorem List.getElem?_eq_some_inj_of_nodup {α : Type u} {xs : List α}
           | succ j =>
               simp at hi hj
               exact congrArg Nat.succ (ih h_tail hi hj)
-
-/-- `a` appears before `b` in an array of natural indices. This is the raw
-    postorder relation used before `InitOrder.order` wraps indices as `Fin`s. -/
-def PostBefore (order : Array Nat) (a b : Nat) : Prop :=
-  ∃ ia ib : Nat,
-    order[ia]? = some a ∧
-    order[ib]? = some b ∧
-    ia < ib
 
 /-- The left endpoint of a `PostBefore` witness appears in the order. -/
 theorem PostBefore.left_mem {order : Array Nat} {a b : Nat}
@@ -113,5 +105,101 @@ theorem PostBefore.not_reverse_of_nodup {order : Array Nat} (h_nodup : order.toL
   omega
 
 end LoadGraph
+
+namespace InitOrder
+
+/-- `a` appears before `b` in this init order.
+
+    The arguments are `Fin g.objects.size`, so the index-in-bounds part of the
+    init-order invariant is carried by the type. -/
+def InitBefore {g : LoadGraph} (init : InitOrder g) (a b : Fin g.objects.size) : Prop :=
+  ∃ ia ib : Nat,
+    init.order[ia]? = some a ∧
+    init.order[ib]? = some b ∧
+    ia < ib
+
+/-- Nat-index wrapper around `InitBefore`, useful when working from `g.Step`
+    edges, whose endpoints are Nat-valued. Bounds are carried by the `Fin`
+    entries inside `initOrder`; this wrapper intentionally compares their
+    underlying natural indices. -/
+def InitBeforeIdx {g : LoadGraph} (init : InitOrder g) (a b : Nat) : Prop :=
+  LoadGraph.PostBefore (init.order.map (fun ix => ix.val)) a b
+
+/-- Every object index appears in `init.order`. Bounds are carried by the `Fin`
+    entries; this predicate names the coverage half of the init-order
+    permutation witness. -/
+def Covers {g : LoadGraph} (init : InitOrder g) : Prop :=
+  ∀ i, i < g.objects.size → i ∈ (init.order.map (fun ix => ix.val)).toList
+
+/-- Init-order topological property for produced graphs.
+
+    For a direct dependency edge `i → j`, the dependency `j` appears before its
+    dependent `i`. Discover rejects active-stack cycles while building the graph;
+    gabi 08 leaves cyclic init ordering undefined. -/
+def RespectsDeps {g : LoadGraph} (init : InitOrder g) : Prop :=
+  ∀ i j, g.Step i j → init.InitBeforeIdx j i
+
+theorem covers_spec {g : LoadGraph} (init : InitOrder g) :
+    init.Covers :=
+  init.covers
+
+theorem respectsDeps_spec {g : LoadGraph} (init : InitOrder g) :
+    init.RespectsDeps := by
+  intro i j h_step
+  exact init.respectsDeps i j h_step
+
+/-- Every value in an `InitOrder` is a valid object index. -/
+theorem mem_lt_objects {g : LoadGraph} (init : InitOrder g) {i : Nat}
+    (h_mem : i ∈ (init.order.map (fun ix => ix.val)).toList) :
+    i < g.objects.size := by
+  rw [Array.toList_map] at h_mem
+  rw [List.mem_map] at h_mem
+  rcases h_mem with ⟨ix, _h_ix_mem, h_eq⟩
+  rw [← h_eq]
+  exact ix.isLt
+
+/-- `InitOrder.covers` plus Fin-typed entries characterises order membership. -/
+theorem mem_iff_lt_objects {g : LoadGraph} (init : InitOrder g) {i : Nat} :
+    i ∈ (init.order.map (fun ix => ix.val)).toList ↔ i < g.objects.size := by
+  constructor
+  · exact init.mem_lt_objects
+  · intro h_lt
+    exact init.covers i h_lt
+
+/-- The left endpoint of an init-before relation is a valid object index. -/
+theorem InitBeforeIdx.left_lt_objects {g : LoadGraph} (init : InitOrder g) {a b : Nat}
+    (h : init.InitBeforeIdx a b) : a < g.objects.size :=
+  init.mem_lt_objects (LoadGraph.PostBefore.left_mem h)
+
+/-- The right endpoint of an init-before relation is a valid object index. -/
+theorem InitBeforeIdx.right_lt_objects {g : LoadGraph} (init : InitOrder g) {a b : Nat}
+    (h : init.InitBeforeIdx a b) : b < g.objects.size :=
+  init.mem_lt_objects (LoadGraph.PostBefore.right_mem h)
+
+/-- A duplicate-free init order cannot put one index before itself. -/
+theorem InitBeforeIdx.ne {g : LoadGraph} (init : InitOrder g) {a b : Nat}
+    (h : init.InitBeforeIdx a b) : a ≠ b := by
+  exact LoadGraph.PostBefore.ne_of_nodup
+    (by simpa [Array.toList_map] using init.nodup) h
+
+/-- A duplicate-free init order cannot place `a` before `b` and `b` before `a`. -/
+theorem InitBeforeIdx.not_reverse {g : LoadGraph} (init : InitOrder g) {a b : Nat}
+    (h : init.InitBeforeIdx a b) : ¬ init.InitBeforeIdx b a := by
+  exact LoadGraph.PostBefore.not_reverse_of_nodup
+    (by simpa [Array.toList_map] using init.nodup) h
+
+/-- A certified init order rules out direct self-dependencies. -/
+theorem step_ne {g : LoadGraph} (init : InitOrder g) {i j : Nat}
+    (h : g.Step i j) : j ≠ i := by
+  exact InitBeforeIdx.ne init (init.respectsDeps_spec i j h)
+
+/-- A certified init order rules out direct two-node dependency cycles. -/
+theorem step_not_reverse {g : LoadGraph} (init : InitOrder g) {i j : Nat}
+    (h : g.Step i j) : ¬ g.Step j i := by
+  have h_before := init.respectsDeps_spec i j h
+  intro h_rev
+  exact InitBeforeIdx.not_reverse init h_before (init.respectsDeps_spec j i h_rev)
+
+end InitOrder
 
 end LeanLoad.Discover
