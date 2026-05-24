@@ -29,7 +29,7 @@ queue to empty.
 
 import LeanLoad.Discover.Graph
 
-namespace LeanLoad.Reloc.Symbol
+namespace LeanLoad.Reloc
 
 open LeanLoad
 open LeanLoad.Discover (LoadGraph)
@@ -315,4 +315,4 @@ theorem bfsOrder_head (g : LoadGraph) :
 -- elements".
 -- ============================================================================
 
-end LeanLoad.Reloc.Symbol
+end LeanLoad.Reloc

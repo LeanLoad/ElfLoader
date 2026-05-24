@@ -67,14 +67,14 @@ end WorkItem
     `Fin`-total downstream access, with complete `DT_NEEDED` edges. The
     specific *traversal* order Discover used is an implementation detail: only
     `[0] = main` is spec-relevant. Consumers derive schedules from `deps`, e.g.
-    BFS for symbol resolution (`Reloc.Symbol.bfsOrder`) and DFS post-order for
+    BFS for symbol resolution (`Reloc.bfsOrder`) and DFS post-order for
     init/fini (`InitOrder`). -/
 structure LoadGraph where
   /-- The discovered objects, indexed in an implementation-defined order
       whose only spec-relevant property is `objects[0] = main` (the
       `Discover` seed). Consumers that need a particular traversal
       order compute it explicitly from `deps` — e.g. BFS for symbol resolution
-      (`Reloc.Symbol.bfsOrder`) and DFS post-order for init (`InitOrder`). -/
+      (`Reloc.bfsOrder`) and DFS post-order for init (`InitOrder`). -/
   objects     : Array DiscoveredObject
   /-- Per-object dependency indices, recorded during discovery. Parallel to
       `objects` and complete: every NEEDED has been resolved to an

@@ -42,7 +42,8 @@ failure branch.
 -/
 
 import LeanLoad.Discover.Order
-import LeanLoad.Reloc.Symbol
+import LeanLoad.Reloc.ResolutionOrder
+import LeanLoad.Reloc.Resolve
 import LeanLoad.Reloc.ABI
 import LeanLoad.Parse
 
@@ -73,14 +74,14 @@ inductive Target (objCount : Nat) where
       binds `S = 0`. -/
   | weakUnresolved
   /-- Symbol resolved: either locally defined or by BFS over the dependency graph. -/
-  | resolved (ref : Reloc.Symbol.SymRef objCount)
+  | resolved (ref : SymRef objCount)
   deriving Repr
 
 namespace Target
 
 /-- Extract the resolved provider, if any. Used by the bake step
     where both `noSymbol` and `weakUnresolved` collapse to `S = 0`. -/
-def symRef? : Target objCount → Option (Reloc.Symbol.SymRef objCount)
+def symRef? : Target objCount → Option (SymRef objCount)
   | .resolved ref => some ref
   | _             => none
 
@@ -140,7 +141,7 @@ private def resolveTarget (g : LoadGraph) (order : Array (Fin g.objects.size))
           .error s!"reloc: object[{objectIdx.val}]={g.objects[objectIdx].name} \
             references unnamed strong-undefined dynsym[{symIdx}]"
       else
-        match Reloc.Symbol.resolveByName g order entry.name with
+        match resolveByName g order entry.name with
         | some ref => return .resolved ref
         | none =>
             if entry.isWeak then
@@ -245,7 +246,7 @@ def entries (p : Result) (i : Fin p.graph.objects.size)
 
 /-- Build and validate the relocation plan for a discovered result. -/
 def ofDiscover (d : Discover.Result) : Except String Result := do
-  let order := Reloc.Symbol.bfsOrder d.graph
+  let order := bfsOrder d.graph
   let segmentRelocs ← planSegments d.graph order
   return { graph := d.graph, initOrder := d.initOrder, order, segmentRelocs }
 

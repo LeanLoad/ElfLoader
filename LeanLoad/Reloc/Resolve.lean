@@ -6,7 +6,7 @@ into `g.objects`) and runs `findInElf` on each elf in turn. Returns
 the first match, wrapped as a `SymRef g.objects.size`.
 
 Callers typically pass `order = bfsOrder g`, the BFS view from
-`Bfs.lean`. Combined that way, the three soundness theorems below
+`ResolutionOrder.lean`. Combined that way, the three soundness theorems below
 discharge the gabi 08 § Shared Object Dependencies contract:
 
   • `resolveByName_lt_size`           — `ref.symIdx` is in bounds for
@@ -20,14 +20,14 @@ discharge the gabi 08 § Shared Object Dependencies contract:
 
 The is_bfs theorem is stated abstractly over any `order` so it's a
 pure consequence of `Array.findSome?`'s first-match property; the
-BFS interpretation comes from `Bfs.bfsOrder` (combined with future
-completeness work — see `Bfs.lean`'s deferred-theorems block).
+BFS interpretation comes from `bfsOrder` (combined with future
+completeness work — see `ResolutionOrder.lean`'s deferred-theorems block).
 -/
 
-import LeanLoad.Reloc.Symbol.Find
+import LeanLoad.Reloc.Symbol
 import LeanLoad.Discover.Graph
 
-namespace LeanLoad.Reloc.Symbol
+namespace LeanLoad.Reloc
 
 open LeanLoad
 open LeanLoad.Parse (Elf)
@@ -154,4 +154,4 @@ theorem resolveByName_is_bfs {g : LoadGraph}
     rw [h_objs_eq]
     exact h_f_none
 
-end LeanLoad.Reloc.Symbol
+end LeanLoad.Reloc

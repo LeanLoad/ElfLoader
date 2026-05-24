@@ -87,11 +87,11 @@ private def graphInitOrder? : Option (Array Nat) :=
   discovery.toOption.map (fun d => d.initOrder.order.map (fun i => i.val))
 
 private def graphBfsOrder? : Option (Array Nat) :=
-  graph?.map (fun g => (Reloc.Symbol.bfsOrder g).map (fun i => i.val))
+  graph?.map (fun g => (Reloc.bfsOrder g).map (fun i => i.val))
 
 private def putsProvider? : Option Nat :=
   graph?.bind fun g =>
-    (Reloc.Symbol.resolveByName g (Reloc.Symbol.bfsOrder g) "puts").map
+    (Reloc.resolveByName g (Reloc.bfsOrder g) "puts").map
       (fun ref => ref.objectIdx.val)
 
 #guard graphNames? == some #["fixture-main", "libc.so.6", "libm.so.6"]
