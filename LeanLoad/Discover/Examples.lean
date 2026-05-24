@@ -19,7 +19,7 @@ via `Runtime.FileOps.io`) is exercised by `./run.sh` over
 `examples/build/main`.
 
 Canonical name = `elf.soname` (required) for NEEDED deps; `basename
-mainPath` for the main entry. Matches production `ObjectFinder.io` /
+mainPath` for the main entry. Matches the production object finder /
 `discover` exactly. `mockElf` defaults `soname := some "anon"` so the
 SONAME-required production policy is satisfied by default — examples
 that want to exercise the SONAME-missing error path pass
@@ -42,7 +42,7 @@ open LeanLoad.Parse (Elf)
 /-- Build a minimal `Elf` for Discover examples. `soname`, `runpath`,
     and `needed` are the only fields Discover observes; everything else is
     zeroed and the structural invariants discharge automatically.
-    `soname` defaults to `some "anon"` because production `ObjectFinder.io`
+    `soname` defaults to `some "anon"` because the production object finder
     *requires* DT_SONAME on every NEEDED-loaded `.so`. Examples that want
     to exercise the SONAME-missing error path can pass `soname := none`
     explicitly. -/
@@ -120,9 +120,8 @@ private def exampleSearchCandidates (soname : String)
       return acc
     dirs.map (fun d => s!"{d}/{soname}")
 
-/-- The example `ObjectFinder` instance: simulate `Runtime.FileOps.io` over an
-    `ExampleStore`, with the same SONAME-required policy as production
-    `ObjectFinder.io` — `findSome?` skips entries whose elf has no DT_SONAME
+/-- The example `ObjectFinder` instance: simulate production file lookup over an
+    `ExampleStore`, with the same SONAME-required policy — `findSome?` skips entries whose elf has no DT_SONAME
     (treats them as "not found"; production throws). Closure captures
     both the store and a simulated `LD_LIBRARY_PATH`. -/
 private def exampleFinder (store : ExampleStore) (envPath : Option String := none) :
@@ -134,8 +133,7 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
     findDependency := fun work => .ok <|
       (exampleSearchCandidates work.needed work.runpath envPath).findSome? fun path =>
         (store.getElf? path).bind fun elf =>
-          elf.soname.map fun name => { name, handle := (default : Runtime.File), elf }
-    fail := fun {_} msg => .error msg }
+          elf.soname.map fun name => { name, handle := (default : Runtime.File), elf } }
 
 -- ============================================================================
 -- discoverExample — the example-side counterpart to `discover`. Takes the
@@ -145,7 +143,7 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
 
 /-- Run the fully monadic Discover entry against an `ExampleStore`. The main
     object is looked up directly by path (no soname search for it — same as
-    production `ObjectFinder.io.findMain`). Main's canonical name is `basename
+    production main lookup). Main's canonical name is `basename
     mainPath` (via `LoadedObject.ofMain`, same as production). -/
 private def discoverExample (store : ExampleStore) (mainPath : String)
     (envPath : Option String := none) : Except String LoadGraph := do
@@ -260,7 +258,7 @@ private def sonameGraph : Except String LoadGraph := discoverExample sonameStore
 
 -- ---- 5. Missing dep -----------------------------------------------------
 -- main NEEDs /missing which isn't in the store → `ObjectFinder.findDependency`
--- returns none → traversal fires `finder.fail` → `.error` propagates out.
+-- returns none → traversal throws → `.error` propagates out.
 
 private def missingStore : ExampleStore := [
   ("/main", mockElf (soname := some "main") (needed := #["/missing"]))]
@@ -287,7 +285,7 @@ private def searchStore : ExampleStore := [
   | _     => false
 
 -- ---- 7. SONAME-required for NEEDED deps --------------------------------
--- A NEEDED dep without DT_SONAME is rejected: production ObjectFinder.io
+-- A NEEDED dep without DT_SONAME is rejected: the production object finder
 -- throws; `exampleFinder` (matching policy) makes the entry invisible to
 -- the store lookup (findSome? skips SONAME-less elves), surfacing as
 -- the same "cannot find" diagnostic.

@@ -52,7 +52,7 @@ private def collect (fuel : Nat) (acc : Dyntab) : Decoder Dyntab := do
   match fuel with
   | 0 => throw "dynamic table missing DT_NULL terminator (gabi 08 § Dynamic Section)"
   | fuel + 1 =>
-    let e : Entry ← Decodable.decoder
+    let e : Entry ← Decodable.decode
     let acc := acc.push e
     if e.d_tag == .null then
      return acc
@@ -134,7 +134,7 @@ def soname? (tab : Dyntab) : Except String (Option StrtabOff) :=
   (single? tab .soname).map (·.map StrtabOff.mk)
 
 /-- `DT_RUNPATH` strtab byte-offset, if present. `DT_RPATH` is intentionally not
-    consulted (deprecated by gabi 08; `Discover/IO.lean` refuses it too). -/
+    consulted (deprecated by gabi 08; the production object finder refuses it too). -/
 def runpath? (tab : Dyntab) : Except String (Option StrtabOff) :=
   (single? tab .runpath).map (·.map StrtabOff.mk)
 

@@ -6,8 +6,8 @@ proof fields are decidable, generates:
 
     instance : Decodable T where
       byteSize := Decodable.byteSize (α := F₁) + …
-      decoder := do
-        let f₁ ← Decodable.decoder
+      decode := do
+        let f₁ ← Decodable.decode
         …
         let ⟨h⟩ ← Decodable.require "T.h" (predicate over decoded fields)
         return { f₁, …, h }
@@ -68,13 +68,13 @@ private def mkInstance (typeName : Name) : CommandElabM Unit := do
     else
       let fieldType ← fieldTypeTerm typeName fieldNames fieldName
       sizes := sizes.push s!"LeanLoad.Parse.Decodable.byteSize (α := {fieldType})"
-      lets := lets.push s!"    let {field} : {fieldType} ← LeanLoad.Parse.Decodable.decoder"
+      lets := lets.push s!"    let {field} : {fieldType} ← LeanLoad.Parse.Decodable.decode"
   let fields := String.intercalate ",\n" (fieldNames.toList.map (fun f => s!"      {fieldIdent f}"))
   let byteSize := if sizes.isEmpty then "0" else String.intercalate " + " sizes.toList
   let cmdString :=
     s!"instance : LeanLoad.Parse.Decodable {typeName} where\n" ++
     s!"  byteSize := {byteSize}\n" ++
-    "  decoder := do\n" ++
+    "  decode := do\n" ++
     String.intercalate "\n" lets.toList ++
     "\n    return {\n" ++ fields ++ "\n    }"
   match runParserCategory env `command cmdString with

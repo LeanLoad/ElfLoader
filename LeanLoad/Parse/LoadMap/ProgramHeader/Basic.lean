@@ -36,10 +36,6 @@ namespace ProgramHeader
 def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count (Decodable.byteSize (α := ProgramHeader))
 
-/-- Decode `count` consecutive program-header entries from the current cursor. -/
-def decodeTable (count : Nat) : Decoder (Array ProgramHeader) :=
-  Decoder.array count (Decodable.decoder (α := ProgramHeader))
-
 end ProgramHeader
 
 end LeanLoad.Parse

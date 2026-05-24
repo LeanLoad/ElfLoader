@@ -33,10 +33,6 @@ namespace RawSymtab
 def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count (Decodable.byteSize (α := RawSym))
 
-/-- Decode `count` consecutive dynamic-symbol entries. -/
-def decode (count : Nat) : Decoder RawSymtab :=
-  Decoder.array count (Decodable.decoder (α := RawSym))
-
 end RawSymtab
 
 /-- 48-byte symbol-table fixture: the mandatory NULL symbol at index 0
@@ -70,7 +66,7 @@ section Example
 open RawSym
 
 private def parsedSymtab : Option (Array RawSym) :=
-  Decoder.run? fixtureBytes (Decoder.array 2 (Decodable.decoder (α := RawSym)))
+  (Decodable.parseArray (α := RawSym) fixtureBytes 2).toOption
 
 #guard parsedSymtab.map (·.size) = some 2
 -- NULL symbol — every field is zero.
@@ -85,12 +81,12 @@ private def parsedSymtab : Option (Array RawSym) :=
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated sym: 10 bytes when 24 expected — EOF inside the `st_value` u64 read.
 #guard
-  (Decoder.run? (fixtureBytes.extract 0 10) (Decodable.decoder (α := RawSym))).isNone
+  (Decodable.parse (α := RawSym) (fixtureBytes.extract 0 10)).toOption.isNone
 
 -- `Decoder.array` asking for 3 entries from a 2-entry (48-byte) buffer —
 -- third entry hits EOF.
 #guard
-  (Decoder.run? fixtureBytes (Decoder.array 3 (Decodable.decoder (α := RawSym)))).isNone
+  (Decodable.parseArray (α := RawSym) fixtureBytes 3).toOption.isNone
 
 end Example
 

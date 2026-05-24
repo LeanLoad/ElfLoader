@@ -1,7 +1,7 @@
 # LeanLoad Design
 
 Verified ELF loader in Lean 4. The invariant-carrying core is Lean; syscall
-effects sit behind `LeanLoad/Runtime/{FileOps,MemoryOps,ExecOps}.lean` plus C
+effects sit behind `LeanLoad/Runtime/{FileOps,MemoryOps,Exec}.lean` plus C
 shims in `LeanLoad/Runtime.c`.
 
 See `AGENTS.md` for working-style guidance.
@@ -11,14 +11,15 @@ See `AGENTS.md` for working-style guidance.
 | Stage           | Type     | Input → Output                                                                       |
 | --------------- | -------- | ------------------------------------------------------------------------------------ |
 | **Parse**       | monadic  | `Runtime.FileOps m h → h → ExceptT String m Elf` — bytes plus gabi-07 invariants on `Segment` / `Elf` |
-| **Discover**    | monadic  | `ObjectFinder m → Nat → String → m LoadGraph` — DFS over `DT_NEEDED`; deps + init order recorded inline |
+| **Discover**    | monadic  | `[MonadExceptOf String m] → ObjectFinder m → Nat → String → m LoadGraph` — DFS over `DT_NEEDED`; deps + init order recorded inline |
 | **Reloc**       | pure     | `LoadGraph → Reloc.Result` — relocation-driven symbol resolution                       |
 | **Layout**      | pure     | `Reloc.Result → Layout` — per-elf placement + cumulative span                         |
 | **Finalize**    | pure     | `BoundPlan → LoadOps rsv.addr rsv.len n` — intrinsic-safe ops                         |
 | **Runtime**     | IO       | intrinsic-safe `LoadOps → IO Unit` — mmap + zero + reloc stores + mprotect + ctor + jump; no return |
 
-Production passes `ObjectFinder.io` to the monadic `Discover.discover`: open/parse
-the main object and use the same finder for path search + dependency parsing.
+The CLI runs its orchestration in `ExceptT String IO` and passes its production
+`ObjectFinder` to `Discover.discover`: open/parse the main object and use the
+same finder for path search + dependency parsing.
 Reloc runs relocation-driven BFS lookup (strong referenced undef rejected), then
 Layout computes per-segment, per-elf, and cumulative placement. Init order is
 computed during Discover's DFS and lives on `LoadGraph.initOrder`.
@@ -47,13 +48,12 @@ re-checks.
 
 ## Trust boundary
 
-- **Verified** (Lean, no direct `@[extern]`): `Parse/`, `Discover/`
-  (excluding `Discover/IO.lean`), `Reloc/`, `Layout/`, `Finalize/`
-  and `Runtime/Basic.lean`.
+- **Verified** (Lean, no direct `@[extern]`): `Parse/`, `Discover/`,
+  `Reloc/`, `Layout/`, `Finalize/`, and `Runtime/Basic.lean`.
 - **Trusted**: `LeanLoad/Runtime.c` (~150 lines of audited C shims),
-  `LeanLoad/Runtime/{FileOps,MemoryOps,ExecOps}.lean` (FFI declarations +
+  `LeanLoad/Runtime/{FileOps,MemoryOps,Exec}.lean` (FFI declarations +
   concrete IO capability values), `LeanLoad/Runtime/Run.lean`, and the IO
-  bookends (`Discover/IO.lean`, `Main.lean`).
+  bookend (`Main.lean`).
 
 ## Scope
 
@@ -78,7 +78,7 @@ order, and planned ops.
 ## In-process loading
 
 LeanLoad loads in-process: the binary's segments are `mmap`'d into
-leanload's own address space, and the trampoline (`Runtime.ExecOps.execAndJump`
+leanload's own address space, and the trampoline (`Runtime.execAndJump`
 → `leanload_exec_and_jump` in `LeanLoad/Runtime.c`) hands off without
 replacing the process image.
 The IO load path is conditioned on:

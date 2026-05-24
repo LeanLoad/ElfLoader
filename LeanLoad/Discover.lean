@@ -9,13 +9,12 @@ witnessed dependency graph:
     init order, with invariants that make downstream access total.
   · `WorkItem` — the explicit pending dependency request consumed by the
     traversal implementation.
-  · `ResolvedObject` / `ObjectFinder` — the path-search/open/parse seam used by
-    production IO and by pure examples.
+  · `ObjectFinder` — the path-search/open/parse seam used by
+    the CLI and by pure examples.
 
 Implementation details live below `LeanLoad/Discover/`: `Discovered`
-maintains the construction state, `Traversal` resolves work items, `Finalize`
-promotes the final discovered set to `LoadGraph`, and `IO` wires the production
-finder.
+maintains the construction state, `Traversal` resolves work items, and
+`Finalize` promotes the final discovered set to `LoadGraph`.
 -/
 
 import LeanLoad.Parse
@@ -30,7 +29,7 @@ open LeanLoad.Parse
 -- LoadedObject — one entry of the graph.
 -- ============================================================================
 
-/-- One loaded object. Production policy (`Discover/IO.lean`):
+/-- One loaded object. Production policy:
     NEEDED-loaded deps must have `DT_SONAME` (used as `.name`);
     the main executable's `.name` is `basename mainPath` (executables
     conventionally don't set SONAME). -/
@@ -260,17 +259,9 @@ def ofNeededArray (runpath : Option String) (needed : Array String) :
 
 end WorkItem
 
-/-- A resolved dependency, ready to insert into the discovered set. `name`
-    is the canonical dedup key (`DT_SONAME` in production). -/
-structure ResolvedObject where
-  name   : String
-  handle : Runtime.File
-  elf    : LeanLoad.Parse.Elf
-  deriving Repr
-
 /-- Object finder seam used by discovery traversal.
 
-    Production `ObjectFinder.io` performs runtime path search, open, and checked
+    The production object finder performs runtime path search, open, and checked
     parse. Examples use an in-memory finder. -/
 structure ObjectFinder (m : Type → Type) where
   /-- Find and parse the main object. This owns the effectful boundary from a user
@@ -278,9 +269,6 @@ structure ObjectFinder (m : Type → Type) where
   findMain : String → m LoadedObject
   /-- Find a dependency for this work item. `none` means "not found"; parse failures and
       policy failures escape through the monad's error mechanism. -/
-  findDependency : WorkItem → m (Option ResolvedObject)
-  /-- Surface a fatal error. Polymorphic because callers use it in
-      continuation position. -/
-  fail    : {α : Type} → String → m α
+  findDependency : WorkItem → m (Option LoadedObject)
 
 end LeanLoad.Discover

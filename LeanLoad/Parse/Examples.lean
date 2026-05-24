@@ -7,8 +7,7 @@ The fixture here demonstrates cross-section coordination: PT_DYNAMIC's
 symtab's entry count, and so on.
 
 Crucially, `fixture` exercises the same checked `parseM` that
-production uses. Only the `FileOps` instance changes (`Runtime.FileOps.byteArray`
-vs `Runtime.FileOps.io`); section offsets are discovered via
+production uses. Only the `FileOps` instance changes; section offsets are discovered via
 the checked `LoadMap` over the parsed program headers.
 
 The fixture is also engineered to satisfy checked-parse gabi-07 checks:
@@ -62,12 +61,20 @@ def fixtureBytes : ByteArray :=
 -- Total size: sum of each section's fixture bytes.
 #guard fixtureBytes.size = 0x208                  -- 520 bytes total
 
+private def fixtureOps : Runtime.FileOps Id ByteArray :=
+  { openByName := fun _ _ => none
+    fileSize := fun bytes => UInt64.ofNat bytes.size
+    pread := fun bytes offset len =>
+      let o := offset.toNat
+      let n := len.toNat
+      bytes.extract o (o + n) }
+
 /-- Pure counterpart to production parsing: built by running the same
     checked `parseM` over in-memory `fixtureBytes`. Returns
     `Except String Elf` — the same error channel production surfaces,
     just without IO wrapping. -/
 def fixture : Except String Elf :=
-  (parseM Runtime.FileOps.byteArray fixtureBytes).run
+  (parseM fixtureOps fixtureBytes).run
 
 -- ---- Cross-section coordination `#guard`s ────────────────────────────
 -- Per-struct field decoding is checked standalone in each Raw*.lean.

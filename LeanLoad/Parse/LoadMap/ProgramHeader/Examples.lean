@@ -35,7 +35,7 @@ def programHeaderBytes : ByteArray := ⟨#[
 #guard programHeaderBytes.size == 2 * ProgramHeaderSize  -- = 112
 
 def programHeaders? : Option (Array ProgramHeader) :=
-  Decoder.run? programHeaderBytes (ProgramHeader.decodeTable 2)
+  (Decodable.parseArray (α := ProgramHeader) programHeaderBytes 2).toOption
 
 #guard programHeaders?.isSome
 
@@ -62,11 +62,11 @@ def dynamicProgramHeader : ProgramHeader := (programHeaders[1]?).getD default
 -- Truncated phdr: 20 bytes when 56 (ProgramHeaderSize) expected. EOF hits
 -- inside the `p_offset` u64 read.
 #guard
-  (Decoder.run? (programHeaderBytes.extract 0 20) (Decodable.decoder (α := ProgramHeader))).isNone
+  (Decodable.parse (α := ProgramHeader) (programHeaderBytes.extract 0 20)).toOption.isNone
 
 -- `Decoder.array` asking for 3 entries from a 2-entry buffer: third
 -- entry hits EOF.
 #guard
-  (Decoder.run? programHeaderBytes (ProgramHeader.decodeTable 3)).isNone
+  (Decodable.parseArray (α := ProgramHeader) programHeaderBytes 3).toOption.isNone
 
 end LeanLoad.Parse.Examples

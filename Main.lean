@@ -18,6 +18,25 @@ namespace Main
 
 open LeanLoad
 
+private abbrev CliM := ExceptT String IO
+
+/-- Production object finder: C-side search/open/read plus Lean-side checked parse. -/
+private def objectFinder : Discover.ObjectFinder CliM :=
+  { findMain := fun mainPath => do
+      match ← Runtime.FileOps.io.openByName mainPath none with
+      | none => throw s!"discover: cannot open main '{mainPath}'"
+      | some mainFile => do
+        let mainElf ← Parse.parseM Runtime.FileOps.io mainFile
+        pure (Discover.LoadedObject.ofMain mainPath mainFile mainElf)
+    findDependency := fun work => do
+      match ← Runtime.FileOps.io.openByName work.needed work.runpath with
+      | none => pure none
+      | some file => do
+        let elf ← Parse.parseM Runtime.FileOps.io file
+        match elf.soname with
+        | some name => pure (some { name, handle := file, elf })
+        | none      => throw s!"discover: '{work.needed}' is missing DT_SONAME (cannot dedup)" }
+
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024
 
@@ -26,22 +45,22 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
     **Does not return.** -/
 private def realize (bp : Finalize.BoundPlan)
     (lo : Finalize.LoadOps bp.rsv.addr bp.rsv.len bp.objCount)
-    (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
+    (ctorAddrs : Array UInt64) (path : String) : CliM Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
   let programHeaderNbytes : Nat := Parse.ProgramHeaderSize * mainElf.header.e_phnum.toNat
-  let programHeaderMap ← IO.ofExcept <|
+  let programHeaderMap ←
     Parse.ProgramHeaderMap.ofSegments mainElf.segments mainElf.header.e_phoff programHeaderNbytes
   let entry  := mainBase + mainElf.callTargets.entry.val.val
   let programHeaderVa := mainBase + programHeaderMap.eaddr.val
-  Runtime.runLoadOps Runtime.MemoryOps.io lo
+  let _ ← (Runtime.runLoadOps Runtime.MemoryOps.io lo : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
-  ctorAddrs.forM Runtime.ExecOps.io.callCtor
+  let _ ← (ctorAddrs.forM Runtime.callCtor : IO Unit)
   let stack ← Runtime.MemoryOps.io.reserve stackBytes
   let phnum  := mainElf.header.e_phnum.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
-  Runtime.ExecOps.io.execAndJump
+  let _ ← (Runtime.execAndJump
     { entry
       programHeaderVa
       phent
@@ -49,7 +68,8 @@ private def realize (bp : Finalize.BoundPlan)
       baseVa := 0
       stackVa := stack.val.addr
       stackLen := stack.val.len
-      argv0 := path }
+      argv0 := path } : IO Unit)
+  pure ()
 
 /-- Right-pad a string to `objCount` chars with `c`. -/
 private def padR (s : String) (objCount : Nat) (c : Char := ' ') : String :=
@@ -76,25 +96,25 @@ private def Nat.hex12 (objCount : Nat) : String :=
 #guard padR "abc" 6 '.' = "abc..."
 #guard padL "abc" 6 '.' = "...abc"
 
-/-- Discover (monadic core via IO object finder) → Reloc (resolve referenced
+/-- Discover (monadic core via CLI object finder) → Reloc (resolve referenced
     relocation symbols) → Layout → kernel-picked reservation → Finalize → realize.
     **Does not return.** -/
-def load (path : String) : IO Unit := do
-  let g ← Discover.discover Discover.ObjectFinder.io 4096 path
-  let relocPlan ← IO.ofExcept (Reloc.Result.ofGraph g)
-  let layout ← IO.ofExcept (Layout.Layout.ofRelocResult relocPlan)
+def load (path : String) : CliM Unit := do
+  let g ← Discover.discover objectFinder 4096 path
+  let relocPlan ← Reloc.Result.ofGraph g
+  let layout ← Layout.Layout.ofRelocResult relocPlan
   let rsvW ← Runtime.MemoryOps.io.reserve layout.totalSpan
   let bp : Finalize.BoundPlan :=
     { relocPlan with layout, rsv := rsvW.val, h_total := rsvW.property }
-  let witnessed ← IO.ofExcept (Finalize.build bp)
+  let witnessed ← Finalize.build bp
   let ctorAddrs := Finalize.ctorAddrs bp
   realize bp witnessed ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
-def debug (path : String) : IO Unit := do
+def debug (path : String) : CliM Unit := do
   IO.eprintln "== 1. Discover (DFS over DT_NEEDED) =="
-  let g ← Discover.discover Discover.ObjectFinder.io 4096 path
+  let g ← Discover.discover objectFinder 4096 path
   for obj in g.objects do
     IO.eprintln s!"  {obj.name}"
 
@@ -129,7 +149,7 @@ def debug (path : String) : IO Unit := do
 
   -- One-shot pure-pipeline build. Reloc resolves only symbols referenced by
   -- relocation records; Layout then consumes those planned entries.
-  let relocPlan ← IO.ofExcept (Reloc.Result.ofGraph g)
+  let relocPlan ← Reloc.Result.ofGraph g
 
   IO.eprintln "\n== 3. Reloc (resolve symbols referenced by dynamic relocations) =="
   let providerName (r : Reloc.Symbol.SymRef relocPlan.graph.objects.size) : String :=
@@ -143,7 +163,7 @@ def debug (path : String) : IO Unit := do
     let elf := relocPlan.graph.objects[objectIdx].elf
     for h_seg : segI in [:elf.segments.items.size] do
       let segIdx : Fin elf.segments.items.size := ⟨segI, h_seg.upper⟩
-      let entries ← IO.ofExcept (relocPlan.segment objectIdx segIdx)
+      let entries ← relocPlan.segment objectIdx segIdx
       for entry in entries do
         relocsTotal := relocsTotal + 1
         match entry.target with
@@ -155,7 +175,7 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"relocs: {relocsTotal}, resolved: {resolvedTotal}, \
     weak unresolved: {weakTotal}, no-symbol: {noSymbolTotal}"
 
-  let layout ← IO.ofExcept (Layout.Layout.ofRelocResult relocPlan)
+  let layout ← Layout.Layout.ofRelocResult relocPlan
 
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
   let lp := layout
@@ -209,7 +229,7 @@ def debug (path : String) : IO Unit := do
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + (entry.r_offset.val)).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let lo ← IO.ofExcept (Finalize.build bp)
+  let lo ← Finalize.build bp
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
     {lo.stores.size} stores, \
@@ -224,17 +244,19 @@ def debug (path : String) : IO Unit := do
   IO.eprintln "\n== 7. Runtime.Run → callCtors → execAndJump (does not return) =="
   realize bp lo ctorAddrs path
 
+private def runCli (action : CliM Unit) : IO UInt32 := do
+  IO.ofExcept (← action.run)
+  return 0
+
 end Main
 
 /-- LeanLoad CLI. -/
 def main (args : List String) : IO UInt32 := do
   match args with
   | ["--debug", path] =>
-    Main.debug path
-    return 0
+    Main.runCli (Main.debug path)
   | [path] =>
-    Main.load path
-    return 0
+    Main.runCli (Main.load path)
   | _ =>
     IO.eprintln "usage: leanload [--debug] <path-to-elf>"
     return 1

@@ -112,7 +112,7 @@ private def okEq [BEq α] (actual : Except String α) (expected : α) : Bool :=
 
 -- `DT_RPATH` is intentionally not consulted: a table with only
 -- `DT_RPATH` (no `DT_RUNPATH`) yields `runpath = none`. README
--- + `Discover/IO.lean` + `Runtime.c` all agree on this policy;
+-- + the production object finder + `Runtime.c` all agree on this policy;
 -- the Parse layer enforces it by simply not reading `DT_RPATH`.
 private def rpathOnlyTab : Dyntab := #[
   { d_tag := .rpath, d_un := 0x42 },
@@ -156,7 +156,7 @@ private def symtabWithoutSymentTab : Dyntab := #[
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated entry: 10 bytes when 16 expected — EOF inside the `d_un` u64 read.
 #guard
-  (Decoder.run? (dynBytes.extract 0 10) (Decodable.decoder (α := Dyntab.Entry))).isNone
+  (Decoder.run? (dynBytes.extract 0 10) (Decodable.decode (α := Dyntab.Entry))).isNone
 
 -- Zero-byte `.dynamic` has no mandatory DT_NULL terminator, so parsing fails.
 #guard

@@ -6,8 +6,8 @@ musl libc.
 
 Architecture: an **invariant-carrying Lean middle** — `Parse` → `Discover` →
 `Reloc` → `Layout` → `Finalize` — with trusted IO instantiations at the edges:
-`ObjectFinder.io` (open/path-search/read) at the front and `Runtime.Run` +
-`execAndJump` (mmap + writes + control transfer) at the back.
+the CLI's production object finder (open/path-search/read) at the front and
+`Runtime.Run` + `execAndJump` (mmap + writes + control transfer) at the back.
 
 https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c32116342/run.log#L1-L319
 
@@ -277,7 +277,7 @@ LeanLoad/
     Dynamic/               .dynamic table, strtab/symtab, relocation staging
     Examples.lean          checked parse fixture and cross-section #guards
   Discover.lean            public Discover interface: LoadedObject, LoadGraph,
-                           WorkItem, ResolvedObject, monadic ObjectFinder
+                           WorkItem, monadic ObjectFinder
   Discover/
     Graph.lean             recordEdge / findLoadedIdx construction helpers
     Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
@@ -285,7 +285,6 @@ LeanLoad/
     Traversal.lean         WorkResult / WorkListAcc + mutual `discoverWork` /
                            `discoverWorkList`
     Finalize.lean          monadic `discover` top-level (promotes final state to LoadGraph)
-    IO.lean                ObjectFinder.io (Runtime.FileOps.io → Parse.parseM)
     Examples.lean          private in-memory ObjectFinder + #guard scenarios
                            (linear/diamond/cycle/SONAME/search-order)
   Reloc.lean               base-free relocation planning over the discovered graph
@@ -308,7 +307,7 @@ LeanLoad/
     Basic.lean             runtime-facing data types: File, Reserve, op records
     FileOps.lean           object search/open, file size, and pread capability
     MemoryOps.lean         reserve, mmapFile, zero, store, and mprotect capability
-    ExecOps.lean           constructor calls and final jump capability
+    Exec.lean              constructor calls and final jump
     Run.lean               capability-polymorphic interpreter for finalized LoadOps
   Runtime.c                C shims behind the @[extern] declarations
   Examples.lean            cross-stage `#guard` walkthrough (synthetic fixtures)

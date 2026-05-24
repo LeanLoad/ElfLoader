@@ -59,22 +59,6 @@ def io : FileOps IO File :=
        throw (IO.userError s!"pread out of bounds: offset 0x{offset.toNat}, \
          len {len.toNat}, file size {f.size.toNat}") }
 
-/-- Pure in-memory file ops for parse fixtures and tests. `openByName` is absent;
-    callers that need path lookup should provide their own store-backed ops. -/
-def byteArray : FileOps Id ByteArray :=
-  { openByName := fun _ _ => none
-    fileSize := fun bytes => UInt64.ofNat bytes.size
-    pread := fun bytes offset len =>
-      let o := offset.toNat
-      let n := len.toNat
-      bytes.extract o (o + n) }
-
-#guard
-  (byteArray.pread ⟨#[0x1, 0x2]⟩ 0 2).size == 2
-
-#guard
-  (byteArray.pread ⟨#[0x1, 0x2, 0x3]⟩ 0 3).size == 3
-
 end FileOps
 
 end Runtime

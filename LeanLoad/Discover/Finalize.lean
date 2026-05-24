@@ -30,7 +30,8 @@ open LeanLoad
     `LoadGraph` output. The fuel cap is a Lean-termination concession
     (each new push strictly grows `objects.size`, so a true upper bound
     is "the total number of transitively-needed sonames"). -/
-def discoverFrom {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel : Nat)
+private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
+    (finder : ObjectFinder m) (fuel : Nat)
     (mainObj : LoadedObject) : m LoadGraph := do
   let s0 := Discovered.initial mainObj
   let initialWork := WorkItem.ofNeededArray mainObj.elf.runpath mainObj.elf.needed
@@ -181,7 +182,8 @@ def discoverFrom {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel :
 /-- Fully monadic Discover entry point. The finder owns both the effectful
     `mainPath → LoadedObject` step and dependency lookup; traversal/finalization
     are shared by production IO and pure examples. -/
-def discover {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel : Nat)
+def discover {m : Type → Type} [Monad m] [MonadExceptOf String m]
+    (finder : ObjectFinder m) (fuel : Nat)
     (mainPath : String) : m LoadGraph := do
   let mainObj ← finder.findMain mainPath
   discoverFrom finder fuel mainObj

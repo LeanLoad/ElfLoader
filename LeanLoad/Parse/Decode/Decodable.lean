@@ -10,9 +10,21 @@ namespace LeanLoad.Parse
     blobs use explicit `Decoder` values instead of a `Decodable` instance. -/
 class Decodable (α : Type) where
   byteSize : Nat
-  decoder : Decoder α
+  decode : Decoder α
 
 namespace Decodable
+
+/-- Decode exactly `count` fixed-width entries. -/
+def decodeArray [Decodable α] (count : Nat) : Decoder (Array α) :=
+  Decoder.array count (Decodable.decode (α := α))
+
+/-- Parse one fixed-width value from a byte buffer. -/
+def parse [Decodable α] (bytes : ByteArray) : Except String α :=
+  Decoder.run bytes (Decodable.decode (α := α))
+
+/-- Parse exactly `count` fixed-width values from a byte buffer. -/
+def parseArray [Decodable α] (bytes : ByteArray) (count : Nat) : Except String (Array α) :=
+  Decoder.run bytes (decodeArray (α := α) count)
 
 /-- Check a proof field while decoding. Derived decoders use this for `Prop`
     fields: earlier decoded fields determine the proposition; failure reports the
@@ -27,19 +39,27 @@ end Decodable
 
 instance : Decodable UInt8 where
   byteSize := 1
-  decoder := Decoder.u8
+  decode := Decoder.u8
 
 instance : Decodable UInt16 where
   byteSize := 2
-  decoder := Decoder.u16le
+  decode := Decoder.u16le
 
 instance : Decodable UInt32 where
   byteSize := 4
-  decoder := Decoder.u32le
+  decode := Decoder.u32le
 
 instance : Decodable UInt64 where
   byteSize := 8
-  decoder := Decoder.u64le
+  decode := Decoder.u64le
+
+#guard
+  match Decodable.parse (α := UInt8) (ByteArray.mk #[0x12]) with
+  | .ok 0x12 => true
+  | _        => false
+
+#guard (Decodable.parseArray (α := UInt8) (ByteArray.mk #[0x12, 0x34]) 2).toOption =
+  some #[0x12, 0x34]
 
 /-- Semantic decoding from an on-disk scalar to a typed field.
 
@@ -52,8 +72,8 @@ class DecodableFromScalar (α : Type) (Backing : outParam Type) where
     classify it, surfacing classifier failures as decoder failures. -/
 instance [M : DecodableFromScalar α Backing] [Decodable Backing] : Decodable α where
   byteSize := Decodable.byteSize (α := Backing)
-  decoder := do
-    let raw : Backing ← Decodable.decoder (α := Backing)
+  decode := do
+    let raw : Backing ← Decodable.decode (α := Backing)
     match M.fromScalar raw with
     | .ok v     => return v
     | .error e  => throw e

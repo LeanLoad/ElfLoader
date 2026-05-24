@@ -15,8 +15,8 @@ stage re-checks it — the witness travels in the type.
     targets.
 
   • Discover — monadic DFS over `DT_NEEDED` via `ObjectFinder m`;
-    production instantiates it with path search/open/parse in IO. The output
-    type witnesses non-emptiness, name `Nodup`, and init-order coverage.
+    production instantiates it with path search/open/parse in `ExceptT String IO`.
+    The output type witnesses non-emptiness, name `Nodup`, and init-order coverage.
 
   • Reloc — pure, base-free relocation planning. Takes `LoadGraph`,
     walks dynamic relocation records, resolves only referenced symbols by
@@ -49,7 +49,6 @@ import LeanLoad.Reloc.ABI
 import LeanLoad.Runtime
 
 import LeanLoad.Discover
-import LeanLoad.Discover.IO
 import LeanLoad.Discover.Examples  -- pure #guard scenarios; elaborate on build
 
 import LeanLoad.Layout.Align

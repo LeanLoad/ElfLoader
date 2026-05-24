@@ -32,10 +32,6 @@ namespace RawRela
 def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count (Decodable.byteSize (α := RawRela))
 
-/-- Decode `count` consecutive `Elf64_Rela` entries. -/
-def decodeTable (count : Nat) : Decoder (Array RawRela) :=
-  Decoder.array count (Decodable.decoder (α := RawRela))
-
 /-- Convert a `DT_RELASZ`/`DT_PLTRELSZ` byte size into an entry count,
     rejecting sizes that are not a whole number of `Elf64_Rela` entries. -/
 def countFromByteSize (size : ByteSize) : Except String Nat :=
@@ -68,7 +64,7 @@ section Example
 open RawRela
 
 private def parsedRelas : Option (Array RawRela) :=
-  Decoder.run? fixtureBytes (Decoder.array 1 (Decodable.decoder (α := RawRela)))
+  (Decodable.parseArray (α := RawRela) fixtureBytes 1).toOption
 
 #guard parsedRelas.map (·.size) = some 1
 #guard (parsedRelas.bind (·[0]?)).map (·.r_offset) = some 0x100
@@ -78,12 +74,12 @@ private def parsedRelas : Option (Array RawRela) :=
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated rela: 15 bytes when 24 expected — EOF inside the `r_info` u64 read.
 #guard
-  (Decoder.run? (fixtureBytes.extract 0 15) (Decodable.decoder (α := RawRela))).isNone
+  (Decodable.parse (α := RawRela) (fixtureBytes.extract 0 15)).toOption.isNone
 
 -- `Decoder.array` asking for 2 entries from a 1-entry buffer — second
 -- entry hits EOF.
 #guard
-  (Decoder.run? fixtureBytes (Decoder.array 2 (Decodable.decoder (α := RawRela)))).isNone
+  (Decodable.parseArray (α := RawRela) fixtureBytes 2).toOption.isNone
 
 end Example
 

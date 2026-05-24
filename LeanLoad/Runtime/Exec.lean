@@ -1,5 +1,5 @@
 /-
-Final execution runtime capability.
+Final execution runtime operations.
 
 Constructors and the final jump are intentionally separated from memory loading:
 they run user code / transfer control and are not part of the pure finalized
@@ -22,13 +22,6 @@ structure ExecArgs where
   argv0           : String
   deriving Repr, Inhabited
 
-/-- Operations that execute loaded code. -/
-structure ExecOps (m : Type → Type) where
-  callCtor    : UInt64 → m Unit
-  execAndJump : ExecArgs → m Unit
-
-namespace ExecOps
-
 @[extern "leanload_exec_call_ctor"]
 private opaque callCtorRaw (addr : UInt64) : IO Unit
 
@@ -43,16 +36,15 @@ private opaque execAndJumpRaw
   (stackLen : UInt64)
   (argv0  : @& String) : IO Unit
 
-/-- Production execution ops backed by the C runtime. -/
-def io : ExecOps IO :=
-  { callCtor := callCtorRaw
-    execAndJump := fun a =>
-      execAndJumpRaw a.entry a.programHeaderVa a.phent a.phnum a.baseVa
-        a.stackVa a.stackLen a.argv0 }
+/-- Call one constructor function in the loaded image. -/
+def callCtor (addr : UInt64) : IO Unit :=
+  callCtorRaw addr
 
-end ExecOps
+/-- Transfer control to the loaded program. Does not return on success. -/
+def execAndJump (a : ExecArgs) : IO Unit :=
+  execAndJumpRaw a.entry a.programHeaderVa a.phent a.phnum a.baseVa
+    a.stackVa a.stackLen a.argv0
 
 end Runtime
 
 end LeanLoad
-

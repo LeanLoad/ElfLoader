@@ -34,15 +34,16 @@ private def parseBytesAt [Monad m] (ops : Runtime.FileOps m h) (file : h)
   let bytes ← readBytes ops file off len
   liftExcept (Decoder.run bytes decoder)
 
-private def parseAt [Monad m] [Decodable α] (ops : Runtime.FileOps m h)
-    (file : h) (off : FileOff) : ExceptT String m α :=
-  parseBytesAt ops file off (ByteSize.ofNat (Decodable.byteSize (α := α)))
-    (Decodable.decoder (α := α))
+private def parse [Monad m] [Decodable α] (ops : Runtime.FileOps m h)
+    (file : h) (off : FileOff) : ExceptT String m α := do
+  let bytes ← readBytes ops file off (ByteSize.ofNat (Decodable.byteSize (α := α)))
+  liftExcept (Decodable.parse (α := α) bytes)
 
-private def parseArrayAt [Monad m] [Decodable α] (ops : Runtime.FileOps m h)
-    (file : h) (off : FileOff) (count : Nat) : ExceptT String m (Array α) :=
-  parseBytesAt ops file off (ByteSize.ofEntries count (Decodable.byteSize (α := α)))
-    (Decoder.array count (Decodable.decoder (α := α)))
+private def parseArray [Monad m] [Decodable α] (ops : Runtime.FileOps m h)
+    (file : h) (off : FileOff) (count : Nat) : ExceptT String m (Array α) := do
+  let bytes ← readBytes ops file off
+    (ByteSize.ofEntries count (Decodable.byteSize (α := α)))
+  liftExcept (Decodable.parseArray (α := α) bytes count)
 
 /-- The checked form of an ELF.
 
@@ -91,11 +92,11 @@ private def readMappedSymtab [Monad m] (ops : Runtime.FileOps m h) (file : h)
   | none, some _ => throw "parse: DT_HASH present without DT_SYMTAB"
   | some symVa, some hashVa =>
       let hashRange : EaddrRange := { start := hashVa, size := RawSysVHash.byteSize }
-      let hash : RawSysVHash ← parseMapped ops file view hashRange Decodable.decoder
+      let hash : RawSysVHash ← parseMapped ops file view hashRange Decodable.decode
       if hash.symCount == 0 then
         return #[]
       let symRange : EaddrRange := { start := symVa, size := RawSymtab.tableByteSize hash.symCount }
-      parseMapped ops file view symRange (RawSymtab.decode hash.symCount)
+      parseMapped ops file view symRange (Decodable.decodeArray (α := RawSym) hash.symCount)
 
 /-- Read a `DT_RELA` / `DT_JMPREL` table. -/
 private def readMappedRelaTable [Monad m] (ops : Runtime.FileOps m h) (file : h)
@@ -108,7 +109,7 @@ private def readMappedRelaTable [Monad m] (ops : Runtime.FileOps m h) (file : h)
         match RawRela.countFromByteSize range.size with
         | .ok count => pure count
         | .error e  => throw s!"parse: {label}: {e}"
-      parseMapped ops file view range (RawRela.decodeTable count)
+      parseMapped ops file view range (Decodable.decodeArray (α := RawRela) count)
 
 /-- Read `DT_JMPREL` after validating its separate `DT_PLTREL` encoding tag. -/
 private def readMappedJmprel [Monad m] (ops : Runtime.FileOps m h) (file : h)
@@ -132,7 +133,7 @@ private def readMappedEaddrArray [Monad m] (ops : Runtime.FileOps m h) (file : h
       let entrySize := Decodable.byteSize (α := Eaddr)
       if bytes % entrySize == 0 then
         parseMapped ops file view range
-          (Decoder.array (bytes / entrySize) (Decodable.decoder (α := Eaddr)))
+          (Decodable.decodeArray (α := Eaddr) (bytes / entrySize))
       else
         throw s!"parse: {label}: byte size {bytes} is not a multiple of {entrySize}"
 
@@ -178,9 +179,9 @@ end Dyntab
 
 /-- Monad-polymorphic checked parse over the runtime file capability. -/
 def parseM [Monad m] (ops : Runtime.FileOps m h) (file : h) : ExceptT String m Elf := do
-  let header : ElfHeader ← parseAt ops file 0
+  let header : ElfHeader ← parse ops file 0
   let programHeaders ←
-    parseArrayAt (α := ProgramHeader) ops file header.e_phoff header.e_phnum.toNat
+    parseArray (α := ProgramHeader) ops file header.e_phoff header.e_phnum.toNat
   let view ←
     match LoadMap.ofHeaders (ops.fileSize file) header programHeaders with
     | .ok view => pure view

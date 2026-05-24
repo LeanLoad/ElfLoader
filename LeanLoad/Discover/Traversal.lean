@@ -170,19 +170,19 @@ mutual
 
 /-- Find a work item's dependency, dedup, push-on-miss, recurse into child work items.
     Fuel-bounded; mutual with `discoverWorkList`. -/
-def discoverWork {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel : Nat)
+def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
+    (finder : ObjectFinder m) (fuel : Nat)
     (active : Discovered.ActiveStack) (s0 : Discovered) (h_active : s0.DoneOrActive active)
     (work : WorkItem) :
     m (WorkResult active s0) := do
   match fuel with
-  | 0 => finder.fail "discover: fuel exhausted"
+  | 0 => throw "discover: fuel exhausted"
   | fuel + 1 =>
     match ← finder.findDependency work with
-    | none => finder.fail s!"discover: cannot find '{work.needed}' (runpath={work.runpath})"
-    | some resolved =>
-      let canonical := resolved.name
-      let handle := resolved.handle
-      let elf := resolved.elf
+    | none => throw s!"discover: cannot find '{work.needed}' (runpath={work.runpath})"
+    | some obj =>
+      let canonical := obj.name
+      let elf := obj.elf
       match h_lookup : s0.nameIx[canonical]? with
       | some idx =>
         -- Dedup hit: completed objects are shared; active hits are dependency
@@ -191,7 +191,7 @@ def discoverWork {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel :
         have h_idx : idx < s0.objects.size :=
           findLoadedIdx_lt ((s0.nameIxValid canonical).symm.trans h_lookup)
         if h_cycle : idx ∈ active then
-          finder.fail s!"discover: dependency cycle involving '{canonical}'"
+          throw s!"discover: dependency cycle involving '{canonical}'"
         else
           have h_done : idx ∈ s0.postOrder.toList := by
             exact Or.resolve_right (h_active idx h_idx) h_cycle
@@ -214,7 +214,6 @@ def discoverWork {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel :
       | none =>
         -- Miss: push obj at newIdx, then recurse into child work items,
         -- recording each child edge on return.
-        let obj : LoadedObject := { name := canonical, handle, elf }
         let newIdx := s0.objects.size
         let s1 := Discovered.pushObject s0 obj h_lookup
         have h_s1_size : s1.objects.size = s0.objects.size + 1 :=
@@ -231,7 +230,7 @@ def discoverWork {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel :
             rw [s1.pendingSize]; exact h_newIdx_lt_s1))
               = childWork.length := by
           rw [Discovered.pushObject_pending_new s0 obj h_lookup]
-          simp [obj, childWork, WorkItem.ofNeededArray, Array.length_toList]
+          simp [childWork, WorkItem.ofNeededArray, Array.length_toList, elf]
         -- s1's postOrder = s0's postOrder (pushObject doesn't touch it).
         -- newIdx = s0.size is not in s0.postOrder (by s0.postOrderBounds).
         have h_newIdx_not_in_s1 : newIdx ∉ s1.postOrder.toList := by
@@ -433,7 +432,8 @@ def discoverWork {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel :
 /-- Process a list of dependency work items for an object at `newIdx`. For each
     item: recurse via `discoverWork`, then `recordDep newIdx childIdx` into the
     returned state. Threads `WorkListAcc` through the recursion. -/
-def discoverWorkList {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel : Nat)
+def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
+    (finder : ObjectFinder m) (fuel : Nat)
     (active : Discovered.ActiveStack) (s0 : Discovered) (newIdx : Nat)
     (work : List WorkItem) (acc : WorkListAcc active s0 newIdx work.length) :
     m (WorkListAcc active s0 newIdx 0) := do
