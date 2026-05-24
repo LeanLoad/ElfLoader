@@ -1,11 +1,12 @@
 /-
-Builder: turn a `BoundPlan` into an intrinsic-safe `LoadOps` tree ready for the
-runtime interpreter. Fully constructive — no decidable safety
-fallback, no `.error` branch for safety.
+Builder: turn a `BoundPlan` into a complete pure `Finalize.Result` ready for the
+runtime interpreter. Fully constructive — no decidable safety fallback, no
+`.error` branch for safety.
 
-Two top-level entry points:
-  • `build`     — pure: `BoundPlan → intrinsic-safe LoadOps`.
-                  Returns `LoadOps bp.rsv.addr bp.rsv.len bp.objCount`.
+Public entry point:
+  • `build`     — pure: `BoundPlan → Finalize.Result bp`.
+                  Returns intrinsic-safe `LoadOps` plus entry/init/fini
+                  `CallOp`s over the same bound plan.
                   The safety fields are built structurally:
                     1. `buildSegment` per segment — combines
                        `setupSegment_*_eq` (closed form of (addr, len))
@@ -23,21 +24,12 @@ Two top-level entry points:
                   The only `Except` failure path is `bakeReloc`'s
                   32-bit overflow check (psABI per-relocation
                   `OVERFLOW_CHECK`).
-  • `ctorCalls` — pure: `BoundPlan → Array (CallOp bp)`. Resolves each
-                  init-array entry through the per-elf base, in DFS
-                  post-order; ET_DYN entries get the chosen base added,
-                  zero entries are skipped, and every emitted address
-                  carries an executable-segment witness.
+Private helpers resolve entry/init/fini targets through the per-elf base; ET_DYN
+entries get the chosen base added, zero entries are skipped for init/fini arrays,
+and every emitted address carries an executable-segment witness.
 
-`Main.realize` consumes `build`'s witnessed result via the runtime interpreter.
-There is no separate `safe` entry point.
-
-The two recursive constructions (segments-of-an-elf, elves-of-the-
-layout) share one generic helper, `buildSafeArray`: given a `count`
-and a per-index `Except`-returning step, it threads a per-index
-invariant `P k b` through `count` push extensions. Both
-`buildElfSegments` and `buildLoadElves` are thin wrappers — the
-push-extension proof obligations live in `buildSafeArrayAux` only.
+`Main.realize` consumes `build`'s packed result via the runtime interpreter. There
+is no separate `safe` entry point.
 -/
 
 import LeanLoad.Finalize.LoadOps
@@ -49,71 +41,6 @@ namespace LeanLoad.Finalize
 open LeanLoad
 open LeanLoad.Parse (Elf)
 open LeanLoad.Reloc.ABI (Formula)
-
--- ============================================================================
--- buildSafeArray — generic helper for "build an array of `count`
--- elements, each satisfying a per-index invariant `P k b`". Used by
--- `buildElfSegments` (segments-of-an-elf) and `buildLoadElves`
--- (elves-of-the-layout). Both were nearly-identical 70-line aux
--- functions before extraction.
--- ============================================================================
-
-/-- Recursive helper for `buildSafeArray`. The accumulator carries:
-    `acc.size = idx` and the per-index invariant for every already-
-    built element. Each iteration steps `idx → idx + 1` by pushing one
-    element built via `step idx`. -/
-private def buildSafeArrayAux {β : Type} (count : Nat) (P : Nat → β → Prop)
-    (step : (k : Nat) → k < count → Except String { b : β // P k b })
-    (idx : Nat) (h_idx : idx ≤ count)
-    (acc : Array β)
-    (h_size : acc.size = idx)
-    (h_acc : ∀ k (h_k : k < acc.size), P k (acc[k]'h_k)) :
-    Except String { arr : Array β // arr.size = count ∧
-      ∀ k (h_k : k < arr.size), P k (arr[k]'h_k) } := by
-  exact
-    if h_done : idx = count then
-      .ok ⟨acc, h_done ▸ h_size, h_acc⟩
-    else by
-      have h_lt : idx < count := Nat.lt_of_le_of_ne h_idx h_done
-      exact do
-        let ⟨b, h_pb⟩ ← step idx h_lt
-        let acc' := acc.push b
-        have h_size' : acc'.size = idx + 1 := by
-          show (acc.push b).size = idx + 1
-          rw [Array.size_push, h_size]
-        have h_acc' : ∀ k (h_k : k < acc'.size), P k (acc'[k]'h_k) := by
-          intro k h_k
-          have h_split : k < acc.size ∨ k = acc.size := by
-            rw [Array.size_push] at h_k; omega
-          rcases h_split with h_k_lt | h_k_eq
-          · have : acc'[k]'h_k = acc[k]'h_k_lt := by
-              show (acc.push b)[k]'h_k = _
-              rw [Array.getElem_push, dif_pos h_k_lt]
-            rw [this]; exact h_acc k h_k_lt
-          · subst h_k_eq
-            have h_get : acc'[acc.size]'h_k = b := by
-              show (acc.push b)[acc.size]'h_k = b
-              rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
-            rw [h_get, show acc.size = idx from h_size]; exact h_pb
-        buildSafeArrayAux count P step (idx + 1) h_lt acc' h_size' h_acc'
-termination_by count - idx
-decreasing_by omega
-
-/-- Build an array of `count` elements where each element at index
-    `k` satisfies the predicate `P k`. The caller provides a `step`
-    that — given the index `k` and its bound — produces one element
-    with its witness, or fails with a string error.
-
-    Returns the array together with `arr.size = count` and a pointwise
-    proof `∀ k h_k, P k (arr[k]'h_k)`.
-
-    Used by `buildElfSegments` and `buildLoadElves`. -/
-def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
-    (step : (k : Nat) → k < count → Except String { b : β // P k b }) :
-    Except String { arr : Array β // arr.size = count ∧
-      ∀ k (h_k : k < arr.size), P k (arr[k]'h_k) } :=
-  buildSafeArrayAux count P step 0 (Nat.zero_le _) #[] rfl
-    (by intro k h_k; exact absurd h_k (by simp))
 
 -- ============================================================================
 -- buildSegment — assemble one intrinsic-safe `SegmentOps`.
@@ -133,7 +60,7 @@ def buildSafeArray {β : Type} (count : Nat) (P : Nat → β → Prop)
     failure source is `bakeSegmentRelocs`'s 32-bit overflow check —
     safety itself is established structurally. -/
 def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     Except String { so : SegmentOps bp.rsv.addr bp.rsv.len bp.objCount //
       so.mmap =
         (setupSegment (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap } := do
@@ -194,7 +121,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
 
 -- ============================================================================
 -- buildElfSegments — build an elf's intrinsic-safe segment array with
--- per-index `mmap_eq` invariants. A thin wrapper over `buildSafeArray`.
+-- per-index `mmap_eq` invariants.
 -- ============================================================================
 
 /-- Build an elf's segments array with per-index `mmap_eq` invariants.
@@ -202,25 +129,27 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
     `buildElf` chain to `within_elf_mmapRange_disjoint`. -/
 def buildElfSegments (bp : BoundPlan) (i : Fin bp.objCount) :
     Except String { result : Array (SegmentOps bp.rsv.addr bp.rsv.len bp.objCount) //
-      result.size = (bp.elfAt i).segments.size ∧
+      result.size = (bp.elfAt i).segmentCount ∧
       (∀ k (h_k : k < result.size)
-        (h_src : k < (bp.elfAt i).segments.size),
+        (h_src : k < (bp.elfAt i).segmentCount),
         (result[k]'h_k).mmap =
           (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap) } := do
-  -- The mmap_eq clause is wrapped in `∀ h_src` so the step's bound proof can
-  -- produce it for any equal-by-proof-irrelevance witness.
-  let ⟨arr, h_size, h_p⟩ ← buildSafeArray (bp.elfAt i).segments.size
-    (fun k so =>
-      ∀ (h_src : k < (bp.elfAt i).segments.size),
-        so.mmap = (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i)
-                    (bp.baseAt i)).mmap)
-    (fun k h_k => do
-      let ⟨so, h_mmap⟩ ← buildSegment bp i ⟨k, h_k⟩
-      -- `h_mmap` is for `⟨k, h_k⟩`; `fun _ => h_mmap` reuses it for
-      -- any `⟨k, h_src⟩` by definitional proof-irrelevance of `<`.
-      return ⟨so, fun _ => h_mmap⟩)
-  return ⟨arr, h_size,
-    fun k h_k h_src => h_p k h_k h_src⟩
+  let built ← buildFinFunction (n := (bp.elfAt i).segmentCount)
+    (β := fun j =>
+      { so : SegmentOps bp.rsv.addr bp.rsv.len bp.objCount //
+        so.mmap =
+          (setupSegment (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap })
+    (fun j => buildSegment bp i j)
+  let arr : Array (SegmentOps bp.rsv.addr bp.rsv.len bp.objCount) :=
+    Array.ofFn fun j => (built j).val
+  return ⟨arr, by simp [arr],
+    by
+      intro k h_k h_src
+      let j : Fin (bp.elfAt i).segmentCount := ⟨k, h_src⟩
+      have h_get : arr[k]'h_k = (built j).val := by
+        simp [arr, j]
+      rw [h_get]
+      exact (built j).property⟩
 
 -- ============================================================================
 -- buildElf — assemble one intrinsic-safe `ElfOps`.
@@ -236,9 +165,9 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.objCount) :
     these to land in `cross_elf_mmapRange_disjoint`. -/
 private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.objCount)
     (eo : ElfOps bp.rsv.addr bp.rsv.len bp.objCount) : Prop :=
-  eo.segments.size = (bp.elfAt i).segments.size ∧
+  eo.segments.size = (bp.elfAt i).segmentCount ∧
   (∀ k (h_k : k < eo.segments.size)
-    (h_src : k < (bp.elfAt i).segments.size),
+    (h_src : k < (bp.elfAt i).segmentCount),
     (eo.segments[k]'h_k).mmap =
       (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
 
@@ -253,9 +182,9 @@ def buildElf (bp : BoundPlan) (i : Fin bp.objCount) :
         -- Within-elf mmap disjointness: for j₁ < j₂, both segments' mmaps
         -- come from setupSegment on the corresponding source segments.
         intro j₁ j₂ h_j₁ h_j₂ h_lt m₁ m₂ h_m₁ h_m₂
-        have h_j₁_src : j₁ < (bp.elfAt i).segments.size := by
+        have h_j₁_src : j₁ < (bp.elfAt i).segmentCount := by
           rw [h_size] at h_j₁; exact h_j₁
-        have h_j₂_src : j₂ < (bp.elfAt i).segments.size := by
+        have h_j₂_src : j₂ < (bp.elfAt i).segmentCount := by
           rw [h_size] at h_j₂; exact h_j₂
         have h_mmap_eq₁ := h_mmap j₁ h_j₁ h_j₁_src
         have h_mmap_eq₂ := h_mmap j₂ h_j₂ h_j₂_src
@@ -277,7 +206,7 @@ def buildElf (bp : BoundPlan) (i : Fin bp.objCount) :
 
 -- ============================================================================
 -- buildLoadElves — build the intrinsic-safe array of ElfOps with per-elf
--- `ElfBuildInvariant` invariants. Thin wrapper over `buildSafeArray`.
+-- `ElfBuildInvariant` invariants.
 -- ============================================================================
 
 /-- Build all elves with `ElfBuildInvariant` witnesses. -/
@@ -286,18 +215,24 @@ def buildLoadElves (bp : BoundPlan) :
       result.size = bp.objCount ∧
       (∀ k (h_k : k < result.size) (h_src : k < bp.objCount),
         ElfBuildInvariant bp ⟨k, h_src⟩ (result[k]'h_k)) } := do
-  -- Bound-discharged ElfBuildInvariant.
-  let ⟨arr, h_size, h_p⟩ ← buildSafeArray bp.objCount
-    (fun k eo =>
-      ∀ (h_src : k < bp.objCount), ElfBuildInvariant bp ⟨k, h_src⟩ eo)
-    (fun k h_k => do
-      let ⟨eo, h_inv⟩ ← buildElf bp ⟨k, h_k⟩
-      return ⟨eo, fun _ => h_inv⟩)
-  return ⟨arr, h_size,
-    fun k h_k h_src => h_p k h_k h_src⟩
+  let built ← buildFinFunction (n := bp.objCount)
+    (β := fun i =>
+      { eo : ElfOps bp.rsv.addr bp.rsv.len bp.objCount //
+        ElfBuildInvariant bp i eo })
+    (fun i => buildElf bp i)
+  let arr : Array (ElfOps bp.rsv.addr bp.rsv.len bp.objCount) :=
+    Array.ofFn fun i => (built i).val
+  return ⟨arr, by simp [arr],
+    by
+      intro k h_k h_src
+      let i : Fin bp.objCount := ⟨k, h_src⟩
+      have h_get : arr[k]'h_k = (built i).val := by
+        simp [arr, i]
+      rw [h_get]
+      exact (built i).property⟩
 
 -- ============================================================================
--- build — the final constructive build. Assembles the full intrinsic-safe
+-- buildLoadOps — assemble the full intrinsic-safe
 -- `LoadOps` via `buildLoadElves`.
 -- Cross-elf disjointness chains:
 --   ElfBuildInvariant.mmap (each elf's segments[k].mmap = setupSegment …)
@@ -306,12 +241,11 @@ def buildLoadElves (bp : BoundPlan) :
 -- The only `Except` failure path is `bakeReloc`'s 32-bit overflow.
 -- ============================================================================
 
-/-- Witnessed build — fully constructive. Assembles an intrinsic-safe
-    `LoadOps` tree. The only `Except` failure path is `bakeReloc`'s 32-bit
-    overflow check (psABI per-relocation `OVERFLOW_CHECK`); safety itself is
-    established structurally, no decidable fallback. Callers consume the result
-    via `Runtime/Run.lean`. -/
-def build (bp : BoundPlan) :
+/-- Build the witnessed `LoadOps` tree. Fully constructive. The only `Except`
+    failure path is `bakeReloc`'s 32-bit overflow check (psABI per-relocation
+    `OVERFLOW_CHECK`); safety itself is established structurally, no decidable
+    fallback. `build` packages this tree with proof-carrying user-code calls. -/
+private def buildLoadOps (bp : BoundPlan) :
     Except String (LoadOps bp.rsv.addr bp.rsv.len bp.objCount) := do
   let ⟨elves, h_size, h_inv⟩ ← buildLoadElves bp
   let lo : LoadOps bp.rsv.addr bp.rsv.len bp.objCount :=
@@ -327,9 +261,9 @@ def build (bp : BoundPlan) :
         have h_inv₂ := h_inv i₂ h_i₂ h_i₂_n
         obtain ⟨h_size_eq₁, h_mmap_eq₁⟩ := h_inv₁
         obtain ⟨h_size_eq₂, h_mmap_eq₂⟩ := h_inv₂
-        have h_k_src₁ : k_i₁ < (bp.elfAt fi₁).segments.size := by
+        have h_k_src₁ : k_i₁ < (bp.elfAt fi₁).segmentCount := by
           rw [h_size_eq₁] at h_k_i₁; exact h_k_i₁
-        have h_k_src₂ : k_i₂ < (bp.elfAt fi₂).segments.size := by
+        have h_k_src₂ : k_i₂ < (bp.elfAt fi₂).segmentCount := by
           rw [h_size_eq₂] at h_k_i₂; exact h_k_i₂
         have h_mmap_su₁ : (setupSegment (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
               (bp.handleAt fi₁) (bp.baseAt fi₁)).mmap = some m₁ := by
@@ -366,26 +300,12 @@ def build (bp : BoundPlan) :
 --    witness to a `BoundPlan`-relative claim ready for `CallOp`.
 -- ============================================================================
 
-/-- An address lives in some executable PT_LOAD of `bp` — i.e. in
-    the runtime range `[base + eaddr, base + eaddr + memsz)` of some
-    elf's exec segment. Phrased over the checked `Elf.segments`
-    (not `SegmentLayout`s) so the witness carried by each init/fini
-    target lands directly before bridging through `ElfLayout.segmentsSegmentRangeEq`. -/
-def InExecSeg (bp : BoundPlan) (addr : UInt64) : Prop :=
-  ∃ (i : Fin bp.objCount) (j : Nat) (h : j < (bp.elfAt i).elf.segments.items.size),
-    ((bp.elfAt i).elf.segments.items[j]'h).perm.exec = true ∧
-    (bp.baseAt i).toNat + ((bp.elfAt i).elf.segments.items[j]'h).eaddr.toNat ≤
-      addr.toNat ∧
-    addr.toNat < (bp.baseAt i).toNat +
-      ((bp.elfAt i).elf.segments.items[j]'h).eaddr.toNat +
-      ((bp.elfAt i).elf.segments.items[j]'h).memsz.toNat
-
 /-- A target inside `[eaddr, eaddr + memsz)` of some `bp.elfAt i`'s
     `j`-th `SegmentLayout` is bounded by the page range, hence by
     `advance`, hence by the reservation. So `(base + target).toNat =
     base.toNat + target.toNat` doesn't wrap. -/
 private theorem base_add_target_no_wrap (bp : BoundPlan)
-    (i : Fin bp.objCount) (j : Fin (bp.elfAt i).segments.size)
+    (i : Fin bp.objCount) (j : Fin (bp.elfAt i).segmentCount)
     (target : Eaddr)
     (h_hi : target.toNat < (bp.segAt i j).segment.eaddr.toNat +
                           (bp.segAt i j).segment.memsz.toNat) :
@@ -394,16 +314,11 @@ private theorem base_add_target_no_wrap (bp : BoundPlan)
   have h_vm_le := (bp.segAt i j).vaddr_memsz_le_pageEnd
   have h_pe_le_adv : (bp.segAt i j).pageEndAddr.toNat ≤
       (bp.elfAt i).advance.toNat :=
-    (bp.elfAt i).pageEndAddr_le_advance j.val j.isLt
+    (bp.elfAt i).pageEndAddr_le_advance j
   have h_pe_eq := (bp.segAt i j).pageEndAddr_toNat
   have h_base_adv := bp.base_plus_advance_le_rsv_end i
   have h_rsv := bp.rsv.noWrap
   omega
-
-/-- A proof-carrying user-code call/transfer address in the finalized image. -/
-structure CallOp (bp : BoundPlan) where
-  addr : UInt64
-  inExecSeg : InExecSeg bp addr
 
 /-- Lift one parse-stage callable-target witness through the chosen base address. -/
 private theorem callTarget_addr_inExecSeg (bp : BoundPlan)
@@ -415,9 +330,9 @@ private theorem callTarget_addr_inExecSeg (bp : BoundPlan)
   rcases h_in_exec with h_zero | ⟨segIdx, h_segLt, h_exec, h_lo, h_hi⟩
   · exact absurd h_zero h_ne
   -- Bridge to SegmentLayout for the no-wrap argument.
-  have h_segLt_eo : segIdx < (bp.elfAt objectIdx).segments.size :=
-    (bp.elfAt objectIdx).segmentsSizeEq.symm ▸ h_segLt
-  have h_segRangeEq := (bp.elfAt objectIdx).segmentsSegmentRangeEq segIdx h_segLt_eo
+  have h_segLt_eo : segIdx < (bp.elfAt objectIdx).segmentCount := h_segLt
+  let segFin : Fin (bp.elfAt objectIdx).segmentCount := ⟨segIdx, h_segLt_eo⟩
+  have h_segRangeEq := (bp.elfAt objectIdx).segmentsSegmentRangeEq segFin
   have h_exec_bp :
       ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).perm.exec = true := by
     simpa using h_exec
@@ -432,15 +347,15 @@ private theorem callTarget_addr_inExecSeg (bp : BoundPlan)
     simpa using h_hi
   have h_hi_seg :
       (Subtype.val target).toNat <
-        (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.eaddr.toNat +
-          (bp.segAt objectIdx ⟨segIdx, h_segLt_eo⟩).segment.memsz.toNat := by
+        (bp.segAt objectIdx segFin).segment.eaddr.toNat +
+          (bp.segAt objectIdx segFin).segment.memsz.toNat := by
     show (Subtype.val target).toNat <
-      ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.eaddr.toNat +
-      ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.memsz.toNat
+      ((bp.elfAt objectIdx).segments[segFin]).segment.eaddr.toNat +
+      ((bp.elfAt objectIdx).segments[segFin]).segment.memsz.toNat
     rw [h_segRangeEq.1, h_segRangeEq.2]
     exact h_hi_bp
   have h_no_wrap : (bp.baseAt objectIdx).toNat + (Subtype.val target).toNat < 2 ^ 64 :=
-    base_add_target_no_wrap bp objectIdx ⟨segIdx, h_segLt_eo⟩ (Subtype.val target) h_hi_seg
+    base_add_target_no_wrap bp objectIdx segFin (Subtype.val target) h_hi_seg
   have h_addr_toNat :
       (callAddrOf (bp.baseAt objectIdx) (Subtype.val target).val).toNat =
         (bp.baseAt objectIdx).toNat + (Subtype.val target).toNat := by
@@ -450,13 +365,23 @@ private theorem callTarget_addr_inExecSeg (bp : BoundPlan)
     unfold callAddrOf
     rw [UInt64.toNat_add, Nat.mod_eq_of_lt h_no_wrap_val]
     simp [Eaddr.toNat]
-  exact ⟨objectIdx, segIdx, h_segLt, h_exec_bp,
-         by rw [h_addr_toNat]; omega,
-         by rw [h_addr_toNat]; omega⟩
+  have h_old :
+      ∃ (i : Fin bp.objCount) (j : Nat) (h : j < (bp.elfAt i).elf.segments.items.size),
+        ((bp.elfAt i).elf.segments.items[j]'h).perm.exec = true ∧
+        (bp.baseAt i).toNat + ((bp.elfAt i).elf.segments.items[j]'h).eaddr.toNat ≤
+          (callAddrOf (bp.baseAt objectIdx) (Subtype.val target).val).toNat ∧
+        (callAddrOf (bp.baseAt objectIdx) (Subtype.val target).val).toNat <
+          (bp.baseAt i).toNat +
+          ((bp.elfAt i).elf.segments.items[j]'h).eaddr.toNat +
+          ((bp.elfAt i).elf.segments.items[j]'h).memsz.toNat :=
+    ⟨objectIdx, segIdx, h_segLt, h_exec_bp,
+      by rw [h_addr_toNat]; omega,
+      by rw [h_addr_toNat]; omega⟩
+  simpa [InExecSeg, BoundPlan.baseAt, BoundPlan.bases, BoundPlan.elfAt] using h_old
 
 /-- Main-entry transfer address. Unlike init/fini arrays, zero is not a no-op for
     the final jump; reject it before touching runtime memory. -/
-def entryCall (bp : BoundPlan) : Except String (CallOp bp) :=
+private def entryCall (bp : BoundPlan) : Except String (CallOp bp) :=
   let mainIdx : Fin bp.objCount := ⟨0, bp.n_pos⟩
   let target := (bp.elfAt mainIdx).elf.callTargets.entry
   if h_zero : (Subtype.val target).val = 0 then
@@ -493,11 +418,18 @@ private def collectCalls (bp : BoundPlan) (order : Array (Fin bp.objCount))
       else none
 
 /-- Constructor calls with executable-segment witnesses attached. -/
-def ctorCalls (bp : BoundPlan) : Array (CallOp bp) :=
+private def ctorCalls (bp : BoundPlan) : Array (CallOp bp) :=
   collectCalls bp bp.initOrder.order (·.callTargets.init)
 
 /-- Destructor calls with executable-segment witnesses attached. -/
-def dtorCalls (bp : BoundPlan) : Array (CallOp bp) :=
+private def dtorCalls (bp : BoundPlan) : Array (CallOp bp) :=
   collectCalls bp bp.initOrder.order.reverse (·.callTargets.fini)
+
+/-- Complete pure finalization product: load ops plus all proof-carrying user-code
+    transfers over the same bound plan. -/
+def build (bp : BoundPlan) : Except String (Result bp) := do
+  let loadOps ← buildLoadOps bp
+  let entryCall ← entryCall bp
+  return { loadOps, entryCall, ctorCalls := ctorCalls bp, dtorCalls := dtorCalls bp }
 
 end LeanLoad.Finalize

@@ -185,27 +185,35 @@ private def boundPlan : Except String Finalize.BoundPlan := do
 private def boundPlan? : Option Finalize.BoundPlan :=
   boundPlan.toOption
 
+private def withFinalized? (f : (bp : Finalize.BoundPlan) → Finalize.Result bp → α) :
+    Option α := do
+  let bp ← boundPlan?
+  let result ← (Finalize.build bp).toOption
+  some (f bp result)
+
 private def ctorCallAddrs? : Option (Array UInt64) :=
-  boundPlan?.map fun bp => (Finalize.ctorCalls bp).map (·.addr)
+  withFinalized? fun _ result => result.ctorCalls.map (·.addr)
 
 private def dtorCallAddrs? : Option (Array UInt64) :=
-  boundPlan?.map fun bp => (Finalize.dtorCalls bp).map (·.addr)
+  withFinalized? fun _ result => result.dtorCalls.map (·.addr)
 
 private def loadElfCount? : Option Nat := do
   let bp ← boundPlan?
-  let ops ← (Finalize.build bp).toOption
-  some ops.elfs.size
+  let result ← (Finalize.build bp).toOption
+  some result.loadOps.elfs.size
 
 private def mainDataStoreAddrs? : Option (Array UInt64) := do
   let bp ← boundPlan?
-  let ops ← (Finalize.build bp).toOption
+  let result ← (Finalize.build bp).toOption
+  let ops := result.loadOps
   let mainOps ← ops.elfs[0]?
   let dataOps ← mainOps.segments[1]?
   some (dataOps.stores.map (fun store => store.addr))
 
 private def mainDataStoreValues? : Option (Array UInt64) := do
   let bp ← boundPlan?
-  let ops ← (Finalize.build bp).toOption
+  let result ← (Finalize.build bp).toOption
+  let ops := result.loadOps
   let mainOps ← ops.elfs[0]?
   let dataOps ← mainOps.segments[1]?
   some (dataOps.stores.map (fun store => store.value))

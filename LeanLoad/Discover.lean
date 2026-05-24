@@ -83,7 +83,7 @@ structure LoadGraph where
   /-- Non-emptiness — witnessed by `Discovered.initial` seeding with main
       before discovery begins. -/
   sizePos     : 0 < objects.size
-  /-- Names pairwise distinct. Witnessed by the `nameIx` dedup check before
+  /-- Names pairwise distinct. Witnessed by the discovery dedup check before
       each push. -/
   namesNodup  : (objects.map (·.name)).toList.Nodup
   /-- `deps` is parallel to `objects`. -/

@@ -18,9 +18,9 @@ the state-evolution layer on top:
      `discoverWorkList` carries through a list of `WorkItem`s.
 
   · `discoverWork finder fuel discovered work` — one recursive discovery call.
-     Resolves the explicit `WorkItem`, dedups against `discovered.nameIx`
+     Resolves the explicit `WorkItem`, dedups against `discovered.objects`
      (catches both already-finished and in-progress-via-cycle:
-     `pushObject` inserts into `nameIx` BEFORE recursing into children,
+     `pushObject` appends the object BEFORE recursing into children,
      so cycles dedup immediately against the in-progress ancestor's idx and
      are recorded as cycle edges rather than recursively expanded forever).
      On miss, pushes the object and folds over its child work items,
@@ -178,13 +178,13 @@ def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
     | some obj =>
       let canonical := obj.name
       let elf := obj.elf
-      match h_lookup : s0.nameIx[canonical]? with
+      match h_lookup : findDiscoveredIdx s0.objects canonical with
       | some idx =>
         -- Dedup hit: completed objects are shared; active hits are dependency
         -- cycle/back edges. Both return the existing idx; the caller records
         -- the `src → idx` edge exactly once.
         have h_idx : idx < s0.objects.size :=
-          findDiscoveredIdx_lt ((s0.nameIxValid canonical).symm.trans h_lookup)
+          findDiscoveredIdx_lt h_lookup
         pure { state := s0, idx
                sizeMono := Nat.le_refl _
                idxLt := h_idx

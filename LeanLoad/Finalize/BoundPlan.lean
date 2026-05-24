@@ -3,9 +3,9 @@ Base-aware plan: extends `Reloc.Result` with the layout-stage output and the
 IO-supplied `Reserve` plus coherence proof. Reads as the pure relocation and
 layout facts bound to a concrete reservation — hence "BoundPlan".
 
-`BoundPlan` is the canonical input to `Finalize.build` and
-`Finalize.ctorCalls`. The finalize-stage safety fields on `LoadOps`
-are provable structurally from plan invariants. The bounds chain —
+`BoundPlan` is the canonical input to `Finalize.build`. The finalize-stage safety
+fields on `Result.loadOps` and `CallOp`s are provable structurally from plan
+invariants. The bounds chain —
 `pageEaddr + fileOverlayLen ≤ pageEndAddr ≤ advance` (existing
 layout lemmas and `ElfLayout` fields) plus `base + advance ≤ rsv.addr +
 rsv.len` (the workhorse `base_plus_advance_le_rsv_end` below) —
@@ -64,7 +64,7 @@ abbrev handleAt (bp : BoundPlan) (i : Fin bp.objCount) : Runtime.File :=
 
 /-- `(i, j)`-th segment plan. -/
 abbrev segAt (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) : Layout.SegmentLayout bp.objCount :=
+    (j : Fin (bp.elfAt i).segmentCount) : Layout.SegmentLayout bp.objCount :=
   (bp.elfAt i).segments[j]
 
 -- ============================================================================
@@ -168,13 +168,13 @@ def mainBase (bp : BoundPlan) : UInt64 :=
     range is fully inside `[rsv.addr, rsv.addr + rsv.len)`. This is
     the parent bound — every per-op bound below reduces to it. -/
 theorem segment_pageRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     (bp.baseAt i).toNat + (bp.segAt i j).pageEaddr.toNat +
       (bp.segAt i j).pageLength.toNat ≤
     bp.rsv.addr.toNat + bp.rsv.len.toNat := by
   have h_pe_le_adv : (bp.segAt i j).pageEndAddr.toNat ≤
       (bp.elfAt i).advance.toNat :=
-    (bp.elfAt i).pageEndAddr_le_advance j.val j.isLt
+    (bp.elfAt i).pageEndAddr_le_advance j
   have h_base_advance := bp.base_plus_advance_le_rsv_end i
   have h_pageEnd := (bp.segAt i j).pageEndAddr_toNat
   omega
@@ -182,7 +182,7 @@ theorem segment_pageRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
 /-- No-wrap of `base + pageEaddr + pageLength` — falls out of
     `segment_pageRange_in_rsv` plus `rsv.noWrap`. -/
 theorem segment_pageRange_no_wrap (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     (bp.baseAt i).toNat + (bp.segAt i j).pageEaddr.toNat +
       (bp.segAt i j).pageLength.toNat < 2 ^ 64 := by
   have h_in_rsv := bp.segment_pageRange_in_rsv i j
@@ -191,7 +191,7 @@ theorem segment_pageRange_no_wrap (bp : BoundPlan) (i : Fin bp.objCount)
 
 /-- Helper: `(base + sp.pageEaddr).toNat = base.toNat + sp.pageEaddr.toNat`. -/
 theorem segment_base_add_pageEaddr_toNat (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     ((bp.baseAt i) + (bp.segAt i j).pageEaddr).toNat =
     (bp.baseAt i).toNat + (bp.segAt i j).pageEaddr.toNat := by
   have h_no_wrap := bp.segment_pageRange_no_wrap i j
@@ -209,7 +209,7 @@ theorem rsv_addr_le_baseAt (bp : BoundPlan) (i : Fin bp.objCount) :
     op-specific range lemmas below only need to prove their concrete address and
     length sit inside `[base + pageEaddr, base + pageEaddr + pageLength)`. -/
 theorem segment_subrange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) (addr len : UInt64)
+    (j : Fin (bp.elfAt i).segmentCount) (addr len : UInt64)
     (h_lo : bp.rsv.addr.toNat ≤ addr.toNat)
     (h_hi : addr.toNat + len.toNat ≤
       (bp.baseAt i).toNat + (bp.segAt i j).pageEaddr.toNat +
@@ -220,7 +220,7 @@ theorem segment_subrange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
 
 /-- The mmap range fits in the reservation. -/
 theorem segment_mmapRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     Range.InRange (bp.baseAt i + (bp.segAt i j).pageEaddr)
       (bp.segAt i j).fileOverlayLen bp.rsv.addr bp.rsv.len := by
   have h_base_pv := bp.segment_base_add_pageEaddr_toNat i j
@@ -231,7 +231,7 @@ theorem segment_mmapRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
 
 /-- The mprotect range fits in the reservation. -/
 theorem segment_mprotectRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     Range.InRange (bp.baseAt i + (bp.segAt i j).pageEaddr)
       (bp.segAt i j).pageLength bp.rsv.addr bp.rsv.len := by
   have h_base_pv := bp.segment_base_add_pageEaddr_toNat i j
@@ -241,7 +241,7 @@ theorem segment_mprotectRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
 
 /-- The zero range fits in the reservation. -/
 theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) :
+    (j : Fin (bp.elfAt i).segmentCount) :
     Range.InRange
       (bp.baseAt i + (bp.segAt i j).pageEaddr + (bp.segAt i j).pageInset +
         (bp.segAt i j).segment.filesz.val)
@@ -292,12 +292,12 @@ theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
     `Layout.Sorted` (the existing ElfLayout invariant) from `pageEndAddr ≤
     pageEaddr` to `base + pageEnd ≤ base + pageEaddr'`. -/
 theorem within_elf_pageRange_disjoint (bp : BoundPlan) (i : Fin bp.objCount)
-    (j₁ j₂ : Fin (bp.elfAt i).segments.size) (h_lt : j₁ < j₂) :
+    (j₁ j₂ : Fin (bp.elfAt i).segmentCount) (h_lt : j₁ < j₂) :
     Range.Disjoint
       (bp.baseAt i + (bp.segAt i j₁).pageEaddr) (bp.segAt i j₁).pageLength
       (bp.baseAt i + (bp.segAt i j₂).pageEaddr) (bp.segAt i j₂).pageLength := by
   have h_pe_le_pv : (bp.segAt i j₁).pageEndAddr ≤ (bp.segAt i j₂).pageEaddr :=
-    (bp.elfAt i).segmentsSorted j₁.val j₁.isLt j₂.val j₂.isLt h_lt
+    (bp.elfAt i).segmentsSorted j₁ j₂ h_lt
   have h_pe_le_pv_nat : (bp.segAt i j₁).pageEndAddr.toNat ≤
       (bp.segAt i j₂).pageEaddr.toNat :=
     UInt64.le_iff_toNat_le.mp h_pe_le_pv
@@ -315,7 +315,7 @@ theorem within_elf_pageRange_disjoint (bp : BoundPlan) (i : Fin bp.objCount)
 /-- Within an elf: mmap ranges don't overlap. Shrinks
     `within_elf_pageRange_disjoint` via `fileOverlay_le_pageLength`. -/
 theorem within_elf_mmapRange_disjoint (bp : BoundPlan) (i : Fin bp.objCount)
-    (j₁ j₂ : Fin (bp.elfAt i).segments.size) (h_lt : j₁ < j₂) :
+    (j₁ j₂ : Fin (bp.elfAt i).segmentCount) (h_lt : j₁ < j₂) :
     Range.Disjoint
       (bp.baseAt i + (bp.segAt i j₁).pageEaddr) (bp.segAt i j₁).fileOverlayLen
       (bp.baseAt i + (bp.segAt i j₂).pageEaddr) (bp.segAt i j₂).fileOverlayLen := by
@@ -330,8 +330,8 @@ theorem within_elf_mmapRange_disjoint (bp : BoundPlan) (i : Fin bp.objCount)
     Uses `base_plus_advance_le_base` plus `pageEndAddr_le_advance` to
     place the entire page range inside the per-elf slice. -/
 theorem cross_elf_pageRange_disjoint (bp : BoundPlan)
-    (i₁ i₂ : Fin bp.objCount) (j₁ : Fin (bp.elfAt i₁).segments.size)
-    (j₂ : Fin (bp.elfAt i₂).segments.size) (h_lt : i₁ < i₂) :
+    (i₁ i₂ : Fin bp.objCount) (j₁ : Fin (bp.elfAt i₁).segmentCount)
+    (j₂ : Fin (bp.elfAt i₂).segmentCount) (h_lt : i₁ < i₂) :
     Range.Disjoint
       (bp.baseAt i₁ + (bp.segAt i₁ j₁).pageEaddr) (bp.segAt i₁ j₁).pageLength
       (bp.baseAt i₂ + (bp.segAt i₂ j₂).pageEaddr) (bp.segAt i₂ j₂).pageLength := by
@@ -345,7 +345,7 @@ theorem cross_elf_pageRange_disjoint (bp : BoundPlan)
                (bp.segAt i₁ j₁).pageLength.toNat ≤
                (bp.elfAt i₁).advance.toNat := by
     rw [← (bp.segAt i₁ j₁).pageEndAddr_toNat]
-    exact (bp.elfAt i₁).pageEndAddr_le_advance j₁.val j₁.isLt
+    exact (bp.elfAt i₁).pageEndAddr_le_advance j₁
   left
   show (bp.baseAt i₁ + (bp.segAt i₁ j₁).pageEaddr).toNat +
        (bp.segAt i₁ j₁).pageLength.toNat ≤
@@ -356,8 +356,8 @@ theorem cross_elf_pageRange_disjoint (bp : BoundPlan)
 /-- Cross-elf mmap-range disjointness — shrink page-range disjointness
     using `fileOverlay_le_pageLength`. -/
 theorem cross_elf_mmapRange_disjoint (bp : BoundPlan)
-    (i₁ i₂ : Fin bp.objCount) (j₁ : Fin (bp.elfAt i₁).segments.size)
-    (j₂ : Fin (bp.elfAt i₂).segments.size) (h_lt : i₁ < i₂) :
+    (i₁ i₂ : Fin bp.objCount) (j₁ : Fin (bp.elfAt i₁).segmentCount)
+    (j₂ : Fin (bp.elfAt i₂).segmentCount) (h_lt : i₁ < i₂) :
     Range.Disjoint
       (bp.baseAt i₁ + (bp.segAt i₁ j₁).pageEaddr) (bp.segAt i₁ j₁).fileOverlayLen
       (bp.baseAt i₂ + (bp.segAt i₂ j₂).pageEaddr) (bp.segAt i₂ j₂).fileOverlayLen := by
@@ -373,7 +373,7 @@ theorem cross_elf_mmapRange_disjoint (bp : BoundPlan)
     witness on its parent segment. The 4-or-8-byte width is bounded
     by `Reloc.covered`'s conservative 8-byte window. -/
 theorem segment_storeRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
-    (j : Fin (bp.elfAt i).segments.size) (r_offset : Eaddr)
+    (j : Fin (bp.elfAt i).segmentCount) (r_offset : Eaddr)
     (h_cov : (bp.segAt i j).segment.eaddr.toNat ≤ r_offset.toNat ∧
       r_offset.toNat + 8 ≤
         (bp.segAt i j).segment.eaddr.toNat + (bp.segAt i j).segment.memsz.toNat)

@@ -63,11 +63,11 @@ theorem UInt64.toNat_max (a b : UInt64) :
     is ≤ the next one's `pageEaddr`. Base-free; translation
     invariant. Same shape as `Parse.Sorted`, but on the
     page-aligned ranges. -/
-def Sorted (segs : Array (SegmentLayout n)) : Prop :=
-  ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
-    i < j → segs[i].pageEndAddr ≤ segs[j].pageEaddr
+def Sorted {segCount : Nat} (segs : Vector (SegmentLayout n) segCount) : Prop :=
+  ∀ i j : Fin segCount, i < j → (segs[i]).pageEndAddr ≤ (segs[j]).pageEaddr
 
-instance (segs : Array (SegmentLayout n)) : Decidable (Sorted segs) := by
+instance {segCount : Nat} (segs : Vector (SegmentLayout n) segCount) :
+    Decidable (Sorted segs) := by
   unfold Sorted; infer_instance
 
 -- ============================================================================
@@ -88,33 +88,31 @@ instance (segs : Array (SegmentLayout n)) : Decidable (Sorted segs) := by
     `advance` computation would wrap UInt64 (impossible on Linux). -/
 structure ElfLayout (objCount : Nat) where
   elf            : Elf
-  /-- Parallel to `elf.segments.items`, lifted to the loader view + relocs. -/
-  segments       : Array (SegmentLayout objCount)
+  /-- Indexed by `elf.segments.items`, lifted to the loader view + relocs. -/
+  segments       : Vector (SegmentLayout objCount) elf.segments.items.size
   /-- Per-elf cursor advance: at least `alignUp (max pageEndAddr) 0x1000`,
       possibly more if the no-wrap dance demands. The reservation
       reserves exactly `advance` bytes per elf via `assignBases`. -/
   advance        : UInt64
-  /-- Same length as the underlying elf's PT_LOAD array. Discharged at
-      `ofElf` from `Array.size_map`; lets consumers (`Finalize`)
-      re-index between the two arrays without recomputing. -/
-  segmentsSizeEq : segments.size = elf.segments.items.size
   /-- Pointwise address-range equality for the parallel segment arrays.
       The underlying `Segment` types are heterogeneous because `SegmentLayout`
       existentializes file size; consumers only need the file-size-independent
       runtime address range. -/
-  segmentsSegmentRangeEq : ∀ (k : Nat) (h : k < segments.size),
-    (segments[k]'h).segment.eaddr =
-        (elf.segments.items[k]'(segmentsSizeEq ▸ h)).eaddr ∧
-      (segments[k]'h).segment.memsz =
-        (elf.segments.items[k]'(segmentsSizeEq ▸ h)).memsz
+  segmentsSegmentRangeEq : ∀ idx : Fin elf.segments.items.size,
+    (segments[idx]).segment.eaddr = (elf.segments.items[idx]).eaddr ∧
+      (segments[idx]).segment.memsz = (elf.segments.items[idx]).memsz
   /-- Page-aligned segment ranges don't overlap pairwise. -/
   segmentsSorted : Sorted segments
   /-- Each segment's mmap'd range fits in `[0, advance)` (in `Nat`).
       The crux of the per-elf containment bound. -/
-  pageEndAddr_le_advance : ∀ (i : Nat) (h : i < segments.size),
-    segments[i].pageEndAddr.toNat ≤ advance.toNat
+  pageEndAddr_le_advance : ∀ idx : Fin elf.segments.items.size,
+    (segments[idx]).pageEndAddr.toNat ≤ advance.toNat
 
 namespace ElfLayout
+
+/-- Number of checked PT_LOAD segments. -/
+abbrev segmentCount (ep : ElfLayout objCount) : Nat :=
+  ep.elf.segments.items.size
 
 /-- Build an `ElfLayout n`, validating page-aligned non-overlap.
     `Parse.Sorted` and `Parse.NonOverlap` are on raw vaddrs;
@@ -127,63 +125,62 @@ def ofElfCore (objCount : Nat) (e : Elf)
     (segmentRelocs :
       (idx : Fin e.segments.items.size) → Array (Entry objCount e.segments.items[idx])) :
     Except String (ElfLayout objCount) :=
-  let segs : Array (SegmentLayout objCount) :=
+  let segArray : Array (SegmentLayout objCount) :=
     Array.ofFn fun idx : Fin e.segments.items.size =>
       let s := e.segments.items[idx]
       SegmentLayout.ofSegmentCore objCount s (segmentRelocs idx)
+  have h_size_eq : segArray.size = e.segments.items.size := by simp [segArray]
+  let segs : Vector (SegmentLayout objCount) e.segments.items.size :=
+    ⟨segArray, h_size_eq⟩
   if h_sorted : Sorted segs then
-    let objectSpan : UInt64 := segs.foldl (init := 0) fun acc sp =>
+    let objectSpan : UInt64 := segArray.foldl (init := 0) fun acc sp =>
       max acc sp.pageEndAddr
     let advance := alignUp objectSpan 0x1000
-    have h_size_eq : segs.size = e.segments.items.size := by simp [segs]
     if h_no_wrap : objectSpan.toNat + (0x1000 : UInt64).toNat < 2 ^ 64 then
       have h_align_ne : (0x1000 : UInt64) ≠ 0 := by decide
       have h_obj_le_adv : objectSpan ≤ advance :=
         alignUp_ge _ _ h_align_ne h_no_wrap
       have h_obj_le_adv_n := UInt64.le_iff_toNat_le.mp h_obj_le_adv
-      have h_pe_le_obj : ∀ (i : Nat) (h : i < segs.size),
-          segs[i].pageEndAddr.toNat ≤ objectSpan.toNat := by
-        intro i h_lt
+      have h_pe_le_obj : ∀ idx : Fin e.segments.items.size,
+          (segs[idx]).pageEndAddr.toNat ≤ objectSpan.toNat := by
+        intro idx
         let motive : Nat → UInt64 → Prop := fun n acc =>
-          ∀ (k : Nat) (_ : k < n) (h_size : k < segs.size),
-            segs[k].pageEndAddr.toNat ≤ acc.toNat
-        have h_full : motive segs.size objectSpan := by
-          show motive segs.size _
+          ∀ (k : Nat) (_ : k < n) (h_size : k < segArray.size),
+            segArray[k].pageEndAddr.toNat ≤ acc.toNat
+        have h_full : motive segArray.size objectSpan := by
+          show motive segArray.size _
           refine Array.foldl_induction motive ?_ ?_
           · intro k h_k _; omega
           · intro idx acc ih k h_k h_size
-            show segs[k].pageEndAddr.toNat ≤
-                 (max acc segs[idx.val].pageEndAddr).toNat
+            show segArray[k].pageEndAddr.toNat ≤
+                 (max acc segArray[idx.val].pageEndAddr).toNat
             rw [UInt64.toNat_max]
             rcases Nat.lt_or_ge k idx.val with h_k_lt | h_k_ge
             · have h := ih k h_k_lt h_size
               exact Nat.le_trans h (Nat.le_max_left _ _)
             · have h_eq : k = idx.val := by omega
               subst h_eq
-              show segs[idx.val].pageEndAddr.toNat ≤
-                   max acc.toNat segs[idx.val].pageEndAddr.toNat
+              show segArray[idx.val].pageEndAddr.toNat ≤
+                   max acc.toNat segArray[idx.val].pageEndAddr.toNat
               exact Nat.le_max_right _ _
-        exact h_full i h_lt h_lt
-      have h_bound : ∀ (i : Nat) (h : i < segs.size),
-                     segs[i].pageEndAddr.toNat ≤ advance.toNat := by
-        intro i h_lt
-        have h := h_pe_le_obj i h_lt
+        have h_idx_arr : idx.val < segArray.size := h_size_eq.symm ▸ idx.isLt
+        have h := h_full idx.val h_idx_arr h_idx_arr
+        simpa [segs] using h
+      have h_bound : ∀ idx : Fin e.segments.items.size,
+                     (segs[idx]).pageEndAddr.toNat ≤ advance.toNat := by
+        intro idx
+        have h := h_pe_le_obj idx
         omega
-      have h_seg_range_eq : ∀ (k : Nat) (h : k < segs.size),
-          (segs[k]'h).segment.eaddr =
-             (e.segments.items[k]'(h_size_eq ▸ h)).eaddr ∧
-            (segs[k]'h).segment.memsz =
-             (e.segments.items[k]'(h_size_eq ▸ h)).memsz := by
-        intro k h_lt
-        have h_lt_e : k < e.segments.items.size := h_size_eq ▸ h_lt
-        have h_get : segs[k]'h_lt = SegmentLayout.ofSegmentCore objCount
-            (e.segments.items[k]'h_lt_e)
-            (segmentRelocs ⟨k, h_lt_e⟩) := by
-          simp [segs]
+      have h_seg_range_eq : ∀ idx : Fin e.segments.items.size,
+          (segs[idx]).segment.eaddr = (e.segments.items[idx]).eaddr ∧
+            (segs[idx]).segment.memsz = (e.segments.items[idx]).memsz := by
+        intro idx
+        have h_get : segs[idx] = SegmentLayout.ofSegmentCore objCount
+            (e.segments.items[idx]) (segmentRelocs idx) := by
+          simp [segs, segArray]
         rw [h_get]
         exact ⟨rfl, rfl⟩
       .ok { elf := e, segments := segs, advance,
-            segmentsSizeEq := h_size_eq,
             segmentsSegmentRangeEq := h_seg_range_eq,
             segmentsSorted := h_sorted,
             pageEndAddr_le_advance := h_bound }

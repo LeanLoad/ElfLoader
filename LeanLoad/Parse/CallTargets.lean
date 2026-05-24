@@ -21,8 +21,7 @@ namespace CallTarget
 def ofRaw {fileSize : ByteSize} (label : String) (segments : SegmentTable fileSize) (addr : Eaddr) :
     Except String (CallTarget segments) :=
   let decExec : Decidable (callTargetInExecSeg segments addr) := by
-    unfold callTargetInExecSeg SegmentTable.ExecAddr SegmentTable.ContainsEaddr
-      Segment.ContainsEaddr
+    unfold callTargetInExecSeg Segment.ContainsEaddr
     infer_instance
   match decExec with
   | .isTrue h_exec => .ok ⟨addr, h_exec⟩

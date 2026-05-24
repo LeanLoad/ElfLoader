@@ -5,6 +5,8 @@ Keep this module parse- and runtime-independent: later stages can import these
 units without depending on ELF decoding or file IO.
 -/
 
+universe u v
+
 namespace LeanLoad
 
 /-- Byte length / extent of a file or memory region. -/
@@ -59,5 +61,18 @@ end Eaddr
     bridges `Prop` through `Except`'s `Type` parameter. -/
 def require (p : Prop) [Decidable p] (msg : String) : Except String (PLift p) :=
   if h : p then .ok ⟨h⟩ else .error msg
+
+/-- Build a dependent function over all `Fin n` indices, failing if any index's
+    entry construction fails. Used by stages that validate every finite slot once
+    and then expose total lookup functions at their boundary. -/
+def buildFinFunction {ε : Type u} : {n : Nat} → {β : Fin n → Type v} →
+    ((i : Fin n) → Except ε (β i)) →
+    Except ε ((i : Fin n) → β i)
+  | 0, _, _ => .ok (fun i => Fin.elim0 i)
+  | n + 1, β, step => do
+      let head ← step 0
+      let tail ← buildFinFunction (ε := ε) (n := n) (β := fun i => β i.succ) fun i =>
+        step i.succ
+      return Fin.cases head tail
 
 end LeanLoad

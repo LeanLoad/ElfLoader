@@ -90,30 +90,12 @@ namespace Layout
 def cumOffset (lp : Layout objCount) (k : Nat) : Nat :=
   _root_.LeanLoad.Layout.cumOffset lp.elfs.toArray k
 
-/-- Tail-recursive accumulator that builds `ElfLayout`s while maintaining
-    `acc.size = i`. -/
-private def buildElfLayoutsFrom (objCount : Nat)
-    (build : (idx : Fin objCount) → Except String (ElfLayout objCount))
-    (i : Nat) (h : i ≤ objCount)
-    (acc : { a : Array (ElfLayout objCount) // a.size = i }) :
-    Except String { a : Array (ElfLayout objCount) // a.size = objCount } :=
-  if heq : i = objCount then
-    .ok ⟨acc.val, heq ▸ acc.property⟩
-  else
-    have hi : i < objCount := Nat.lt_of_le_of_ne h heq
-    match build ⟨i, hi⟩ with
-    | .error e => .error e
-    | .ok ep =>
-      let acc' : { a : Array (ElfLayout objCount) // a.size = i + 1 } :=
-        ⟨acc.val.push ep, by rw [Array.size_push, acc.property]⟩
-      buildElfLayoutsFrom objCount build (i + 1) hi acc'
-termination_by objCount - i
-
 /-- Build a full array of `ElfLayout`s from a per-index builder. -/
 private def buildElfLayouts (objCount : Nat)
     (build : (idx : Fin objCount) → Except String (ElfLayout objCount)) :
-    Except String { a : Array (ElfLayout objCount) // a.size = objCount } :=
-  buildElfLayoutsFrom objCount build 0 (Nat.zero_le _) ⟨#[], by simp⟩
+    Except String { a : Array (ElfLayout objCount) // a.size = objCount } := do
+  let layouts ← buildFinFunction (n := objCount) (β := fun _ => ElfLayout objCount) build
+  return ⟨Array.ofFn layouts, by simp⟩
 
 /-- Construct `Layout` once the per-ELF layouts are known. This is shared by the
     production relocation path and layout-only examples. -/

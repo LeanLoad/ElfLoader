@@ -31,10 +31,11 @@ stage re-checks it — the witness travels in the type.
     `pageInset_eq_vaddr`).
 
   • Finalize — base-aware and pure. Takes a `BoundPlan` (= `Reloc.Result` +
-    `Layout.Layout` + IO `Reserve` + coherence proof) and emits a `LoadOps` tree of
-    typed ops (`Mmap` / `Zero` / `Store` / `Mprotect`). The tree carries
-    per-op containment and mmap-disjointness witnesses intrinsically; finalized
-    user-code calls carry executable-segment witnesses as `CallOp`s.
+    `Layout.Layout` + IO `Reserve` + coherence proof) and emits a `Result`:
+    a `LoadOps` tree of typed ops (`Mmap` / `Zero` / `Store` / `Mprotect`)
+    plus entry/init/fini `CallOp`s. The tree carries per-op containment and
+    mmap-disjointness witnesses intrinsically; the calls carry executable-segment
+    witnesses.
 
   • Runtime — the trust seam. `@[extern]` primitives behind exact file, memory,
     constructor-call, and final-jump effects; `Runtime.Run` interprets the

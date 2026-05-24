@@ -147,7 +147,7 @@ private def programHeaderMapped? (segments : SegmentTable exampleFileSize) (phof
 
 private def callTargetInExecSeg? (segments : SegmentTable exampleFileSize) (entry : Eaddr) : Bool :=
   letI : Decidable (callTargetInExecSeg segments entry) := by
-    unfold callTargetInExecSeg SegmentTable.ExecAddr SegmentTable.ContainsEaddr Segment.ContainsEaddr
+    unfold callTargetInExecSeg Segment.ContainsEaddr
     infer_instance
   if _ : callTargetInExecSeg segments entry then true else false
 

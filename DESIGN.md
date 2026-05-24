@@ -12,8 +12,8 @@ instead of re-checking the same facts. Native IO is isolated in `Runtime`.
 | **Discover** | monadic | `ObjectFinder m → fuel → path → m Discover.Result` | DFS over `DT_NEEDED`, canonical-name dedup, complete dependency edges, graph-indexed init order, cycle rejection. |
 | **Reloc**    | pure    | `Discover.Result → Reloc.Result` | Resolve relocation-referenced symbols and reject referenced unresolved strong symbols. |
 | **Layout**   | pure    | `Reloc.Result → Layout.Layout` | Compute base-free per-segment/per-object placement and total span. |
-| **Finalize** | pure    | `BoundPlan → LoadOps rsv.addr rsv.len n` | Emit intrinsic-safe mmap/zero/store/mprotect ops. |
-| **Runtime**  | IO      | `LoadOps → IO Unit` | Run trusted syscalls, call ctors, build the startup stack, and jump. |
+| **Finalize** | pure    | `BoundPlan → Finalize.Result bp` | Emit intrinsic-safe mmap/zero/store/mprotect ops plus witnessed entry/init/fini calls. |
+| **Runtime**  | IO      | `LoadOps → IO Unit` | Run trusted syscalls for load ops; Main runs witnessed ctors, builds the startup stack, and jumps. |
 
 The CLI wires these together in `ExceptT String IO`: production `ObjectFinder`
 opens/parses the main object, searches dependencies, and hands the resulting
@@ -31,8 +31,9 @@ graph/init-order pair to Reloc → Layout → Finalize → Runtime.
   only symbols actually referenced by relocation records.
 - **Layout** carries page-math and cumulative-span facts needed to place every
   segment inside one reservation.
-- **Finalize** turns the plan into typed `LoadOps`; each op carries its range
-  proof, and mmap operations are pairwise disjoint.
+- **Finalize** turns the plan into a typed `Result`: load ops carry range proofs,
+  mmap operations are pairwise disjoint, and entry/init/fini calls carry
+  executable-segment witnesses.
 
 ## Trust boundary
 
@@ -41,9 +42,9 @@ Verified Lean code has no direct `@[extern]` calls: `Parse/`, `Discover/`,
 
 Trusted code is the runtime edge: `LeanLoad/Runtime.c`,
 `Runtime/{File,Memory,Exec}.lean`, `Runtime/Run.lean`, and `Main.lean`.
-The current formal boundary is the finalized `LoadOps` tree plus its safety
-witnesses; syscall semantics and the final process handoff are trusted by
-inspection.
+The current formal boundary is `Finalize.Result`: the finalized `LoadOps` tree
+plus user-code transfer witnesses. Syscall semantics and the final process
+handoff are trusted by inspection.
 
 ## Scope
 

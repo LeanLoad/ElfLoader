@@ -6,10 +6,10 @@ glue that ties the invariant-carrying core (`Parse` + `Discover` + `Reloc` +
 `Layout` + `Finalize`) to the IO layer (`Runtime`).
 
 The IO bookend `realize` (below) is a thin wrapper:
-`Finalize.build` produces an intrinsic-safe `LoadOps`,
-`Runtime.Run` dispatches it to externs,
-then the one-shot finalizers (`mmapAnon` for the stack +
-`execAndJump`) transfer control. Doesn't return.
+`Finalize.build` produces intrinsic-safe `LoadOps` plus witnessed user-code
+calls, `Runtime.Run` dispatches the load ops to externs, then the one-shot
+finalizers (`mmapAnon` for the stack + `execAndJump`) transfer control. Doesn't
+return.
 -/
 
 import LeanLoad
@@ -69,19 +69,17 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
 /-- Run all finalized ops inside the kernel-picked reservation,
     allocate the kernel-style stack, and `execAndJump` to entry.
     **Does not return.** -/
-private def realize (bp : Finalize.BoundPlan)
-    (lo : Finalize.LoadOps bp.rsv.addr bp.rsv.len bp.objCount)
+private def realize (bp : Finalize.BoundPlan) (result : Finalize.Result bp)
     (path : String) : CliM Unit := do
   let mainIdx : Fin bp.objCount := ⟨0, bp.n_pos⟩
   let mainElf := (bp.elfAt mainIdx).elf
   let mainBase := bp.mainBase
-  let entryCall ← liftExcept (Finalize.entryCall bp)
-  let entry  := entryCall.addr
+  let entry  := result.entryCall.addr
   let programHeaderVa := mainBase + mainElf.phdrEaddr.val
-  let _ ← (Runtime.runLoadOps lo : IO Unit)
+  let _ ← (Runtime.runLoadOps result.loadOps : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
-  let _ ← ((Finalize.ctorCalls bp).forM (fun call => Runtime.callCtor call.addr) : IO Unit)
+  let _ ← (result.ctorCalls.forM (fun call => Runtime.callCtor call.addr) : IO Unit)
   let stack ← Runtime.Memory.reserve stackBytes
   let phnum  := mainElf.phdrCount.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
@@ -100,7 +98,7 @@ private def realize (bp : Finalize.BoundPlan)
     resolve relocations, compute layout, reserve memory, and build witnessed ops. -/
 private structure Prepared where
   bp : Finalize.BoundPlan
-  loadOps : Finalize.LoadOps bp.rsv.addr bp.rsv.len bp.objCount
+  result : Finalize.Result bp
 
 /-- Discover → Reloc → Layout → Reserve → Finalize, without running user code. -/
 private def prepare (path : String) : CliM Prepared := do
@@ -110,8 +108,8 @@ private def prepare (path : String) : CliM Prepared := do
   let rsvW ← Runtime.Memory.reserve layout.totalSpan
   let bp : Finalize.BoundPlan :=
     { relocPlan with layout, rsv := rsvW.val, h_total := rsvW.property }
-  let loadOps ← Finalize.build bp
-  pure { bp, loadOps }
+  let result ← Finalize.build bp
+  pure { bp, result }
 
 /-- Right-pad a string to `objCount` chars with `c`. -/
 private def padR (s : String) (objCount : Nat) (c : Char := ' ') : String :=
@@ -143,7 +141,7 @@ private def Nat.hex12 (objCount : Nat) : String :=
     **Does not return.** -/
 def load (path : String) : CliM Unit := do
   let prepared ← prepare path
-  realize prepared.bp prepared.loadOps path
+  realize prepared.bp prepared.result path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
@@ -235,7 +233,7 @@ def debug (path : String) : CliM Unit := do
     let base := bases[i]'h.upper
     let label := padR s!"[{i}] {obj.name}" labelW
     let ep := lp.elfs[i]'h.upper
-    for h2 : segI in [:ep.segments.size] do
+    for h2 : segI in [:ep.segmentCount] do
       let sp := ep.segments[segI]
       for entry in sp.relocs do
         let symRef := entry.target.symRef?
@@ -260,20 +258,20 @@ def debug (path : String) : CliM Unit := do
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + (entry.r_offset.val)).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let lo := prepared.loadOps
+  let lo := prepared.result.loadOps
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
     {lo.stores.size} stores, \
     {lo.mprotects.size} mprotects across {lo.elfs.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
-  let ctorCalls := Finalize.ctorCalls bp
-  let dtorCalls := Finalize.dtorCalls bp
+  let ctorCalls := prepared.result.ctorCalls
+  let dtorCalls := prepared.result.dtorCalls
   IO.eprintln s!"planned {ctorCalls.size} constructor address(es), \
     {dtorCalls.size} destructor address(es)"
 
   IO.eprintln "\n== 7. Runtime.Run → callCtors → execAndJump (does not return) =="
-  realize bp lo path
+  realize bp prepared.result path
 
 private def runCli (action : CliM Unit) : IO UInt32 := do
   IO.ofExcept (← action.run)

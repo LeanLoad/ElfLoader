@@ -189,20 +189,6 @@ def planSegment (g : LoadGraph) (order : Array (Fin g.objects.size))
     acc := acc.push (← planOne g order objectIdx seg entry.raw entry.covered)
   return acc
 
-/-- Build a dependent function over all `Fin n` indices, failing if any index's
-    entry construction fails. This is the finite traversal that turns per-segment
-    relocation planning from `Except` into the total function stored in
-    `Reloc.Result`. -/
-private def buildFinFunction : {n : Nat} → {β : Fin n → Type} →
-    ((i : Fin n) → Except String (β i)) →
-    Except String ((i : Fin n) → β i)
-  | 0, _, _ => .ok (fun i => Fin.elim0 i)
-  | n + 1, β, step => do
-      let head ← step 0
-      let tail ← buildFinFunction (n := n) (β := fun i => β i.succ) fun i =>
-        step i.succ
-      return Fin.cases head tail
-
 /-- Plan every segment once and return a total dependent lookup function. -/
 private def planSegments (g : LoadGraph) (order : Array (Fin g.objects.size)) :
     Except String ((i : Fin g.objects.size) →

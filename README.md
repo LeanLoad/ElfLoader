@@ -29,9 +29,10 @@ The byte-level trust surface is [`LeanLoad/Parse/`](LeanLoad/Parse/)
 (gABI / psABI C-struct transcriptions and typed views with
 gABI-mandated invariants carried as `Segment` fields). The IO trust
 seam is [`LeanLoad/Runtime/Run.lean`](LeanLoad/Runtime/Run.lean):
-it only interprets an intrinsic-safe `LoadOps` tree, where `SegmentOps`,
-`ElfOps`, and `LoadOps` fields discharge in-bounds and pairwise-disjoint
-without ever materialising a flat predicate array.
+it only interprets the intrinsic-safe `LoadOps` tree inside `Finalize.Result`,
+where `SegmentOps`, `ElfOps`, and `LoadOps` fields discharge in-bounds and
+pairwise-disjoint without ever materialising a flat predicate array; the same
+result also carries entry/init/fini `CallOp` executable-segment witnesses.
 
 See [`DESIGN.md`](DESIGN.md) for the full pipeline + trust-boundary
 writeup.

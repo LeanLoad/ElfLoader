@@ -33,8 +33,8 @@ Hierarchy:
 
 Safety witnesses are fields on the enclosing op tree and are built
 constructively by `Finalize.build` from `BoundPlan`'s per-(i, j)
-`InRange` / `Disjoint` theorems. User-code call/transfer addresses are
-separately witnessed by `CallOp`. There is no separate flat predicate.
+`InRange` / `Disjoint` theorems. User-code call/transfer addresses are packaged
+with the same build result as `CallOp`s. There is no separate flat predicate.
 -/
 
 import LeanLoad.Finalize

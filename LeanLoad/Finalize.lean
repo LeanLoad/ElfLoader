@@ -10,6 +10,8 @@ Public model:
   · `SegmentSetup`, `SegmentOps`, `ElfOps`, `LoadOps` — the structured op tree.
     Safety witnesses live on the op tree itself, so invalid runtime op trees are
     not representable.
+  · `CallOp` and `Result` — proof-carrying user-code transfers packaged with the
+    load ops that make those transfers runnable.
 
 Implementation lives under `LeanLoad/Finalize/`: `BoundPlan.lean` proves the
 reservation bounds consumed by `Build.lean`, `LoadOps.lean` computes setup ops,
@@ -34,8 +36,8 @@ open LeanLoad.Layout (SegmentLayout)
 /-- The pure-pipeline `Reloc.Result` plus `Layout.Layout`, extended with the
     IO-supplied reservation, plus the coherence proof threaded from
     `Runtime.Memory.reserve`'s subtype. Every finalize-stage consumer
-    (`build`, `ctorCalls`, `Main.realize`) takes a `BoundPlan` and accesses its
-    planning fields directly via inheritance. -/
+    (`build`, `Main.realize`) takes a `BoundPlan` and accesses its planning
+    fields directly via inheritance. -/
 structure BoundPlan extends Reloc.Result where
   layout  : Layout.Layout graph.objects.size
   rsv     : Reserve
@@ -109,9 +111,9 @@ structure SegmentOps (rsvAddr rsvLen : UInt64) (objCount : Nat) extends SegmentS
 /-- Per-elf ops: just the per-segment ops bundles. The per-elf base
     address is implicit in each segment's op records (`MmapOp.addr`,
     `StoreOp.addr`, etc.) — those carry absolute addresses computed
-    via `setupSegment` with the base mixed in. The source-of-truth
-    base lives on `BoundPlan.bases[i]` for callers that need it
-    (e.g. `Finalize.ctorCalls`, `Main.debug`). -/
+    via `setupSegment` with the base mixed in. The source-of-truth base lives on
+    `BoundPlan.bases[i]` for callers that need it (e.g. `Finalize.build`,
+    `Main.debug`). -/
 structure ElfOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
   segments : Array (SegmentOps rsvAddr rsvLen objCount)
   mmapsDisjoint : ∀ i j, ∀ hi : i < segments.size, ∀ hj : j < segments.size,
@@ -129,4 +131,33 @@ structure LoadOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
     ((elfs[i]'hi).segments[k_i]'h_ki).mmap = some m_i →
     ((elfs[j]'hj).segments[k_j]'h_kj).mmap = some m_j →
     Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
+
+-- ============================================================================
+-- Finalized user-code transfer witnesses.
+-- ============================================================================
+
+/-- An address lives in some executable PT_LOAD of `bp` — i.e. in the runtime
+    range `[base + eaddr, base + eaddr + memsz)` of some elf's exec segment. -/
+def InExecSeg (bp : BoundPlan) (addr : UInt64) : Prop :=
+  ∃ (i : Fin bp.graph.objects.size)
+    (j : Nat) (h : j < (bp.layout.elfs[i]).elf.segments.items.size),
+    ((bp.layout.elfs[i]).elf.segments.items[j]'h).perm.exec = true ∧
+    (Layout.assignBases bp.rsv.addr bp.layout)[i].toNat +
+        ((bp.layout.elfs[i]).elf.segments.items[j]'h).eaddr.toNat ≤ addr.toNat ∧
+      addr.toNat < (Layout.assignBases bp.rsv.addr bp.layout)[i].toNat +
+        ((bp.layout.elfs[i]).elf.segments.items[j]'h).eaddr.toNat +
+        ((bp.layout.elfs[i]).elf.segments.items[j]'h).memsz.toNat
+
+/-- A proof-carrying user-code call/transfer address in the finalized image. -/
+structure CallOp (bp : BoundPlan) where
+  addr : UInt64
+  inExecSeg : InExecSeg bp addr
+
+/-- The complete pure finalize-stage product: intrinsic-safe load operations plus
+    proof-carrying entry/init/fini transfers over the same bound plan. -/
+structure Result (bp : BoundPlan) where
+  loadOps : LoadOps bp.rsv.addr bp.rsv.len bp.graph.objects.size
+  entryCall : CallOp bp
+  ctorCalls : Array (CallOp bp)
+  dtorCalls : Array (CallOp bp)
 end LeanLoad.Finalize

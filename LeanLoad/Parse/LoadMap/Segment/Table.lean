@@ -48,66 +48,6 @@ structure SegmentTable (fileSize : ByteSize) where
 
 namespace SegmentTable
 
-/-- A ELF-address range contained in one checked segment satisfying `need`
-    (for example, executable or readable). -/
-structure EaddrRangeIn {fileSize : ByteSize} (segments : SegmentTable fileSize)
-    (need : Segment fileSize → Prop)
-    (addr : Eaddr) (len : ByteSize) where
-  index    : Fin segments.items.size
-  contains : Segment.ContainsEaddrRange segments.items[index] addr len
-  permits  : need segments.items[index]
-  deriving Repr
-
-/-- A file-offset range contained in one checked segment satisfying `need`. -/
-structure FileRangeIn {fileSize : ByteSize} (segments : SegmentTable fileSize)
-    (need : Segment fileSize → Prop)
-    (off : FileOff) (len : ByteSize) where
-  index    : Fin segments.items.size
-  contains : Segment.ContainsFileRange segments.items[index] off len
-  permits  : need segments.items[index]
-  deriving Repr
-
-/-- A ELF-address range that is backed by file bytes in one checked segment
-    satisfying `need`. Dynamic-table pointers use this rather than plain memory
-    containment so they cannot point into BSS. -/
-structure FileBackedEaddrRangeIn {fileSize : ByteSize} (segments : SegmentTable fileSize)
-    (need : Segment fileSize → Prop)
-    (addr : Eaddr) (len : ByteSize) where
-  index    : Fin segments.items.size
-  contains : Segment.ContainsFileBackedEaddrRange segments.items[index] addr len
-  permits  : need segments.items[index]
-  deriving Repr
-
-/-- Point membership in one checked segment satisfying `need`. Kept as an
-    `abbrev` so legacy existential proofs can still destruct it directly. -/
-abbrev ContainsEaddr {fileSize : ByteSize} (segments : SegmentTable fileSize)
-    (need : Segment fileSize → Prop) (addr : Eaddr) : Prop :=
-  ∃ i, ∃ h : i < segments.items.size,
-    need (segments.items[i]'h) ∧ Segment.ContainsEaddr (segments.items[i]'h) addr
-
-abbrev ExecAddr {fileSize : ByteSize} (segments : SegmentTable fileSize) (addr : Eaddr) : Prop :=
-  ContainsEaddr segments (fun s => s.perm.exec) addr
-
-abbrev ReadEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize) (addr : Eaddr)
-    (len : ByteSize) :=
-  EaddrRangeIn segments (fun s => s.perm.read) addr len
-
-abbrev ExecEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize) (addr : Eaddr)
-    (len : ByteSize) :=
-  EaddrRangeIn segments (fun s => s.perm.exec) addr len
-
-abbrev ReadFileRange {fileSize : ByteSize} (segments : SegmentTable fileSize) (off : FileOff)
-    (len : ByteSize) :=
-  FileRangeIn segments (fun s => s.perm.read) off len
-
-abbrev AnyFileBackedEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize)
-    (addr : Eaddr) (len : ByteSize) :=
-  FileBackedEaddrRangeIn segments (fun _ => True) addr len
-
-abbrev ReadFileBackedEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize)
-    (addr : Eaddr) (len : ByteSize) :=
-  FileBackedEaddrRangeIn segments (fun s => s.perm.read) addr len
-
 /-- Empty checked segment array. Useful for tests and synthetic Elfs. -/
 def empty {fileSize : ByteSize} : SegmentTable fileSize :=
   { items := #[],
@@ -204,6 +144,8 @@ end ProgramHeaderMap
     no-ops) or lives inside an executable PT_LOAD's
     `[eaddr, eaddr + memsz)`. -/
 def callTargetInExecSeg {fileSize : ByteSize} (segments : SegmentTable fileSize) (entry : Eaddr) : Prop :=
-  entry.val = 0 ∨ SegmentTable.ExecAddr segments entry
+  entry.val = 0 ∨
+    ∃ i, ∃ h : i < segments.items.size,
+      (segments.items[i]'h).perm.exec ∧ Segment.ContainsEaddr (segments.items[i]'h) entry
 
 end LeanLoad.Parse

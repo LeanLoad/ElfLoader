@@ -31,7 +31,7 @@ namespace LoadMap
     segment range must be file-backed (`p_filesz`), not merely memory-backed
     (`p_memsz`), because the decoder is about to read bytes from the ELF file. -/
 structure FileBackedEaddrRange (view : LoadMap fileSize) (range : EaddrRange) where
-  segmentRange : SegmentTable.AnyFileBackedEaddrRange view.segments range.start range.size
+  segmentRange : SegmentTable.FileBackedEaddrRangeIn view.segments range.start range.size
 
 namespace FileBackedEaddrRange
 
@@ -80,8 +80,8 @@ def mapRange (view : LoadMap fileSize) (range : EaddrRange) :
     let seg := view.segments.items[idx]
     match (inferInstance : Decidable (Segment.ContainsFileBackedEaddrRange seg va len)) with
     | .isTrue h_in =>
-       let segmentRange : SegmentTable.AnyFileBackedEaddrRange view.segments va len :=
-         { index := idx, contains := h_in, permits := trivial }
+       let segmentRange : SegmentTable.FileBackedEaddrRangeIn view.segments va len :=
+         { index := idx, contains := h_in }
        return .ok { segmentRange }
     | .isFalse _ => pure ()
   return .error s!"parse: ELF-address range 0x{va.toNat}..+{len.toNat} is not \

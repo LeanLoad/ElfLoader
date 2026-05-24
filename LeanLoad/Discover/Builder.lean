@@ -1,14 +1,13 @@
 /-
 Discover graph construction carrier.
 
-`Discovered` holds everything resolved so far (objects + deps + a
-name→idx HashMap accelerator) plus the invariants we maintain as
-we traverse pending `WorkItem`s. Its field naming intentionally mirrors
+`Discovered` holds everything resolved so far (objects + deps) plus the
+invariants we maintain as we traverse pending `WorkItem`s. Its field naming
+intentionally mirrors
 `LoadGraph` so the graph half of final promotion is mostly structural.
 
-Carries the first four `LoadGraph` invariants plus `nameIxValid`
-(the HashMap accelerator's bridge to the spec-level `findDiscoveredIdx`)
-plus the `rowSum` / `postOrder*` invariants that `Traversal` consumes.
+Carries the first four `LoadGraph` invariants plus the `rowSum` / `postOrder*`
+invariants that `Traversal` consumes.
 The fifth `LoadGraph` invariant — `closure` — is *not* carried
 here; individual push/recordDep steps break it. `closure` is
 established at the very end of `Finalize.discoverFrom`, when every
@@ -26,7 +25,6 @@ used by `Traversal.discoverWork` / `discoverWorkList` to discharge the
 `WorkResult` / `WorkListAcc` invariants they thread through the recursion.
 -/
 
-import Std.Data.HashMap
 import LeanLoad.Discover.Order
 
 namespace LeanLoad.Discover
@@ -122,9 +120,7 @@ theorem findDiscoveredIdx_none_iff (objects : Array DiscoveredObject) (name : St
   rw [Array.findIdx?_eq_none_iff]
   simp
 
-/-- Pushing a freshly-resolved object preserves the names-Nodup invariant.
-    The precondition `findDiscoveredIdx = none` is what `Discovered.pushObject`
-    discharges from `nameIx[obj.name]? = none` via `nameIxValid`. -/
+/-- Pushing a freshly-resolved object preserves the names-Nodup invariant. -/
 theorem nodup_names_push_of_findDiscoveredIdx_none
     {objects : Array DiscoveredObject} {obj : DiscoveredObject}
     (h_nodup : (objects.map (·.name)).toList.Nodup)
@@ -155,9 +151,6 @@ structure Discovered where
       populated only after the discoverWork call that pushed `objects[i]` has
       returned. -/
   deps        : Array (Array Nat)
-  /-- Name→idx dedup accelerator. Bridges to `findDiscoveredIdx` via
-      `nameIxValid`. -/
-  nameIx      : Std.HashMap String Nat
   /-- Per-object count of `DT_NEEDED` entries still to be recorded into
       `deps[i]`. Starts at `obj.elf.needed.size` when an object is
       pushed; decremented by `recordDep`. Tied to `deps[i].size` by
@@ -173,16 +166,12 @@ structure Discovered where
   postOrder   : Array Nat
   /-- Non-emptiness — `initial` seeds with main. -/
   sizePos     : 0 < objects.size
-  /-- Names pairwise distinct — `pushObject` checks via `nameIx[name]?`. -/
+  /-- Names pairwise distinct — `pushObject` checks `findDiscoveredIdx`. -/
   namesNodup  : (objects.map (·.name)).toList.Nodup
   /-- `deps` parallel to `objects`. -/
   depsSize    : deps.size = objects.size
   /-- Every recorded edge target is a valid object index. -/
   depsBounds  : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
-  /-- `nameIx` is a faithful name→index map for `objects`. Lets dedup
-      run in O(1) while invariants are stated in terms of the
-      spec-level `findDiscoveredIdx`. -/
-  nameIxValid : ∀ name : String, nameIx[name]? = findDiscoveredIdx objects name
   /-- `pending` parallel to `objects`. -/
   pendingSize : pending.size = objects.size
   /-- Per-row balance: `deps[i].size + pending[i] = needed_i.size`.
@@ -229,7 +218,6 @@ theorem edgeTarget_done_or_active (s : Discovered) {active : ActiveStack}
 def initial (mainObj : DiscoveredObject) : Discovered :=
   { objects := #[mainObj]
     deps := #[#[]]
-    nameIx := (∅ : Std.HashMap String Nat).insert mainObj.name 0
     pending := #[mainObj.elf.needed.size]
     sizePos := Nat.zero_lt_one
     namesNodup := by simp
@@ -241,16 +229,6 @@ def initial (mainObj : DiscoveredObject) : Discovered :=
         simp at h_lt'; omega
       subst h_i_zero
       exact absurd h_mem (by simp)
-    nameIxValid := by
-      intro name
-      show ((∅ : Std.HashMap String Nat).insert mainObj.name 0)[name]?
-            = findDiscoveredIdx #[mainObj] name
-      have h_find : findDiscoveredIdx (#[mainObj] : Array DiscoveredObject) name
-            = if mainObj.name = name then some 0 else none := by
-        unfold findDiscoveredIdx
-        show ((#[] : Array DiscoveredObject).push mainObj).findIdx? _ = _
-        rw [Array.findIdx?_push]; simp
-      rw [h_find, Std.HashMap.getElem?_insert]; simp
     pendingSize := rfl
     rowSum := by
       intro i h
@@ -271,19 +249,14 @@ def initial (mainObj : DiscoveredObject) : Discovered :=
     `deps` row starts empty; subsequent `recordDep newIdx _` calls fill
     it as the DFS recurses into each `DT_NEEDED`. `pending` gets
     `obj.elf.needed.size` for the new entry — every iteration of the
-    caller's `discoverWorkList` over `elf.needed.toList` decrements it. The
-    `h_fresh` precondition is the `nameIx[obj.name]? = none` check
-    that `discoverWork` has already done. -/
+    caller's `discoverWorkList` over `elf.needed.toList` decrements it. -/
 def pushObject (s : Discovered) (obj : DiscoveredObject)
-    (h_fresh : s.nameIx[obj.name]? = none) : Discovered :=
-  have h_find_fresh : findDiscoveredIdx s.objects obj.name = none :=
-    (s.nameIxValid obj.name).symm.trans h_fresh
+    (h_fresh : findDiscoveredIdx s.objects obj.name = none) : Discovered :=
   { objects := s.objects.push obj
     deps := s.deps.push #[]
-    nameIx := s.nameIx.insert obj.name s.objects.size
     pending := s.pending.push obj.elf.needed.size
     sizePos := by rw [Array.size_push]; omega
-    namesNodup := nodup_names_push_of_findDiscoveredIdx_none s.namesNodup h_find_fresh
+    namesNodup := nodup_names_push_of_findDiscoveredIdx_none s.namesNodup h_fresh
     depsSize := by
       show (s.deps.push #[]).size = (s.objects.push obj).size
       rw [Array.size_push, Array.size_push, s.depsSize]
@@ -304,22 +277,6 @@ def pushObject (s : Discovered) (obj : DiscoveredObject)
           rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
         rw [h_get] at h_mem
         exact absurd h_mem (by simp)
-    nameIxValid := by
-      intro name
-      show (s.nameIx.insert obj.name s.objects.size)[name]?
-            = findDiscoveredIdx (s.objects.push obj) name
-      rw [Std.HashMap.getElem?_insert]
-      unfold findDiscoveredIdx
-      rw [Array.findIdx?_push]
-      have h_old := s.nameIxValid name
-      by_cases h : obj.name = name
-      · have h_find_old : s.objects.findIdx? (·.name == name) = none := by
-          rw [← h]; exact h_find_fresh
-        simp [h, h_find_old]
-      · simp [h]
-        rw [h_old]
-        unfold findDiscoveredIdx
-        cases s.objects.findIdx? (·.name == name) <;> rfl
     pendingSize := by
       show (s.pending.push obj.elf.needed.size).size = (s.objects.push obj).size
       rw [Array.size_push, Array.size_push, s.pendingSize]
@@ -463,14 +420,14 @@ def markComplete (s : Discovered) (idx : Nat) (h_lt : idx < s.objects.size)
 
 /-- `pushObject` grows `objects` by one. -/
 @[simp] theorem pushObject_size (s : Discovered) (obj : DiscoveredObject)
-    (h_fresh : s.nameIx[obj.name]? = none) :
+    (h_fresh : findDiscoveredIdx s.objects obj.name = none) :
     (pushObject s obj h_fresh).objects.size = s.objects.size + 1 := by
   show (s.objects.push obj).size = _
   rw [Array.size_push]
 
 /-- `pushObject` doesn't touch `postOrder`. -/
 @[simp] theorem pushObject_postOrder (s : Discovered) (obj : DiscoveredObject)
-    (h_fresh : s.nameIx[obj.name]? = none) :
+    (h_fresh : findDiscoveredIdx s.objects obj.name = none) :
     (pushObject s obj h_fresh).postOrder = s.postOrder := rfl
 
 /-- `recordDep` doesn't touch `postOrder`. -/
@@ -518,7 +475,8 @@ theorem recordDep_deps_other (s : Discovered) (src tgt : Nat)
 
 /-- `pushObject` doesn't touch existing dep rows. -/
 theorem pushObject_deps_old (s : Discovered) (obj : DiscoveredObject)
-    (h_fresh : s.nameIx[obj.name]? = none) (j : Nat) (h_j : j < s.objects.size) :
+    (h_fresh : findDiscoveredIdx s.objects obj.name = none) (j : Nat)
+    (h_j : j < s.objects.size) :
     ((pushObject s obj h_fresh).deps[j]'(by
         rw [(pushObject s obj h_fresh).depsSize]
         show j < (s.objects.push obj).size
@@ -530,7 +488,7 @@ theorem pushObject_deps_old (s : Discovered) (obj : DiscoveredObject)
 
 /-- At the new index, `pushObject`'s pending entry is `obj.elf.needed.size`. -/
 theorem pushObject_pending_new (s : Discovered) (obj : DiscoveredObject)
-    (h_fresh : s.nameIx[obj.name]? = none) :
+    (h_fresh : findDiscoveredIdx s.objects obj.name = none) :
     ((pushObject s obj h_fresh).pending[s.objects.size]'(by
         show s.objects.size < (s.pending.push obj.elf.needed.size).size
         rw [Array.size_push, s.pendingSize]; omega))
@@ -541,7 +499,8 @@ theorem pushObject_pending_new (s : Discovered) (obj : DiscoveredObject)
 
 /-- At old indices, `pushObject` doesn't change `pending`. -/
 theorem pushObject_pending_old (s : Discovered) (obj : DiscoveredObject)
-    (h_fresh : s.nameIx[obj.name]? = none) (j : Nat) (h_j : j < s.objects.size) :
+    (h_fresh : findDiscoveredIdx s.objects obj.name = none) (j : Nat)
+    (h_j : j < s.objects.size) :
     ((pushObject s obj h_fresh).pending[j]'(by
         show j < (s.pending.push obj.elf.needed.size).size
         rw [Array.size_push, s.pendingSize]
