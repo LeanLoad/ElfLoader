@@ -36,8 +36,9 @@ Key types:
     planned tree. `SegmentOps.storesInRange` reads this witness
     structurally (via `BoundPlan.segment_storeRange_in_rsv`).
 
-`Result.ofDiscover` validates every relocation-bearing segment up front; the
-`Result.entries` projection is total because `Result`'s constructor is private.
+`Result.ofDiscover` plans every relocation-bearing segment up front; a successful
+`Result` stores only total segment-entry functions, so `Result.entries` has no
+failure branch.
 -/
 
 import LeanLoad.Discover.Order
@@ -170,7 +171,7 @@ def planOne (g : LoadGraph) (order : Array (Fin g.objects.size))
   return entry
 
 /-- Plan one segment's relas (then jmprel — both go through the same
-    formula at exec time). Used by `Layout.Basic` when
+    formula at exec time). Used by `ElfLayout.ofElf` when
     constructing each `SegmentLayout`. The `Reloc.covered` witness on each
     `Parse.Reloc.RelocTable` entry is threaded into the planned `Entry`'s
     `covered` field. -/
@@ -188,9 +189,35 @@ def planSegment (g : LoadGraph) (order : Array (Fin g.objects.size))
     acc := acc.push (← planOne g order objectIdx seg entry.raw entry.covered)
   return acc
 
+/-- Build a dependent function over all `Fin n` indices, failing if any index's
+    entry construction fails. This is the finite traversal that turns per-segment
+    relocation planning from `Except` into the total function stored in
+    `Reloc.Result`. -/
+private def buildFinFunction : {n : Nat} → {β : Fin n → Type} →
+    ((i : Fin n) → Except String (β i)) →
+    Except String ((i : Fin n) → β i)
+  | 0, _, _ => .ok (fun i => Fin.elim0 i)
+  | n + 1, β, step => do
+      let head ← step 0
+      let tail ← buildFinFunction (n := n) (β := fun i => β i.succ) fun i =>
+        step i.succ
+      return Fin.cases head tail
+
+/-- Plan every segment once and return a total dependent lookup function. -/
+private def planSegments (g : LoadGraph) (order : Array (Fin g.objects.size)) :
+    Except String ((i : Fin g.objects.size) →
+      (j : Fin g.objects[i].elf.segments.items.size) →
+        Array (Entry g.objects.size (g.objects[i].elf.segments.items[j]))) :=
+  buildFinFunction (n := g.objects.size) (β := fun i =>
+    (j : Fin g.objects[i].elf.segments.items.size) →
+      Array (Entry g.objects.size (g.objects[i].elf.segments.items[j]))) fun i =>
+    buildFinFunction (n := g.objects[i].elf.segments.items.size) (β := fun j =>
+      Array (Entry g.objects.size (g.objects[i].elf.segments.items[j]))) fun j =>
+      planSegment g order i j
+
 /-- Base-free relocation plan for a discovered result. The constructor is private:
-    callers use `Result.ofDiscover`, which validates every segment's relocation records
-    before exposing total `entries`. -/
+    callers use `Result.ofDiscover`, which plans every segment's relocation
+    records before exposing total `entries`. -/
 structure Result where
   private mk ::
   graph : LoadGraph
@@ -199,7 +226,7 @@ structure Result where
   segmentRelocs :
     (i : Fin graph.objects.size) →
     (j : Fin graph.objects[i].elf.segments.items.size) →
-      Except String (Array (Entry graph.objects.size (graph.objects[i].elf.segments.items[j])))
+      Array (Entry graph.objects.size (graph.objects[i].elf.segments.items[j]))
 
 namespace Result
 
@@ -218,38 +245,23 @@ theorem objectElfs_size (p : Result) :
 def formula (p : Result) : Reloc.ABI.Formula :=
   Reloc.ABI.formulaFor p.graph.main.elf.machine
 
-/-- Fallible segment entries. Mostly useful for diagnostics; `entries` is the
-    total projection for consumers after `Result.ofDiscover` validation. -/
+/-- Segment entries for a checked relocation plan. -/
 def segment (p : Result) (i : Fin p.graph.objects.size)
     (j : Fin p.graph.objects[i].elf.segments.items.size) :
-    Except String (Array (Entry p.graph.objects.size (p.graph.objects[i].elf.segments.items[j]))) :=
+    Array (Entry p.graph.objects.size (p.graph.objects[i].elf.segments.items[j])) :=
   p.segmentRelocs i j
 
-/-- Total entries for a checked segment. The `.error` branch is unreachable for
-    values produced by `Result.ofDiscover`; the constructor is private so external code
-    cannot manufacture an unchecked plan. -/
+/-- Total entries for a checked segment. -/
 def entries (p : Result) (i : Fin p.graph.objects.size)
     (j : Fin p.graph.objects[i].elf.segments.items.size) :
     Array (Entry p.graph.objects.size (p.graph.objects[i].elf.segments.items[j])) :=
-  match p.segment i j with
-  | .ok entries => entries
-  | .error _ => #[]
+  p.segment i j
 
 /-- Build and validate the relocation plan for a discovered result. -/
 def ofDiscover (d : Discover.Result) : Except String Result := do
   let order := Reloc.Symbol.bfsOrder d.graph
-  let segmentRelocs :=
-    fun (i : Fin d.graph.objects.size) (j : Fin d.graph.objects[i].elf.segments.items.size) =>
-      planSegment d.graph order i j
-  let result : Result := { graph := d.graph, initOrder := d.initOrder, order, segmentRelocs }
-  for h : i in [:d.graph.objects.size] do
-    let objectIdx : Fin d.graph.objects.size := ⟨i, h.upper⟩
-    for h_seg : j in [:d.graph.objects[objectIdx].elf.segments.items.size] do
-      let segIdx : Fin d.graph.objects[objectIdx].elf.segments.items.size := ⟨j, h_seg.upper⟩
-      match result.segment objectIdx segIdx with
-      | .ok _ => pure ()
-      | .error e => .error e
-  return result
+  let segmentRelocs ← planSegments d.graph order
+  return { graph := d.graph, initOrder := d.initOrder, order, segmentRelocs }
 
 end Result
 

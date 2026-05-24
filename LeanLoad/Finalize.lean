@@ -34,12 +34,48 @@ open LeanLoad.Layout (SegmentLayout)
 /-- The pure-pipeline `Reloc.Result` plus `Layout.Layout`, extended with the
     IO-supplied reservation, plus the coherence proof threaded from
     `Runtime.Memory.reserve`'s subtype. Every finalize-stage consumer
-    (`build`, `ctorAddrs`, `Main.realize`) takes a `BoundPlan` and accesses its
+    (`build`, `ctorCalls`, `Main.realize`) takes a `BoundPlan` and accesses its
     planning fields directly via inheritance. -/
 structure BoundPlan extends Reloc.Result where
   layout  : Layout.Layout graph.objects.size
   rsv     : Reserve
   h_total : rsv.len = layout.totalSpan
+
+-- ============================================================================
+-- Finalized op syntax — pure plan records interpreted later by Runtime.Memory.
+-- ============================================================================
+
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap plan. -/
+structure MmapOp where
+  handle : Runtime.File
+  addr   : UInt64
+  len    : UInt64
+  prot   : UInt32
+  offset : UInt64
+  deriving Repr
+
+/-- Zero `len` bytes starting at `addr`. -/
+structure ZeroOp where
+  addr : UInt64
+  len  : UInt64
+  deriving Repr
+
+/-- Store the low `size` bytes (4 or 8) of `value` at `addr`. -/
+structure StoreOp where
+  addr  : UInt64
+  size  : UInt8
+  value : UInt64
+  deriving Repr
+
+/-- Set protection on `[addr, addr+len)`. -/
+structure MprotectOp where
+  addr : UInt64
+  len  : UInt64
+  prot : UInt32
+  deriving Repr
+
+/-- Width of a `StoreOp` as a `UInt64`, for range arithmetic. -/
+@[inline] def StoreOp.byteLen (s : StoreOp) : UInt64 := s.size.toUInt64
 
 -- ============================================================================
 -- LoadOps tree — structured runtime operation plan.
@@ -75,7 +111,7 @@ structure SegmentOps (rsvAddr rsvLen : UInt64) (objCount : Nat) extends SegmentS
     `StoreOp.addr`, etc.) — those carry absolute addresses computed
     via `setupSegment` with the base mixed in. The source-of-truth
     base lives on `BoundPlan.bases[i]` for callers that need it
-    (e.g. `Finalize.ctorAddrs`, `Main.debug`). -/
+    (e.g. `Finalize.ctorCalls`, `Main.debug`). -/
 structure ElfOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
   segments : Array (SegmentOps rsvAddr rsvLen objCount)
   mmapsDisjoint : ∀ i j, ∀ hi : i < segments.size, ∀ hj : j < segments.size,

@@ -190,6 +190,31 @@ def ofSegments {fileSize : ByteSize} (segments : SegmentTable fileSize) (phoff :
 
 end ProgramHeaderMap
 
+/-- Checked program-header table metadata needed to emit `AT_PHDR`, `AT_PHENT`,
+    and `AT_PHNUM`. The map witness proves the table bytes are file-backed by a
+    PT_LOAD segment before runtime computes the loaded address. -/
+structure ProgramHeaderTable {fileSize : ByteSize} (segments : SegmentTable fileSize) where
+  off : FileOff
+  count : UInt16
+  map : ProgramHeaderMap segments off (ProgramHeaderSize * count.toNat)
+  deriving Repr
+
+namespace ProgramHeaderTable
+
+/-- Virtual address of the program-header table in the loaded image, relative to
+    the object's base. For `count = 0`, `AT_PHDR` is unused and this returns 0. -/
+def eaddr {fileSize : ByteSize} {segments : SegmentTable fileSize}
+    (phdr : ProgramHeaderTable segments) : Eaddr :=
+  phdr.map.eaddr
+
+/-- Build checked program-header metadata from ELF header fields and PT_LOADs. -/
+def ofSegments {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (off : FileOff) (count : UInt16) : Except String (ProgramHeaderTable segments) := do
+  let map ← ProgramHeaderMap.ofSegments segments off (ProgramHeaderSize * count.toNat)
+  return { off, count, map }
+
+end ProgramHeaderTable
+
 -- ============================================================================
 -- Ctor / dtor address coverage — every non-zero entry in
 -- `DT_INIT_ARRAY` / `DT_FINI_ARRAY` is a callable function. For ET_DYN

@@ -22,8 +22,8 @@ open Runtime
     index so heterogeneous files can live in one `Array Elf`; the indexed
     witnesses stay on the segment table and the structures that depend on it.
     Only downstream-consumed ELF-header facts are retained: `machine` selects
-    psABI-specific relocation semantics, and `phdr*` carries the program-header
-    table metadata needed for `AT_PHDR`. -/
+    psABI-specific relocation semantics, and `phdrTable` carries the checked
+    program-header metadata needed for `AT_PHDR`. -/
 structure Elf where
   fileSize : ByteSize
   /-- Target ISA / psABI (`e_machine`, gabi 02 § Machine), used to pick the
@@ -32,14 +32,10 @@ structure Elf where
   /-- Checked PT_LOAD array, in phdr order, with array-level
       ordering/disjointness witnessed. -/
   segments : SegmentTable fileSize
-  /-- Program-header table file offset (`e_phoff`, gabi 02 § ELF Header). -/
-  phdrOff : FileOff
-  /-- Program-header count (`e_phnum`, gabi 02 § ELF Header). -/
-  phdrCount : UInt16
   /-- Checked mapping from the program-header table to an ELF address for `AT_PHDR`.
       The table must be file-backed by a PT_LOAD; this pushes the runtime auxv
       precondition into parse. -/
-  phdrMap : ProgramHeaderMap segments phdrOff (ProgramHeaderSize * phdrCount.toNat)
+  phdrTable : ProgramHeaderTable segments
   symtab   : Array Symbol
   needed   : Array String
   soname   : Option String
@@ -104,9 +100,9 @@ def parseFile [Monad m] (file : Runtime.File m) : ExceptT String m Elf := do
     parse file header.programHeaderRange
       (ProgramHeader.arrayDecoder fileSize header.e_phnum.toNat)
   let loadMap ← liftExcept (LoadMap.ofHeaders fileSize header programHeaders)
-  let phdrNbytes := ProgramHeaderSize * loadMap.header.e_phnum.toNat
-  let phdrMap ←
-    liftExcept (ProgramHeaderMap.ofSegments loadMap.segments loadMap.header.e_phoff phdrNbytes)
+  let phdrTable ←
+    liftExcept (ProgramHeaderTable.ofSegments loadMap.segments loadMap.header.e_phoff
+      loadMap.header.e_phnum)
   let locs : DynMap fileSize ← match programHeaders.find? (·.p_type == .dynamic) with
     | none => pure default
     | some ph =>
@@ -129,9 +125,7 @@ def parseFile [Monad m] (file : Runtime.File m) : ExceptT String m Elf := do
     fileSize
     machine := loadMap.header.e_machine,
     segments := loadMap.segments,
-    phdrOff := loadMap.header.e_phoff,
-    phdrCount := loadMap.header.e_phnum,
-    phdrMap,
+    phdrTable,
     symtab,
     needed,
     soname,

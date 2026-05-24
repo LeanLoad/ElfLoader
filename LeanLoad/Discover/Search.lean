@@ -29,10 +29,6 @@ structure Context where
   envPath   : Option String := none
   deriving Repr, Inhabited
 
-/-- Build a search context from traversal work plus an explicit environment. -/
-def Context.ofWorkItem (work : WorkItem) (envPath : Option String := none) : Context :=
-  { originDir := work.originDir, rpath := work.rpath, runpath := work.runpath, envPath }
-
 /-- Default directories after `RPATH`/`LD_LIBRARY_PATH`/`RUNPATH` fail.
 
     gABI 08 § Shared Object Dependencies names `/usr/lib` "or such other

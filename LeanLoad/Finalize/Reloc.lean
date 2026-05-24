@@ -25,7 +25,7 @@ Entry points:
 Used by `Finalize.buildSegment` (one call per segment).
 -/
 
-import LeanLoad.Layout.Basic
+import LeanLoad.Layout.Segment
 import LeanLoad.Finalize.LoadOps
 import LeanLoad.Reloc.ABI
 import LeanLoad.Parse.LoadMap.Segment.Basic

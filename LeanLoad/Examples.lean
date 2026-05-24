@@ -17,7 +17,7 @@ and relocations. `libc.so.6` defines the one strong symbol the fixture imports.
 import LeanLoad.Parse.Examples
 import LeanLoad.Discover.Finalize
 import LeanLoad.Reloc
-import LeanLoad.Layout.Basic
+import LeanLoad.Layout
 import LeanLoad.Finalize.Build
 
 namespace LeanLoad.Examples
@@ -185,11 +185,11 @@ private def boundPlan : Except String Finalize.BoundPlan := do
 private def boundPlan? : Option Finalize.BoundPlan :=
   boundPlan.toOption
 
-private def ctorAddrs? : Option (Array UInt64) :=
-  boundPlan?.map Finalize.ctorAddrs
+private def ctorCallAddrs? : Option (Array UInt64) :=
+  boundPlan?.map fun bp => (Finalize.ctorCalls bp).map (·.addr)
 
-private def dtorAddrs? : Option (Array UInt64) :=
-  boundPlan?.map Finalize.dtorAddrs
+private def dtorCallAddrs? : Option (Array UInt64) :=
+  boundPlan?.map fun bp => (Finalize.dtorCalls bp).map (·.addr)
 
 private def loadElfCount? : Option Nat := do
   let bp ← boundPlan?
@@ -210,8 +210,8 @@ private def mainDataStoreValues? : Option (Array UInt64) := do
   let dataOps ← mainOps.segments[1]?
   some (dataOps.stores.map (fun store => store.value))
 
-#guard ctorAddrs? == some #[0x80000100]
-#guard dtorAddrs? == some #[0x80000108]
+#guard ctorCallAddrs? == some #[0x80000100]
+#guard dtorCallAddrs? == some #[0x80000108]
 #guard loadElfCount? == some 3
 #guard mainDataStoreAddrs? == some #[0x80001410, 0x80001420]
 #guard mainDataStoreValues? == some #[0x80000000, 0x80002220]

@@ -65,9 +65,7 @@ private def mockElf (soname : Option String := some "anon")
   fileSize := mockFileSize
   machine  := .x86_64
   segments := mockSegments
-  phdrOff := 0
-  phdrCount := 0
-  phdrMap := .empty rfl
+  phdrTable := { off := 0, count := 0, map := .empty rfl }
   symtab   := #[]
   needed
   soname
@@ -122,7 +120,9 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
             (lexicalOriginDir mainPath) mainElf)
       | none => .error s!"discoverExample: main {mainPath} not in store"
     findDependency := fun work => do
-      let paths ← Search.candidates work.needed (Search.Context.ofWorkItem work envPath)
+      let ctx : Search.Context :=
+        { originDir := work.originDir, rpath := work.rpath, runpath := work.runpath, envPath }
+      let paths ← Search.candidates work.needed ctx
       .ok <| paths.findSome? fun path =>
         (store.getElf? path).bind fun elf =>
           elf.soname.map fun name =>

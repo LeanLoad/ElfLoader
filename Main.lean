@@ -25,7 +25,9 @@ private abbrev CliM := ExceptT String IO
     reporting that no matching object exists (gABI 08 § Shared Object
     Dependencies). -/
 private def findDependencyPath (work : Discover.WorkItem) : CliM (Option Discover.DiscoveredObject) := do
-  let paths ← Discover.Search.candidatesIO work.needed (Discover.Search.Context.ofWorkItem work)
+  let ctx : Discover.Search.Context :=
+    { originDir := work.originDir, rpath := work.rpath, runpath := work.runpath }
+  let paths ← Discover.Search.candidatesIO work.needed ctx
   let mut parseFailures : Array String := #[]
   for path in paths do
     match ← Runtime.File.openPath path with
@@ -69,17 +71,19 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
     **Does not return.** -/
 private def realize (bp : Finalize.BoundPlan)
     (lo : Finalize.LoadOps bp.rsv.addr bp.rsv.len bp.objCount)
-    (ctorAddrs : Array UInt64) (path : String) : CliM Unit := do
-  let mainElf := bp.graph.main.elf
+    (path : String) : CliM Unit := do
+  let mainIdx : Fin bp.objCount := ⟨0, bp.n_pos⟩
+  let mainElf := (bp.elfAt mainIdx).elf
   let mainBase := bp.mainBase
-  let entry  := mainBase + mainElf.callTargets.entry.val.val
-  let programHeaderVa := mainBase + mainElf.phdrMap.eaddr.val
-  let _ ← (Runtime.runLoadOps Runtime.Memory.io lo : IO Unit)
+  let entryCall ← liftExcept (Finalize.entryCall bp)
+  let entry  := entryCall.addr
+  let programHeaderVa := mainBase + mainElf.phdrTable.eaddr.val
+  let _ ← (Runtime.runLoadOps lo : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
-  let _ ← (ctorAddrs.forM Runtime.callCtor : IO Unit)
-  let stack ← Runtime.Memory.io.reserve stackBytes
-  let phnum  := mainElf.phdrCount.toUInt64
+  let _ ← ((Finalize.ctorCalls bp).forM (fun call => Runtime.callCtor call.addr) : IO Unit)
+  let stack ← Runtime.Memory.reserve stackBytes
+  let phnum  := mainElf.phdrTable.count.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
   let _ ← (Runtime.execAndJump
     { entry
@@ -91,6 +95,23 @@ private def realize (bp : Finalize.BoundPlan)
       stackLen := stack.val.len
       argv0 := path } : IO Unit)
   pure ()
+
+/-- Pure/IO preparation shared by `load` and `debug`: discover dependencies,
+    resolve relocations, compute layout, reserve memory, and build witnessed ops. -/
+private structure Prepared where
+  bp : Finalize.BoundPlan
+  loadOps : Finalize.LoadOps bp.rsv.addr bp.rsv.len bp.objCount
+
+/-- Discover → Reloc → Layout → Reserve → Finalize, without running user code. -/
+private def prepare (path : String) : CliM Prepared := do
+  let discovery ← Discover.discover objectFinder 4096 path
+  let relocPlan ← Reloc.Result.ofDiscover discovery
+  let layout ← Layout.Layout.ofRelocResult relocPlan
+  let rsvW ← Runtime.Memory.reserve layout.totalSpan
+  let bp : Finalize.BoundPlan :=
+    { relocPlan with layout, rsv := rsvW.val, h_total := rsvW.property }
+  let loadOps ← Finalize.build bp
+  pure { bp, loadOps }
 
 /-- Right-pad a string to `objCount` chars with `c`. -/
 private def padR (s : String) (objCount : Nat) (c : Char := ' ') : String :=
@@ -121,22 +142,16 @@ private def Nat.hex12 (objCount : Nat) : String :=
     relocation symbols) → Layout → kernel-picked reservation → Finalize → realize.
     **Does not return.** -/
 def load (path : String) : CliM Unit := do
-  let discovery ← Discover.discover objectFinder 4096 path
-  let relocPlan ← Reloc.Result.ofDiscover discovery
-  let layout ← Layout.Layout.ofRelocResult relocPlan
-  let rsvW ← Runtime.Memory.io.reserve layout.totalSpan
-  let bp : Finalize.BoundPlan :=
-    { relocPlan with layout, rsv := rsvW.val, h_total := rsvW.property }
-  let witnessed ← Finalize.build bp
-  let ctorAddrs := Finalize.ctorAddrs bp
-  realize bp witnessed ctorAddrs path
+  let prepared ← prepare path
+  realize prepared.bp prepared.loadOps path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
     stderr. Like `load`, this transfers control and does not return. -/
 def debug (path : String) : CliM Unit := do
   IO.eprintln "== 1. Discover (DFS over DT_NEEDED) =="
-  let discovery ← Discover.discover objectFinder 4096 path
-  let g := discovery.graph
+  let prepared ← prepare path
+  let bp := prepared.bp
+  let g := bp.graph
   for obj in g.objects do
     IO.eprintln s!"  {obj.name}"
 
@@ -147,7 +162,7 @@ def debug (path : String) : CliM Unit := do
     IO.eprintln s!"[{i}] {obj.name}"
     IO.eprintln s!"  machine    = {repr elf.machine}"
     IO.eprintln s!"  entry      = 0x{Nat.hex elf.callTargets.entry.val.toNat}"
-    IO.eprintln s!"  phnum      = {elf.phdrCount}"
+    IO.eprintln s!"  phnum      = {elf.phdrTable.count}"
     if let some sn := elf.soname  then IO.eprintln s!"  soname     = {sn}"
     if let some rp := elf.runpath then IO.eprintln s!"  runpath    = {rp}"
     if !elf.needed.isEmpty then
@@ -168,9 +183,9 @@ def debug (path : String) : CliM Unit := do
         memsz=0x{Nat.hex seg.memsz.toNat} \
         prot={prot}  rela={relocs.size}  jmprel={jmprel.size}"
 
-  -- One-shot pure-pipeline build. Reloc resolves only symbols referenced by
-  -- relocation records; Layout then consumes those planned entries.
-  let relocPlan ← Reloc.Result.ofDiscover discovery
+  -- `prepare` ran the one-shot pure pipeline. Reloc resolves only symbols
+  -- referenced by relocation records; Layout then consumes those planned entries.
+  let relocPlan := bp
 
   IO.eprintln "\n== 3. Reloc (resolve symbols referenced by dynamic relocations) =="
   let providerName (r : Reloc.Symbol.SymRef relocPlan.graph.objects.size) : String :=
@@ -184,7 +199,7 @@ def debug (path : String) : CliM Unit := do
     let elf := relocPlan.graph.objects[objectIdx].elf
     for h_seg : segI in [:elf.segments.items.size] do
       let segIdx : Fin elf.segments.items.size := ⟨segI, h_seg.upper⟩
-      let entries ← relocPlan.segment objectIdx segIdx
+      let entries := relocPlan.segment objectIdx segIdx
       for entry in entries do
         relocsTotal := relocsTotal + 1
         match entry.target with
@@ -196,13 +211,8 @@ def debug (path : String) : CliM Unit := do
   IO.eprintln s!"relocs: {relocsTotal}, resolved: {resolvedTotal}, \
     weak unresolved: {weakTotal}, no-symbol: {noSymbolTotal}"
 
-  let layout ← Layout.Layout.ofRelocResult relocPlan
-
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
-  let lp := layout
-  let rsvW ← Runtime.Memory.io.reserve lp.totalSpan
-  let bp : Finalize.BoundPlan :=
-    { relocPlan with layout := lp, rsv := rsvW.val, h_total := rsvW.property }
+  let lp := bp.layout
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := bp.bases
   for h : i in [:bp.objCount] do
@@ -250,20 +260,20 @@ def debug (path : String) : CliM Unit := do
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + (entry.r_offset.val)).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let lo ← Finalize.build bp
+  let lo := prepared.loadOps
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
     {lo.stores.size} stores, \
     {lo.mprotects.size} mprotects across {lo.elfs.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
-  let ctorAddrs := Finalize.ctorAddrs bp
-  let dtorAddrs := Finalize.dtorAddrs bp
-  IO.eprintln s!"planned {ctorAddrs.size} constructor address(es), \
-    {dtorAddrs.size} destructor address(es)"
+  let ctorCalls := Finalize.ctorCalls bp
+  let dtorCalls := Finalize.dtorCalls bp
+  IO.eprintln s!"planned {ctorCalls.size} constructor address(es), \
+    {dtorCalls.size} destructor address(es)"
 
   IO.eprintln "\n== 7. Runtime.Run → callCtors → execAndJump (does not return) =="
-  realize bp lo ctorAddrs path
+  realize bp lo path
 
 private def runCli (action : CliM Unit) : IO UInt32 := do
   IO.ofExcept (← action.run)

@@ -351,24 +351,24 @@ LeanLoad/
   Reloc/
     Symbol/                BFS symbol lookup helpers used only by relocation planning
     ABI.lean               per-arch relocation formulas and write widths
-  Layout/                  base-free page layout
+  Layout.lean              public Layout stage: Layout, ofRelocResult, assignBases
+  Layout/                  base-free page layout helpers
     Align.lean             alignment / page-math helpers over UInt64
     Segment.lean           per-segment layout (file + bss + mprotect shape)
-    Basic.lean             per-object layout tree + totalSpan
+    Elf.lean               per-object layout tree + page-aligned span
   Finalize.lean            public Finalize interface: BoundPlan and intrinsic-safe LoadOps tree
   Finalize/                    base-aware stage — turn Reloc + Layout into witnessed ops
     BoundPlan.lean         BoundPlan accessors and reservation-bound proofs
     Reloc.lean             relocation baking — apply ABI formulas at the bound base
     LoadOps.lean           setupSegment, op lemmas, and diagnostic op collectors
     Build.lean             builder: `BoundPlan` → intrinsic-safe `LoadOps` tree;
-                           DFS post-order ctor / fini address lists
+                           proof-carrying ctor / fini call lists
   Runtime.lean             public Runtime facade
   Runtime/
-    Basic.lean             runtime-facing data types: File, Reserve, op records
-    FileOps.lean           object search/open, file size, and pread capability
-    MemoryOps.lean         reserve, mmapFile, zero, store, and mprotect capability
+    File.lean              exact open, file size, and pread capability
+    Memory.lean            concrete reserve, mmapFile, zero, store, and mprotect effects
     Exec.lean              constructor calls and final jump
-    Run.lean               capability-polymorphic interpreter for finalized LoadOps
+    Run.lean               concrete interpreter for finalized LoadOps
   Runtime.c                C shims behind the @[extern] declarations
   Examples.lean            cross-stage `#guard` walkthrough (synthetic fixtures)
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)

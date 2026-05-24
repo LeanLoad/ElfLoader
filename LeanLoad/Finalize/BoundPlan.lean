@@ -4,10 +4,10 @@ IO-supplied `Reserve` plus coherence proof. Reads as the pure relocation and
 layout facts bound to a concrete reservation — hence "BoundPlan".
 
 `BoundPlan` is the canonical input to `Finalize.build` and
-`Finalize.ctorAddrs`. The finalize-stage safety fields on `LoadOps`
+`Finalize.ctorCalls`. The finalize-stage safety fields on `LoadOps`
 are provable structurally from plan invariants. The bounds chain —
 `pageEaddr + fileOverlayLen ≤ pageEndAddr ≤ advance` (existing
-lemmas in `Layout/Basic.lean`) plus `base + advance ≤ rsv.addr +
+layout lemmas and `ElfLayout` fields) plus `base + advance ≤ rsv.addr +
 rsv.len` (the workhorse `base_plus_advance_le_rsv_end` below) —
 has every link as a named lemma.
 -/
@@ -205,26 +205,39 @@ theorem rsv_addr_le_baseAt (bp : BoundPlan) (i : Fin bp.objCount) :
   have h_cum_nonneg : 0 ≤ Layout.cumOffset bp.layout.elfs.toArray i.val := Nat.zero_le _
   omega
 
+/-- Any subrange of a segment's page range is inside the reservation. The
+    op-specific range lemmas below only need to prove their concrete address and
+    length sit inside `[base + pageEaddr, base + pageEaddr + pageLength)`. -/
+theorem segment_subrange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
+    (j : Fin (bp.elfAt i).segments.size) (addr len : UInt64)
+    (h_lo : bp.rsv.addr.toNat ≤ addr.toNat)
+    (h_hi : addr.toNat + len.toNat ≤
+      (bp.baseAt i).toNat + (bp.segAt i j).pageEaddr.toNat +
+        (bp.segAt i j).pageLength.toNat) :
+    Range.InRange addr len bp.rsv.addr bp.rsv.len := by
+  have h_pageEnd := bp.segment_pageRange_in_rsv i j
+  exact ⟨h_lo, by omega⟩
+
 /-- The mmap range fits in the reservation. -/
 theorem segment_mmapRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
     (j : Fin (bp.elfAt i).segments.size) :
     Range.InRange (bp.baseAt i + (bp.segAt i j).pageEaddr)
       (bp.segAt i j).fileOverlayLen bp.rsv.addr bp.rsv.len := by
-  have h_pageEnd := bp.segment_pageRange_in_rsv i j
   have h_base_pv := bp.segment_base_add_pageEaddr_toNat i j
   have h_fo_le_pl := (bp.segAt i j).fileOverlay_le_pageLength
   have h_lower := bp.rsv_addr_le_baseAt i
-  exact ⟨by rw [h_base_pv]; omega, by rw [h_base_pv]; omega⟩
+  exact bp.segment_subrange_in_rsv i j _ _ (by rw [h_base_pv]; omega)
+    (by rw [h_base_pv]; omega)
 
 /-- The mprotect range fits in the reservation. -/
 theorem segment_mprotectRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
     (j : Fin (bp.elfAt i).segments.size) :
     Range.InRange (bp.baseAt i + (bp.segAt i j).pageEaddr)
       (bp.segAt i j).pageLength bp.rsv.addr bp.rsv.len := by
-  have h_pageEnd := bp.segment_pageRange_in_rsv i j
   have h_base_pv := bp.segment_base_add_pageEaddr_toNat i j
   have h_lower := bp.rsv_addr_le_baseAt i
-  exact ⟨by rw [h_base_pv]; omega, by rw [h_base_pv]; omega⟩
+  exact bp.segment_subrange_in_rsv i j _ _ (by rw [h_base_pv]; omega)
+    (by rw [h_base_pv]; omega)
 
 /-- The zero range fits in the reservation. -/
 theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
@@ -233,7 +246,6 @@ theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
       (bp.baseAt i + (bp.segAt i j).pageEaddr + (bp.segAt i j).pageInset +
         (bp.segAt i j).segment.filesz.val)
       (bp.segAt i j).partialBssLen bp.rsv.addr bp.rsv.len := by
-  have h_pageEnd := bp.segment_pageRange_in_rsv i j
   have h_no_wrap := bp.segment_pageRange_no_wrap i j
   have h_base_pv := bp.segment_base_add_pageEaddr_toNat i j
   have h_lower := bp.rsv_addr_le_baseAt i
@@ -260,7 +272,7 @@ theorem segment_zeroRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
                   (bp.segAt i j).pageInset).toNat +
                  (bp.segAt i j).segment.filesz.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_a2
-  refine ⟨?_, ?_⟩
+  refine bp.segment_subrange_in_rsv i j _ _ ?_ ?_
   · rw [h_a2_eq, h_a1_eq, h_base_pv]; omega
   · rw [h_a2_eq, h_a1_eq, h_base_pv]; omega
 
@@ -367,7 +379,6 @@ theorem segment_storeRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
         (bp.segAt i j).segment.eaddr.toNat + (bp.segAt i j).segment.memsz.toNat)
     (size : UInt64) (h_size : size.toNat ≤ 8) :
     Range.InRange (bp.baseAt i + r_offset.val) size bp.rsv.addr bp.rsv.len := by
-  have h_pageEnd := bp.segment_pageRange_in_rsv i j
   have h_no_wrap := bp.segment_pageRange_no_wrap i j
   have h_vm_le := (bp.segAt i j).vaddr_memsz_le_pageEnd
   obtain ⟨h_vaddr_le, h_ro8_le_vm⟩ := h_cov
@@ -376,7 +387,9 @@ theorem segment_storeRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
       (bp.baseAt i).toNat + r_offset.toNat := by
     rw [UInt64.toNat_add]; exact Nat.mod_eq_of_lt h_ro_no_wrap
   have h_lower := bp.rsv_addr_le_baseAt i
-  exact ⟨by rw [h_base_ro_eq]; omega, by rw [h_base_ro_eq]; omega⟩
+  refine bp.segment_subrange_in_rsv i j _ _ ?_ ?_
+  · rw [h_base_ro_eq]; omega
+  · rw [h_base_ro_eq]; omega
 
 end BoundPlan
 

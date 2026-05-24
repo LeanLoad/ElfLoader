@@ -1,8 +1,8 @@
 /-
 Load ops: `SegmentOps rsvAddr rsvLen objCount` /
 `ElfOps rsvAddr rsvLen objCount` / `LoadOps rsvAddr rsvLen objCount` over
-the typed op records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
-defined in `Runtime`.
+the Finalize-owned typed op records (`MmapOp` / `ZeroOp` / `StoreOp` /
+`MprotectOp`).
 
 Stage boundary:
   • `Reloc` and `Layout` produce base-free facts: symbol resolution,
@@ -31,13 +31,14 @@ Hierarchy:
   • `ElfOps rsvAddr rsvLen objCount`     — one elf's chosen base + its segments.
   • `LoadOps rsvAddr rsvLen objCount`    — the top-level op bundle for all elfs.
 
-Safety witnesses are fields on the op records themselves and are built
+Safety witnesses are fields on the enclosing op tree and are built
 constructively by `Finalize.build` from `BoundPlan`'s per-(i, j)
-`InRange` / `Disjoint` theorems. There is no separate flat predicate.
+`InRange` / `Disjoint` theorems. User-code call/transfer addresses are
+separately witnessed by `CallOp`. There is no separate flat predicate.
 -/
 
 import LeanLoad.Finalize
-import LeanLoad.Layout.Basic
+import LeanLoad.Layout.Segment
 import LeanLoad.Runtime
 
 namespace LeanLoad.Finalize

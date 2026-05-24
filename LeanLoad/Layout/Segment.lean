@@ -93,7 +93,7 @@ private theorem pageEaddr_le_pageEnd_raw {fileSize : ByteSize} (s : Segment file
   omega
 
 /-- `(alignUp (s.eaddr + s.memsz) ea).toNat ≤ s.eaddr + s.memsz + ea`.
-    Exposed for `Layout.Basic`'s `ElfLayout.ofElf` proof. -/
+    Exposed for `Layout.Elf`'s `ElfLayout.ofElf` proof. -/
 theorem alignUp_vm_le {fileSize : ByteSize} (s : Segment fileSize) :
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat ≤
     s.eaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat := by
@@ -129,7 +129,7 @@ private theorem vm_le_alignUp_vm {fileSize : ByteSize} (s : Segment fileSize) :
 
 /-- The `pageEnd - pageEaddr` UInt64 subtraction equals the Nat-level
     difference `pageEnd.toNat - pageEaddr.toNat`.
-    Exposed for `Layout.Basic`'s `ElfLayout.ofElf` proof. -/
+    Exposed for `Layout.Elf`'s `ElfLayout.ofElf` proof. -/
 theorem pageLength_toNat {fileSize : ByteSize} (s : Segment fileSize) :
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
       alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
@@ -354,7 +354,7 @@ end SegmentLayout
     `∀ j, ∀ h : j < segs.size, …` quantifier on `ElfLayout` to peel.
 
     `relocs` is the per-segment planned-relocation array (built parallel
-    to construction in `Layout.Basic.ofElf`). -/
+    to construction in `ElfLayout.ofElfCore`). -/
 structure SegmentLayout (objCount : Nat) where
   /-- Underlying gabi segment. Carries `rela`/`jmprel` for reloc
       planning plus range/page-layout no-wrap witnesses for proofs. -/

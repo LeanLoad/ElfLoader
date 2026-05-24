@@ -1,9 +1,10 @@
 /-
-Memory runtime capability.
+Memory runtime effects.
 
-`Memory` interprets the finalized load plan: allocate the reservation, map
-file-backed pages, clear BSS tails, apply relocation stores, and set final
-permissions. The IO instance is the trusted FFI boundary for memory operations.
+These functions are the trusted FFI boundary for finalized load plans: allocate
+the reservation, map file-backed pages, clear BSS tails, apply relocation stores,
+and set final permissions. Safety properties are proved over `Finalize.LoadOps`;
+this module only interprets already-witnessed addresses.
 -/
 
 import LeanLoad.Runtime
@@ -37,23 +38,33 @@ private opaque zeroRaw (addr : UInt64) (len : UInt64) : IO Unit
 private opaque mmapFileFd (fd : UInt32) (eaddr : UInt64) (len : UInt64)
     (prot : UInt32) (offset : UInt64) : IO Unit
 
-/-- Production memory operations backed by the C runtime. -/
-def io : Memory IO :=
-  { reserve := fun len => do
-      let addr ← mmapAnon len
-      if h : addr.toNat + len.toNat < 2 ^ 64 then
-        return ⟨⟨addr, len, h⟩, rfl⟩
-      else
-        throw (IO.userError s!"Runtime.Memory.reserve returned wrapping reservation \
-          (addr=0x{addr.toNat}, len=0x{len.toNat})")
-    mmapFile := fun f addr len prot offset =>
-      match f.backing with
-      | .fd fd => mmapFileFd fd addr len prot offset
-      | .virtual =>
-          throw (IO.userError "Runtime.Memory.io cannot mmap a virtual Runtime.File")
-    zero := zeroRaw
-    store := storeRaw
-    mprotect := mprotectRaw }
+/-- Reserve an anonymous RW mapping and return the kernel-chosen non-wrapping range. -/
+def reserve (len : UInt64) : IO { r : LeanLoad.Reserve // r.len = len } := do
+  let addr ← mmapAnon len
+  if h : addr.toNat + len.toNat < 2 ^ 64 then
+    return ⟨⟨addr, len, h⟩, rfl⟩
+  else
+    throw (IO.userError s!"Runtime.Memory.reserve returned wrapping reservation \
+      (addr=0x{addr.toNat}, len=0x{len.toNat})")
+
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap for one finalized segment overlay. -/
+def mmapFile (f : File) (addr len : UInt64) (prot : UInt32) (offset : UInt64) : IO Unit :=
+  match f.backing with
+  | .fd fd => mmapFileFd fd addr len prot offset
+  | .virtual =>
+      throw (IO.userError "Runtime.Memory.mmapFile cannot mmap a virtual Runtime.File")
+
+/-- Zero `len` bytes starting at `addr`. -/
+def zero (addr len : UInt64) : IO Unit :=
+  zeroRaw addr len
+
+/-- Store the low 4 or 8 bytes of `value` at `addr`. -/
+def store (addr : UInt64) (size : UInt8) (value : UInt64) : IO Unit :=
+  storeRaw addr size value
+
+/-- Set protection on `[addr, addr+len)`. -/
+def mprotect (addr len : UInt64) (prot : UInt32) : IO Unit :=
+  mprotectRaw addr len prot
 
 end Memory
 

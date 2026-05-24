@@ -33,10 +33,12 @@ stage re-checks it — the witness travels in the type.
   • Finalize — base-aware and pure. Takes a `BoundPlan` (= `Reloc.Result` +
     `Layout.Layout` + IO `Reserve` + coherence proof) and emits a `LoadOps` tree of
     typed ops (`Mmap` / `Zero` / `Store` / `Mprotect`). The tree carries
-    per-op containment and mmap-disjointness witnesses intrinsically.
+    per-op containment and mmap-disjointness witnesses intrinsically; finalized
+    user-code calls carry executable-segment witnesses as `CallOp`s.
 
-  • Runtime — the trust seam. `@[extern]` primitives wrapped in
-    typed op records; `Runtime.Run` interprets the intrinsic-safe tree only.
+  • Runtime — the trust seam. `@[extern]` primitives behind exact file, memory,
+    constructor-call, and final-jump effects; `Runtime.Run` interprets the
+    intrinsic-safe tree only.
 
   • Formal boundary — the final structured load ops plus safety witnesses.
     Semantic byte-level memory modelling is intentionally out of scope for
@@ -61,7 +63,7 @@ import LeanLoad.Discover.Examples  -- pure #guard scenarios; elaborate on build
 
 import LeanLoad.Layout.Align
 import LeanLoad.Layout.Segment
-import LeanLoad.Layout.Basic
+import LeanLoad.Layout.Elf
 import LeanLoad.Reloc.Symbol
 import LeanLoad.Reloc
 import LeanLoad.Layout

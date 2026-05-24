@@ -23,11 +23,11 @@ Two top-level entry points:
                   The only `Except` failure path is `bakeReloc`'s
                   32-bit overflow check (psABI per-relocation
                   `OVERFLOW_CHECK`).
-  • `ctorAddrs` — pure: `BoundPlan → Array UInt64`. Resolves each
+  • `ctorCalls` — pure: `BoundPlan → Array (CallOp bp)`. Resolves each
                   init-array entry through the per-elf base, in DFS
-                  post-order; ET_DYN entries get the chosen base
-                  added, ET_EXEC entries are absolute, zero entries
-                  are skipped.
+                  post-order; ET_DYN entries get the chosen base added,
+                  zero entries are skipped, and every emitted address
+                  carries an executable-segment witness.
 
 `Main.realize` consumes `build`'s witnessed result via the runtime interpreter.
 There is no separate `safe` entry point.
@@ -47,7 +47,6 @@ import LeanLoad.Finalize.BoundPlan
 namespace LeanLoad.Finalize
 
 open LeanLoad
-open LeanLoad.Layout (Layout ElfLayout SegmentLayout)
 open LeanLoad.Parse (Elf)
 open LeanLoad.Reloc.ABI (Formula)
 
@@ -348,8 +347,8 @@ def build (bp : BoundPlan) :
   return lo
 
 -- ============================================================================
--- Ctor / dtor address resolution: init/fini call targets →
--- flat absolute addresses.
+-- Ctor / dtor call resolution: init/fini call targets →
+-- proof-carrying absolute call addresses.
 -- ============================================================================
 
 /-- Translate one target into its absolute call address. ET_DYN
@@ -357,87 +356,21 @@ def build (bp : BoundPlan) :
     checked `Parse.parseFile` rejects ET_EXEC. -/
 @[inline] private def callAddrOf (base target : UInt64) : UInt64 := base + target
 
-/-- Collect function addresses to call, from a per-elf array selector
-    (`(·.callTargets.init)` for ctors, `(·.callTargets.fini)` for dtors), iterating elves
-    in `order`. Walks the selected array forward.
-
-    Zero targets are skipped — gabi leaves them unspecified, but
-    historical practice (glibc / musl) treats them as no-ops. The
-    filter is on the source target, not on the absolute `fnAddr`:
-    for ET_DYN with nonzero base, `base + 0` is `base` (the elf's
-    image start) which would be incorrectly emitted as a ctor address
-    if we filtered after the translation.
-
-    `order : Array (Fin objCount)` carries the bound at the type level;
-    both `lp.elfs[…]` and `bases[…]` are total — no `[]?` needed. -/
-def collectAddrs (lp : Layout objCount) (bases : Vector UInt64 objCount)
-    (order : Array (Fin objCount))
-    (arrOf : (elf : Elf) → Array (Parse.CallTarget elf.segments)) : Array UInt64 :=
-  order.flatMap fun objectIdx =>
-    (arrOf (lp.elfs[objectIdx]).elf).filterMap fun target =>
-      let rawTarget : UInt64 := (Subtype.val target).val
-      if rawTarget != 0 then some (callAddrOf (bases[objectIdx.val]'objectIdx.isLt) rawTarget)
-      else none
-
-/-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
-def ctorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.layout bp.bases bp.initOrder.order (·.callTargets.init)
-
-/-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
-    so deepest-dep fini runs after shallower fini, mirroring init's
-    "deps first" order. gabi 08 mandates a partial order; reverse-init
-    is glibc / musl's conventional choice. -/
-def dtorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.layout bp.bases bp.initOrder.order.reverse (·.callTargets.fini)
-
 -- ============================================================================
--- Membership characterisation. Every emitted address came from
--- `(objectIdx, target)` where `target ∈ arrOf (lp.elfs[objectIdx]).elf`
--- and `target.1 ≠ 0`.
--- ============================================================================
-
-/-- An address is in `collectAddrs lp bases order arrOf` iff it came
-    from some `(objectIdx, target)` pair via
-    `addr = bases[objectIdx] + target.1` with `target.1 ≠ 0`. -/
-theorem collectAddrs_mem_iff (lp : Layout objCount)
-    (bases : Vector UInt64 objCount) (order : Array (Fin objCount))
-    (arrOf : (elf : Elf) → Array (Parse.CallTarget elf.segments)) (addr : UInt64) :
-    addr ∈ collectAddrs lp bases order arrOf ↔
-      ∃ objectIdx ∈ order,
-        ∃ target : Parse.CallTarget (lp.elfs[objectIdx]).elf.segments,
-          target ∈ arrOf (lp.elfs[objectIdx]).elf ∧
-          (Subtype.val target).val ≠ 0 ∧
-          addr = bases[objectIdx.val]'objectIdx.isLt + (Subtype.val target).val := by
-  unfold collectAddrs
-  simp only [Array.mem_flatMap, Array.mem_filterMap, callAddrOf]
-  constructor
-  · rintro ⟨objectIdx, h_obj, target, h_target, h_addr⟩
-    refine ⟨objectIdx, h_obj, target, h_target, ?_⟩
-    by_cases h0 : (Subtype.val target).val != 0
-    · rw [if_pos h0] at h_addr
-      injection h_addr with h_eq
-      exact ⟨bne_iff_ne.mp h0, h_eq.symm⟩
-    · rw [if_neg h0] at h_addr; cases h_addr
-  · rintro ⟨objectIdx, h_obj, target, h_target, h_ne, h_eq⟩
-    refine ⟨objectIdx, h_obj, target, h_target, ?_⟩
-    rw [if_pos (bne_iff_ne.mpr h_ne), h_eq]
-
--- ============================================================================
--- Ctor / dtor in-exec-seg theorems. The witness chain:
+-- Call target in-exec-seg proof. The witness chain:
 --   `Elf.callTargets.init` / `Elf.callTargets.fini` targets carry the executable-segment
---    witness → `ElfLayout.segmentsSegmentEq` (the parallel
---    `(bp.elfAt i).segments[k].segment ≅ elf.segments.items[k]`) → translate
+--    witness → `ElfLayout.segmentsSegmentRangeEq` (the parallel
+--    segment address-range bridge) → translate
 --    `addr = base + target` into the matching exec PT_LOAD's runtime
---    bounds. The result lifts the checked-parse "in some exec
---    PT_LOAD" witness to a `BoundPlan`-relative claim ready for a
---    future safety-gated `callCtor`.
+--    bounds. The result lifts the checked-parse "in some exec PT_LOAD"
+--    witness to a `BoundPlan`-relative claim ready for `CallOp`.
 -- ============================================================================
 
 /-- An address lives in some executable PT_LOAD of `bp` — i.e. in
     the runtime range `[base + eaddr, base + eaddr + memsz)` of some
     elf's exec segment. Phrased over the checked `Elf.segments`
     (not `SegmentLayout`s) so the witness carried by each init/fini
-    target lands directly before bridging through `ElfLayout.segmentsSegmentEq`. -/
+    target lands directly before bridging through `ElfLayout.segmentsSegmentRangeEq`. -/
 def InExecSeg (bp : BoundPlan) (addr : UInt64) : Prop :=
   ∃ (i : Fin bp.objCount) (j : Nat) (h : j < (bp.elfAt i).elf.segments.items.size),
     ((bp.elfAt i).elf.segments.items[j]'h).perm.exec = true ∧
@@ -467,16 +400,17 @@ private theorem base_add_target_no_wrap (bp : BoundPlan)
   have h_rsv := bp.rsv.noWrap
   omega
 
-/-- Shared shape: every emitted `addr` corresponds to a target from
-    some elf's array (init/fini), and that target carries its own
-    witness that it is zero or targets some executable PT_LOAD. -/
-private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
-    (order : Array (Fin bp.objCount))
-    (arrOf : (elf : Elf) → Array (Parse.CallTarget elf.segments))
-    (addr : UInt64) (h_mem : addr ∈ collectAddrs bp.layout bp.bases order arrOf) :
-    InExecSeg bp addr := by
-  rw [collectAddrs_mem_iff] at h_mem
-  obtain ⟨objectIdx, _h_obj, target, h_target, h_ne, h_addr_eq⟩ := h_mem
+/-- A proof-carrying user-code call/transfer address in the finalized image. -/
+structure CallOp (bp : BoundPlan) where
+  addr : UInt64
+  inExecSeg : InExecSeg bp addr
+
+/-- Lift one parse-stage callable-target witness through the chosen base address. -/
+private theorem callTarget_addr_inExecSeg (bp : BoundPlan)
+    (objectIdx : Fin bp.objCount)
+    (target : Parse.CallTarget (bp.elfAt objectIdx).elf.segments)
+    (h_ne : (Subtype.val target).val ≠ 0) :
+    InExecSeg bp (callAddrOf (bp.baseAt objectIdx) (Subtype.val target).val) := by
   have h_in_exec := Subtype.property target
   rcases h_in_exec with h_zero | ⟨segIdx, h_segLt, h_exec, h_lo, h_hi⟩
   · exact absurd h_zero h_ne
@@ -507,31 +441,63 @@ private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
     exact h_hi_bp
   have h_no_wrap : (bp.baseAt objectIdx).toNat + (Subtype.val target).toNat < 2 ^ 64 :=
     base_add_target_no_wrap bp objectIdx ⟨segIdx, h_segLt_eo⟩ (Subtype.val target) h_hi_seg
-  have h_no_wrap' :
-      (bp.bases[objectIdx.val]'objectIdx.isLt).toNat + (Subtype.val target).toNat < 2 ^ 64 := by
-    simpa [BoundPlan.baseAt] using h_no_wrap
-  have h_addr_toNat : addr.toNat =
-      (bp.baseAt objectIdx).toNat + (Subtype.val target).toNat := by
-    have h_no_wrap_val :
-        (bp.bases[objectIdx.val]'objectIdx.isLt).toNat +
-          (Subtype.val target).val.toNat < 2 ^ 64 := by
-      simpa [Eaddr.toNat] using h_no_wrap'
-    rw [h_addr_eq, UInt64.toNat_add, Nat.mod_eq_of_lt h_no_wrap_val]
-    simp [BoundPlan.baseAt, Eaddr.toNat]
+  have h_addr_toNat :
+      (callAddrOf (bp.baseAt objectIdx) (Subtype.val target).val).toNat =
+        (bp.baseAt objectIdx).toNat + (Subtype.val target).toNat := by
+    have h_no_wrap_val : (bp.baseAt objectIdx).toNat +
+        (Subtype.val target).val.toNat < 2 ^ 64 := by
+      simpa [Eaddr.toNat] using h_no_wrap
+    unfold callAddrOf
+    rw [UInt64.toNat_add, Nat.mod_eq_of_lt h_no_wrap_val]
+    simp [Eaddr.toNat]
   exact ⟨objectIdx, segIdx, h_segLt, h_exec_bp,
          by rw [h_addr_toNat]; omega,
          by rw [h_addr_toNat]; omega⟩
 
-/-- Constructor addresses live in some exec PT_LOAD of `bp`, as witnessed
-    by each `Elf.callTargets.init` target. -/
-theorem ctorAddrs_inExecSeg (bp : BoundPlan) :
-    ∀ addr ∈ ctorAddrs bp, InExecSeg bp addr :=
-  collectAddrs_inExecSeg_aux bp bp.initOrder.order (·.callTargets.init)
+/-- Main-entry transfer address. Unlike init/fini arrays, zero is not a no-op for
+    the final jump; reject it before touching runtime memory. -/
+def entryCall (bp : BoundPlan) : Except String (CallOp bp) :=
+  let mainIdx : Fin bp.objCount := ⟨0, bp.n_pos⟩
+  let target := (bp.elfAt mainIdx).elf.callTargets.entry
+  if h_zero : (Subtype.val target).val = 0 then
+    .error "finalize: main e_entry is zero; cannot transfer control"
+  else
+    .ok {
+      addr := callAddrOf (bp.baseAt mainIdx) (Subtype.val target).val
+      inExecSeg := callTarget_addr_inExecSeg bp mainIdx target h_zero }
 
-/-- Destructor addresses live in some exec PT_LOAD of `bp`, as witnessed
-    by each `Elf.callTargets.fini` target. -/
-theorem dtorAddrs_inExecSeg (bp : BoundPlan) :
-    ∀ addr ∈ dtorAddrs bp, InExecSeg bp addr :=
-  collectAddrs_inExecSeg_aux bp bp.initOrder.order.reverse (·.callTargets.fini)
+/-- Collect proof-carrying calls from a per-elf array selector
+    (`(·.callTargets.init)` for ctors, `(·.callTargets.fini)` for dtors),
+    iterating elves in `order`. Walks the selected array forward.
+
+    Zero targets are skipped — gabi leaves them unspecified, but historical
+    practice (glibc / musl) treats them as no-ops. The filter is on the source
+    target, not on the absolute `fnAddr`: for ET_DYN with nonzero base,
+    `base + 0` is `base` (the elf's image start) which would be incorrectly
+    emitted as a ctor address if we filtered after translation.
+
+    `order : Array (Fin bp.objCount)` carries the bound at the type level;
+    `bp.elfAt` and `bp.baseAt` are total — no `[]?` needed. -/
+private def collectCalls (bp : BoundPlan) (order : Array (Fin bp.objCount))
+    (arrOf : (elf : Elf) → Array (Parse.CallTarget elf.segments)) : Array (CallOp bp) :=
+  order.flatMap fun objectIdx =>
+    (arrOf (bp.elfAt objectIdx).elf).filterMap fun target =>
+      let rawTarget : UInt64 := (Subtype.val target).val
+      if h_ne : rawTarget != 0 then
+        some {
+          addr := callAddrOf (bp.baseAt objectIdx) rawTarget
+          inExecSeg := by
+            have h_ne' : (Subtype.val target).val ≠ 0 := by
+              simpa [rawTarget] using (bne_iff_ne.mp h_ne)
+            simpa [rawTarget] using callTarget_addr_inExecSeg bp objectIdx target h_ne' }
+      else none
+
+/-- Constructor calls with executable-segment witnesses attached. -/
+def ctorCalls (bp : BoundPlan) : Array (CallOp bp) :=
+  collectCalls bp bp.initOrder.order (·.callTargets.init)
+
+/-- Destructor calls with executable-segment witnesses attached. -/
+def dtorCalls (bp : BoundPlan) : Array (CallOp bp) :=
+  collectCalls bp bp.initOrder.order.reverse (·.callTargets.fini)
 
 end LeanLoad.Finalize
