@@ -8,7 +8,8 @@ the state-evolution layer on top:
   · `ActiveStack` — object indices currently on the recursive call stack.
      Together with `Discovered.DoneOrActive`, it classifies every discovered
      object as either complete (`postOrder`) or active. Active dedup hits are
-     rejected because gabi 08 leaves cyclic init ordering undefined.
+     dependency-cycle edges: Discover records them and lets deterministic DFS
+     post-order break the cyclic init-order tie left unspecified by gabi 08.
 
   · `WorkResult` / `WorkListAcc` — return types that thread the
      state-evolution invariants (`sizeMono`, `pendingPreserved`,
@@ -21,7 +22,7 @@ the state-evolution layer on top:
      (catches both already-finished and in-progress-via-cycle:
      `pushObject` inserts into `nameIx` BEFORE recursing into children,
      so cycles dedup immediately against the in-progress ancestor's idx and
-     are reported as policy failures).
+     are recorded as cycle edges rather than recursively expanded forever).
      On miss, pushes the object and folds over its child work items,
      recording each child edge via `recordDep`.
 
@@ -65,9 +66,6 @@ structure WorkResult (active : Discovered.ActiveStack) (s0 : Discovered) where
   idxLt : idx < state.objects.size
   /-- Every discovered object remains either complete or active after this call. -/
   doneOrActive : state.DoneOrActive active
-  /-- The returned object is complete. Dedup hits against active ancestors are
-      dependency cycles and are rejected rather than returned. -/
-  idxDone : idx ∈ state.postOrder.toList
   /-- `pending[j]` unchanged for old indices. -/
   pendingPreserved : ∀ (j : Nat) (h_j : j < s0.objects.size),
     (state.pending[j]'(by
@@ -151,11 +149,6 @@ structure WorkListAcc (active : Discovered.ActiveStack) (s0 : Discovered) (newId
       markComplete after discoverWorkList finishes. Needed as markComplete's
       Nodup precondition. -/
   newIdxNotInPostOrder : newIdx ∉ state.postOrder.toList
-  /-- Every dependency already recorded in `newIdx`'s row is complete. This is
-      the local edge-order fact consumed by `markComplete`. -/
-  newIdxDepsDone : ∀ t, t ∈ state.deps[newIdx]'(by
-      rw [state.depsSize]; exact newIdxLt) → t ∈ state.postOrder.toList
-
 -- ============================================================================
 -- discoverWork / discoverWorkList — one recursive call + its work-list helper.
 --
@@ -179,38 +172,34 @@ def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
   | 0 => throw "discover: fuel exhausted"
   | fuel + 1 =>
     match ← finder.findDependency work with
-    | none => throw s!"discover: cannot find '{work.needed}' (runpath={work.runpath})"
+    | none =>
+        throw s!"discover: cannot find '{work.needed}' \
+          (origin={work.originDir}, rpath={work.rpath}, runpath={work.runpath})"
     | some obj =>
       let canonical := obj.name
       let elf := obj.elf
       match h_lookup : s0.nameIx[canonical]? with
       | some idx =>
         -- Dedup hit: completed objects are shared; active hits are dependency
-        -- cycles, whose init order is undefined by gabi 08, so Discover rejects
-        -- them rather than constructing a cyclic LoadGraph.
+        -- cycle/back edges. Both return the existing idx; the caller records
+        -- the `src → idx` edge exactly once.
         have h_idx : idx < s0.objects.size :=
           findDiscoveredIdx_lt ((s0.nameIxValid canonical).symm.trans h_lookup)
-        if h_cycle : idx ∈ active then
-          throw s!"discover: dependency cycle involving '{canonical}'"
-        else
-          have h_done : idx ∈ s0.postOrder.toList := by
-            exact Or.resolve_right (h_active idx h_idx) h_cycle
-          pure { state := s0, idx
-                 sizeMono := Nat.le_refl _
-                 idxLt := h_idx
-                 doneOrActive := h_active
-                 idxDone := h_done
-                 pendingPreserved := by intro j h_j; rfl
-                 depsPreserved := by intro j h_j; rfl
-                 newRowsComplete := by
-                   intro j h_lo h_hi
-                   exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
-                 postOrderGrew := by simp
-                 postOrderPreserved := by intro x h_mem; exact h_mem
-                 postOrderContainsNew := by
-                   intro j h_lo h_hi
-                   exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
-                 postOrderRange := by intro x h_mem; left; exact h_mem }
+        pure { state := s0, idx
+               sizeMono := Nat.le_refl _
+               idxLt := h_idx
+               doneOrActive := h_active
+               pendingPreserved := by intro j h_j; rfl
+               depsPreserved := by intro j h_j; rfl
+               newRowsComplete := by
+                 intro j h_lo h_hi
+                 exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
+               postOrderGrew := by simp
+               postOrderPreserved := by intro x h_mem; exact h_mem
+               postOrderContainsNew := by
+                 intro j h_lo h_hi
+                 exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
+               postOrderRange := by intro x h_mem; left; exact h_mem }
       | none =>
         -- Miss: push obj at newIdx, then recurse into child work items,
         -- recording each child edge on return.
@@ -223,7 +212,7 @@ def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
           rw [h_s1_size]; omega
         have h_mono_s1 : s0.objects.size ≤ s1.objects.size := by
           rw [h_s1_size]; omega
-        let childWork := WorkItem.ofNeededArray elf.runpath elf.needed
+        let childWork := WorkItem.ofNeededArray obj.originDir elf.rpath elf.runpath elf.needed
         -- Initial WorkListAcc on s1: remaining = childWork.length =
         -- elf.needed.size = pending[newIdx] (by pushObject_pending_new).
         have h_pend_new : (s1.pending[newIdx]'(by
@@ -276,22 +265,12 @@ def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
               intro j h_lo h_hi
               exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
             postOrderRange := by intro x h_mem; left; exact h_mem
-            newIdxNotInPostOrder := h_newIdx_not_in_s1
-            newIdxDepsDone := by
-              intro t h_t
-              show t ∈ s0.postOrder.toList
-              have h_get : (s1.deps[newIdx]'(by
-                  rw [s1.depsSize]; exact h_newIdx_lt_s1)) = (#[] : Array Nat) := by
-                show (s0.deps.push #[])[s0.objects.size]'_ = (#[] : Array Nat)
-                rw [Array.getElem_push, dif_neg]
-                rw [s0.depsSize]; exact Nat.lt_irrefl _
-              rw [h_get] at h_t
-              exact absurd h_t (by simp) }
+            newIdxNotInPostOrder := h_newIdx_not_in_s1 }
         let final ← discoverWorkList finder fuel (newIdx :: active) s1 newIdx childWork init
         -- Append newIdx to postOrder via markComplete (using
         -- WorkListAcc's newIdxNotInPostOrder as the Nodup precondition).
         let s_final := Discovered.markComplete final.state newIdx final.newIdxLt
-          final.newIdxNotInPostOrder final.newIdxDepsDone
+          final.newIdxNotInPostOrder
         -- Wrap into a WorkResult on s0.
         have h_mono_final : s0.objects.size ≤ s_final.objects.size :=
           Nat.le_trans h_mono_s1 final.sizeMono
@@ -325,11 +304,6 @@ def discoverWork {m : Type → Type} [Monad m] [MonadExceptOf String m]
           sizeMono := h_mono_final
           idxLt := h_newIdx_lt_final
           doneOrActive := h_done_active_final
-          idxDone := by
-            show newIdx ∈ (final.state.postOrder.push newIdx).toList
-            rw [Array.toList_push, List.mem_append]
-            right
-            simp
           pendingPreserved := by
             intro j h_j
             -- j < s0.size = newIdx, so j ≠ newIdx; also j < s1.size.
@@ -468,7 +442,6 @@ def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
       · exact acc'.newIdxNotInPostOrder h_in_acc
       · exact Nat.not_lt.mpr h_ge_acc acc'.newIdxLt
     let s' := Discovered.recordDep sub.state newIdx sub.idx h_src sub.idxLt h_pending_pos
-      h_newIdx_not_in_sub
     -- Build the new accumulator for the recursive call on `rest`.
     have h_mono' : s0.objects.size ≤ s'.objects.size := by
       show s0.objects.size ≤ sub.state.objects.size
@@ -498,7 +471,7 @@ def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
       --   2. sub.state.pending[j] = acc'.state.pending[j] (sub.pendingPreserved).
       --   3. acc'.state.pending[j] = s0.pending[j] (acc'.pendingOldPreserved).
       have h_step1 := Discovered.recordDep_pending_other sub.state
-        newIdx sub.idx h_src sub.idxLt h_pending_pos h_newIdx_not_in_sub j
+        newIdx sub.idx h_src sub.idxLt h_pending_pos j
         (Nat.lt_of_lt_of_le h_j h_mono') (fun h_eq => h_ne h_eq.symm)
       have h_step2 := sub.pendingPreserved j
         (Nat.lt_of_lt_of_le h_j acc'.sizeMono)
@@ -512,7 +485,7 @@ def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
           = (s0.deps[j]'(by rw [s0.depsSize]; exact h_j)) := by
       intro j h_j h_ne
       have h_step1 := Discovered.recordDep_deps_other sub.state
-        newIdx sub.idx h_src sub.idxLt h_pending_pos h_newIdx_not_in_sub j
+        newIdx sub.idx h_src sub.idxLt h_pending_pos j
         (Nat.lt_of_lt_of_le h_j h_mono') (fun h_eq => h_ne h_eq.symm)
       have h_step2 := sub.depsPreserved j
         (Nat.lt_of_lt_of_le h_j acc'.sizeMono)
@@ -528,7 +501,7 @@ def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
       -- Step 1: s'.pending[j] = sub.state.pending[j] (recordDep src=newIdx,
       -- so other rows untouched).
       have h_step1 := Discovered.recordDep_pending_other sub.state
-        newIdx sub.idx h_src sub.idxLt h_pending_pos h_newIdx_not_in_sub j h_hi_sub
+        newIdx sub.idx h_src sub.idxLt h_pending_pos j h_hi_sub
         (fun h_eq => h_ne h_eq.symm)
       -- Step 2: cases on whether j was in acc'.state or pushed by sub-discovery.
       by_cases h_in_acc : j < acc'.state.objects.size
@@ -598,27 +571,6 @@ def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
       -- Case 1: newIdx ∈ acc'.state.postOrder.toList — contradicts acc'.newIdxNotInPostOrder.
       -- Case 2: acc'.state.size ≤ newIdx — contradicts acc'.newIdxLt.
       exact h_newIdx_not_in_sub
-    have h_newIdxDepsDone' : ∀ t, t ∈ s'.deps[newIdx]'(by
-        rw [s'.depsSize]; exact h_newIdx_lt') → t ∈ s'.postOrder.toList := by
-      intro t h_t
-      show t ∈ sub.state.postOrder.toList
-      have h_src_deps : newIdx < sub.state.deps.size := by
-        rw [sub.state.depsSize]; exact h_src
-      have h_get :
-          s'.deps[newIdx]'(by rw [s'.depsSize]; exact h_newIdx_lt')
-            = (sub.state.deps[newIdx]'h_src_deps).push sub.idx := by
-        show (recordEdge sub.state.deps newIdx sub.idx)[newIdx]'_
-            = (sub.state.deps[newIdx]'h_src_deps).push sub.idx
-        unfold recordEdge
-        rw [Array.getElem_modify]
-        simp
-      rw [h_get] at h_t
-      rcases Array.mem_push.mp h_t with h_old | h_eq
-      · have h_pres := sub.depsPreserved newIdx acc'.newIdxLt
-        rw [h_pres] at h_old
-        exact sub.postOrderPreserved t (acc'.newIdxDepsDone t h_old)
-      · subst h_eq
-        exact sub.idxDone
     have h_done_active' : s'.DoneOrActive active := by
       intro i h_i
       show i ∈ sub.state.postOrder.toList ∨ i ∈ active
@@ -636,8 +588,7 @@ def discoverWorkList {m : Type → Type} [Monad m] [MonadExceptOf String m]
         postOrderPreserved := h_postOrderPreserved'
         postOrderContainsNew := h_postOrderContainsNew'
         postOrderRange := h_postOrderRange'
-        newIdxNotInPostOrder := h_newIdxNotInPostOrder'
-        newIdxDepsDone := h_newIdxDepsDone' }
+        newIdxNotInPostOrder := h_newIdxNotInPostOrder' }
     discoverWorkList finder fuel active s0 newIdx rest acc''
 
 end

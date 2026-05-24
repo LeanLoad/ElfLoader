@@ -2,15 +2,15 @@
 Discover examples — pure, in-memory `#guard` scenarios.
 
 The DFS traversal/finalization path is generic over the effect monad.
-This file substitutes an in-memory
-`ExampleStore` for the filesystem, builds an `ObjectFinder (Except String)`
-instance over it (re-simulating the C-side path search at the Lean
-level), and exercises shape-level behaviors via `#guard` at
+This file substitutes an in-memory `ExampleStore` for the filesystem, builds an
+`ObjectFinder (Except String)` instance over it (using the same Discover search
+policy as production), and exercises shape-level behaviors via `#guard` at
 elaboration time:
 
   · Linear chain (4 objects in DFS pre-order).
   · Diamond (shared dep loaded once, two in-edges, DFS pre-order).
-  · Cycle (A → B → A is rejected — gabi 08 leaves cyclic init order undefined).
+  · Cycle (A → B → A is loaded; DFS post-order deterministically breaks the
+    cyclic init-order tie that gabi 08 leaves undefined).
   · Missing dep (returns `Except.error`).
   · Search-order precedence (env > runpath).
 
@@ -27,6 +27,7 @@ that want to exercise the SONAME-missing error path pass
 -/
 
 import LeanLoad.Discover.Finalize
+import LeanLoad.Discover.Search
 
 namespace LeanLoad.Discover
 
@@ -59,7 +60,7 @@ private def mockSegments : Parse.SegmentTable mockFileSize :=
     to exercise the SONAME-missing error path can pass `soname := none`
     explicitly. -/
 private def mockElf (soname : Option String := some "anon")
-    (runpath : Option String := none)
+    (rpath : Option String := none) (runpath : Option String := none)
     (needed : Array String := #[]) : Elf := {
   fileSize := mockFileSize
   machine  := .x86_64
@@ -70,15 +71,15 @@ private def mockElf (soname : Option String := some "anon")
   symtab   := #[]
   needed
   soname
+  rpath
   runpath
   relocs := { rela := #[], jmprel := #[] }
   callTargets := Parse.CallTargets.empty mockSegments }
 
 -- ============================================================================
--- ExampleStore — in-memory `path → Elf` map. Mirrors what the production
--- C runtime's `leanload_open_by_name` searches, but in Lean. The
--- `searchCandidates` simulator below is example-only — production path
--- resolution happens entirely in C.
+-- ExampleStore — in-memory `path → Elf` map. It reuses the same pure
+-- `Search.candidates` policy as production; only exact-path open is replaced by
+-- a list lookup.
 -- ============================================================================
 
 /-- A `path → Elf` map for examples. Simple `List` for legibility — examples
@@ -93,20 +94,20 @@ private def getElf? (store : ExampleStore) (path : String) : Option Elf :=
 
 end ExampleStore
 
-/-- Mirror the C runtime's path search at the Lean level. Example-only —
-    production goes through `Runtime.File.openByName`. -/
-private def exampleSearchCandidates (soname : String)
-    (runpath : Option String) (envPath : Option String) : Array String :=
-  if soname.contains '/' then #[soname]
-  else
-    let parsePathList (s : String) : Array String :=
-      s.splitOn ":" |>.filter (! ·.isEmpty) |>.toArray
-    let dirs : Array String := Id.run do
-      let mut acc : Array String := #[]
-      if let some p := envPath then acc := acc ++ parsePathList p
-      if let some p := runpath then acc := acc ++ parsePathList p
-      return acc
-    dirs.map (fun d => s!"{d}/{soname}")
+/-- Pure lexical directory used only by examples. Production uses
+    `Search.canonicalOriginDir`, whose C shim provides the gABI-required
+    canonical directory for `$ORIGIN`. -/
+private def lexicalOriginDir (path : String) : Option String :=
+  match path.splitOn "/" with
+  | [] => none
+  | [_] => some "."
+  | parts =>
+      let dirs := parts.dropLast
+      let dir := String.intercalate "/" dirs
+      if dir.isEmpty then some "/" else some dir
+
+private def fileAtPath (_path : String) : Runtime.File :=
+  dummyFile
 
 /-- The example `ObjectFinder` instance: simulate production file lookup over an
     `ExampleStore`, with the same SONAME-required policy — `findSome?` skips entries whose elf has no DT_SONAME
@@ -116,12 +117,16 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
     ObjectFinder (Except String) :=
   { findMain := fun mainPath =>
       match store.getElf? mainPath with
-      | some mainElf => .ok (DiscoveredObject.ofMain mainPath dummyFile mainElf)
+      | some mainElf =>
+          .ok (DiscoveredObject.ofMain mainPath (fileAtPath mainPath)
+            (lexicalOriginDir mainPath) mainElf)
       | none => .error s!"discoverExample: main {mainPath} not in store"
-    findDependency := fun work => .ok <|
-      (exampleSearchCandidates work.needed work.runpath envPath).findSome? fun path =>
+    findDependency := fun work => do
+      let paths ← Search.candidates work.needed (Search.Context.ofWorkItem work envPath)
+      .ok <| paths.findSome? fun path =>
         (store.getElf? path).bind fun elf =>
-          elf.soname.map fun name => { name, handle := dummyFile, elf } }
+          elf.soname.map fun name =>
+            { name, handle := fileAtPath path, originDir := lexicalOriginDir path, elf } }
 
 -- ============================================================================
 -- discoverExample — the example-side counterpart to `discover`. Takes the
@@ -205,8 +210,8 @@ private def diamondResult : Except String Result := discoverExample diamondStore
   | _     => false
 
 -- ---- 3. Cycle -----------------------------------------------------------
--- /main → /b → /main. The active-stack dedup check detects the back edge and
--- rejects the graph because cyclic init order is undefined by gabi 08.
+-- /main → /b → /main. The active-stack dedup check detects the back edge,
+-- records it, and DFS post-order deterministically chooses b before main.
 
 private def cycleStore : ExampleStore := [
   ("/main", mockElf (soname := some "main") (needed := #["/b"])),
@@ -214,7 +219,17 @@ private def cycleStore : ExampleStore := [
 
 private def cycleResult : Except String Result := discoverExample cycleStore "/main"
 
-#guard cycleResult.isOk = false
+#guard match cycleResult with
+  | .ok r => (r.graph.objects.map (·.name)) = #["main", "b"]
+  | _     => false
+
+#guard match cycleResult with
+  | .ok r => r.graph.deps = #[#[1], #[0]]
+  | _     => false
+
+#guard match cycleResult with
+  | .ok r => r.initOrder.order.map (fun ix => ix.val) = #[1, 0]
+  | _     => false
 
 -- ---- 4. SONAME-based dedup ---------------------------------------------
 -- main NEEDs both `/libfoo.so` and `/libfoo.so.1` — two different files

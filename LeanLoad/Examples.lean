@@ -46,6 +46,7 @@ private def providerElf (soname : String) (symtab : Array Symbol) (template : El
     symtab := symtab
     needed := #[]
     soname := some soname
+    rpath := none
     runpath := none
     relocs := { rela := #[], jmprel := #[] }
     callTargets := CallTargets.empty template.segments }
@@ -57,12 +58,12 @@ private def libmElf (template : Elf) : Elf :=
   providerElf "libm.so.6" #[default] template
 
 private def dependencyObject (name : String) (elf : Elf) : Discover.DiscoveredObject :=
-  { name := name, handle := dummyFile, elf := elf }
+  { name := name, handle := dummyFile, originDir := none, elf := elf }
 
 private def fixtureFinder (main libc libm : Elf) :
     Discover.ObjectFinder (Except String) :=
   { findMain := fun path =>
-     .ok (Discover.DiscoveredObject.ofMain path dummyFile main)
+     .ok (Discover.DiscoveredObject.ofMain path dummyFile none main)
     findDependency := fun work =>
       match work.needed with
       | "libc.so.6" => .ok (some (dependencyObject "libc.so.6" libc))

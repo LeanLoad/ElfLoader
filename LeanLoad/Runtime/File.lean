@@ -19,20 +19,8 @@ instance : Repr (File m) where
     "{ backing := " ++ repr file.backing ++
       ", size := " ++ repr file.size ++ ", read := <function> }"
 
-/-- Resolve a `DT_NEEDED` soname against `LD_LIBRARY_PATH` + the given `runpath`,
-    open the resulting file `RDONLY | CLOEXEC`, and return the open file.
-
-    Search rules (gabi 08 § Shared Object Dependencies):
-      1. If `soname` contains '/', open as a literal path.
-      2. Else search `LD_LIBRARY_PATH` (`:`-separated; first hit wins).
-      3. Else search `runpath` (if `some`).
-      4. Else `none`.
-
-    Implementation lives in `Runtime.c` — keeps path splitting and `getenv` out
-    of Lean. -/
-@[extern "leanload_open_by_name"]
-private opaque openByNameFd (soname : @& String) (runpath : @& Option String) :
-    IO (Option UInt32)
+@[extern "leanload_open_path"]
+private opaque openPathFd (path : @& String) : IO (Option UInt32)
 
 @[extern "leanload_file_size"]
 private opaque fileSizeFd (fd : UInt32) : IO UInt64
@@ -52,10 +40,11 @@ private def ofFd (fd : UInt32) (size : UInt64) : File :=
         throw s!"pread short read: offset 0x{range.off.toNat}, requested \
           {range.size.toNat} bytes, got {bytes.size}" }
 
-/-- Production path search/open. The returned `Runtime.File` includes the
-    observed file size immediately after open. -/
-def openByName (soname : String) (runpath : Option String) : IO (Option File) := do
-  match ← openByNameFd soname runpath with
+/-- Open one exact path `RDONLY | CLOEXEC`. Dependency search policy is
+    intentionally not in C; Discover computes candidate paths before trying exact
+    opens. -/
+def openPath (path : String) : IO (Option File) := do
+  match ← openPathFd path with
   | none    => pure none
   | some fd =>
       let size ← fileSizeFd fd

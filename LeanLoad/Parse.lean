@@ -43,6 +43,9 @@ structure Elf where
   symtab   : Array Symbol
   needed   : Array String
   soname   : Option String
+  /-- Deprecated dynamic search path (`DT_RPATH`, gabi 08 § Dynamic Section).
+      Runtime search consumes it only when `DT_RUNPATH` is absent. -/
+  rpath    : Option String
   runpath  : Option String
   /-- Dynamic relocations located in their target segments. -/
   relocs   : Reloc.RelocTable segments
@@ -116,6 +119,7 @@ def parseFile [Monad m] (file : Runtime.File m) : ExceptT String m Elf := do
   let finiArrRaw ← parseDynamicArray (α := Eaddr) file "DT_FINI_ARRAY" locs.finiArr
   let needed ← liftExcept (locs.needed.mapM (strtab.resolve "DT_NEEDED"))
   let soname ← liftExcept (strtab.resolve? "DT_SONAME" locs.soname)
+  let rpath ← liftExcept (strtab.resolve? "DT_RPATH" locs.rpath)
   let runpath ← liftExcept (strtab.resolve? "DT_RUNPATH" locs.runpath)
   let relocs ← liftExcept (Reloc.locateAll loadMap.segments rela jmprel)
   let symtab ← liftExcept (symtabRaw.mapM (Symbol.ofRaw strtab))
@@ -131,6 +135,7 @@ def parseFile [Monad m] (file : Runtime.File m) : ExceptT String m Elf := do
     symtab,
     needed,
     soname,
+    rpath,
     runpath,
     relocs,
     callTargets }

@@ -20,22 +20,46 @@ open LeanLoad
 
 private abbrev CliM := ExceptT String IO
 
-/-- Production object finder: C-side search/open/read plus Lean-side checked parse. -/
+/-- Try dependency candidates in gABI search order. Open candidates that exist,
+    parse them, and continue past parse rejections so search is exhausted before
+    reporting that no matching object exists (gABI 08 § Shared Object
+    Dependencies). -/
+private def findDependencyPath (work : Discover.WorkItem) : CliM (Option Discover.DiscoveredObject) := do
+  let paths ← Discover.Search.candidatesIO work.needed (Discover.Search.Context.ofWorkItem work)
+  let mut parseFailures : Array String := #[]
+  for path in paths do
+    match ← Runtime.File.openPath path with
+    | none => pure ()
+    | some file =>
+        let parsed : Except String Parse.Elf ← (Parse.parseFile (m := IO) file).run
+        match parsed with
+        | .ok elf =>
+            match elf.soname with
+            | some name =>
+                let originDir ← Discover.Search.canonicalOriginDir path
+                return some { name, handle := file, originDir := some originDir, elf }
+            | none =>
+                throw s!"discover: '{work.needed}' opened as '{path}' but is missing \
+                  DT_SONAME (cannot dedup)"
+        | .error e =>
+            parseFailures := parseFailures.push s!"{path}: {e}"
+  if parseFailures.isEmpty then
+    pure none
+  else
+    throw s!"discover: found file candidate(s) for '{work.needed}' but none parsed: \
+      {String.intercalate "; " parseFailures.toList}"
+
+/-- Production object finder: Lean-side gABI search policy plus C-side exact
+    open/read and checked parse. -/
 private def objectFinder : Discover.ObjectFinder CliM :=
   { findMain := fun mainPath => do
-      match ← Runtime.File.openByName mainPath none with
+      match ← Runtime.File.openPath mainPath with
       | none => throw s!"discover: cannot open main '{mainPath}'"
       | some mainFile => do
         let mainElf ← Parse.parseFile mainFile
-        pure (Discover.DiscoveredObject.ofMain mainPath mainFile mainElf)
-    findDependency := fun work => do
-      match ← Runtime.File.openByName work.needed work.runpath with
-      | none => pure none
-      | some file => do
-        let elf ← Parse.parseFile file
-        match elf.soname with
-        | some name => pure (some { name, handle := file, elf })
-        | none      => throw s!"discover: '{work.needed}' is missing DT_SONAME (cannot dedup)" }
+        let originDir ← Discover.Search.canonicalOriginDir mainPath
+        pure (Discover.DiscoveredObject.ofMain mainPath mainFile (some originDir) mainElf)
+    findDependency := findDependencyPath }
 
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024

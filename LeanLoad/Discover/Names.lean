@@ -20,9 +20,9 @@ def mainName (mainPath : String) : String :=
     name is the path basename — executables don't conventionally set
     `DT_SONAME`, and main is path-discovered (not NEEDED-driven), so we don't
     consult `elf.soname`. -/
-def ofMain (mainPath : String) (handle : Runtime.File)
+def ofMain (mainPath : String) (handle : Runtime.File) (originDir : Option String)
     (elf : Parse.Elf) : DiscoveredObject :=
-  { name := mainName mainPath, handle, elf }
+  { name := mainName mainPath, handle, originDir, elf }
 
 end DiscoveredObject
 

@@ -40,83 +40,17 @@ static inline lean_object * leanload_io_err(const char * msg) {
  * File operations
  * ============================================================ */
 
-/* Try `prefix[0..prefix_len)/soname` — open RDONLY|CLOEXEC. Returns
- * fd on success, -1 otherwise. Skips empty prefixes. `buf` is a
- * scratch area sized for the concatenation. */
-static int leanload_try_open_concat(const char *prefix, size_t prefix_len,
-                                    const char *soname, size_t soname_len,
-                                    char *buf, size_t buf_size) {
-    if (prefix_len == 0) return -1;
-    /* prefix + '/' + soname + '\0' */
-    if (prefix_len + 1 + soname_len + 1 > buf_size) return -1;
-    memcpy(buf, prefix, prefix_len);
-    buf[prefix_len] = '/';
-    memcpy(buf + prefix_len + 1, soname, soname_len + 1);  /* include NUL */
-    return open(buf, O_RDONLY | O_CLOEXEC);
-}
-
-/* For each colon-separated entry in `list`, try opening `<entry>/<soname>`.
- * Returns fd on first success, or -1 if no entry succeeded. */
-static int leanload_search_path_list(const char *list,
-                                     const char *soname, size_t soname_len,
-                                     char *buf, size_t buf_size) {
-    const char *p = list;
-    while (*p) {
-        const char *colon = strchr(p, ':');
-        size_t len = colon ? (size_t)(colon - p) : strlen(p);
-        int fd = leanload_try_open_concat(p, len, soname, soname_len,
-                                           buf, buf_size);
-        if (fd >= 0) return fd;
-        if (!colon) break;
-        p = colon + 1;
-    }
-    return -1;
-}
-
-/* Open the file backing `soname`. Search rules (mirrors gabi 08
- * § Shared Object Dependencies):
+/* Open one exact path RDONLY|CLOEXEC. Dependency search order, path-list
+ * splitting, and gABI dynamic-string substitution live in Lean so they are
+ * testable with #guard and not hidden in the trusted C seam.
  *
- *   1. If `soname` contains '/', open as a literal path (no search).
- *   2. Else for each ':'-separated entry in `LD_LIBRARY_PATH`,
- *      try `open("<entry>/<soname>", ...)`. First success wins.
- *   3. Else for each ':'-separated entry in `runpath` (if some),
- *      same. (DT_RUNPATH; DT_RPATH is deprecated, not honoured.)
- *   4. Else return `none`.
- *
- * Returns `IO (Option UInt32)` — the open fd, or `none` if no
- * candidate existed. Lean derives the canonical dedup key from
- * `DT_SONAME` (read after parse) — no path needed back from C.
- * Open errors propagate as `none`; the BFS surfaces them with the
- * full WorkItem context (runpath, soname) attached. */
-LEAN_EXPORT lean_object * leanload_open_by_name(
-        b_lean_obj_arg soname_obj,
-        b_lean_obj_arg runpath_opt,
+ * Returns `IO (Option UInt32)` — the open fd, or `none` if this exact path did
+ * not open. */
+LEAN_EXPORT lean_object * leanload_open_path(
+        b_lean_obj_arg path_obj,
         lean_object * /* w */) {
-    const char * soname = lean_string_cstr(soname_obj);
-    size_t soname_len = strlen(soname);
-    int fd = -1;
-
-    if (strchr(soname, '/') != NULL) {
-        /* Case 1: literal path. */
-        fd = open(soname, O_RDONLY | O_CLOEXEC);
-    } else {
-        char buf[PATH_MAX];
-        /* Case 2: LD_LIBRARY_PATH. */
-        const char * env = getenv("LD_LIBRARY_PATH");
-        if (env != NULL) {
-            fd = leanload_search_path_list(env, soname, soname_len,
-                                            buf, sizeof(buf));
-        }
-        /* Case 3: runpath. `runpath_opt` is `Option String` —
-         * tag 0 = none, tag 1 = some (with the string at field 0). */
-        if (fd < 0 && lean_obj_tag(runpath_opt) == 1) {
-            lean_object * rp_str = lean_ctor_get(runpath_opt, 0);
-            const char * runpath = lean_string_cstr(rp_str);
-            fd = leanload_search_path_list(runpath, soname, soname_len,
-                                            buf, sizeof(buf));
-        }
-    }
-
+    const char * path = lean_string_cstr(path_obj);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         /* Option.none = ctor 0, no fields = lean_box(0). */
         return lean_io_result_mk_ok(lean_box(0));
@@ -125,6 +59,29 @@ LEAN_EXPORT lean_object * leanload_open_by_name(
     lean_object * some = lean_alloc_ctor(1, 1, 0);
     lean_ctor_set(some, 0, lean_box_uint32((uint32_t)fd));
     return lean_io_result_mk_ok(some);
+}
+
+/* Canonical directory for `$ORIGIN` expansion (gABI 08 § Substitution
+ * Sequences). `realpath` removes symlinks and `.`/`..`; Lean stores only the
+ * containing directory in the Discover object that owns the dynamic string. */
+LEAN_EXPORT lean_object * leanload_canonical_origin_dir(
+        b_lean_obj_arg path_obj,
+        lean_object * /* w */) {
+    char resolved[PATH_MAX];
+    const char * path = lean_string_cstr(path_obj);
+    if (realpath(path, resolved) == NULL) {
+        return leanload_io_err(strerror(errno));
+    }
+    char * slash = strrchr(resolved, '/');
+    if (slash == NULL) {
+        return lean_io_result_mk_ok(lean_mk_string("."));
+    }
+    if (slash == resolved) {
+        resolved[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    return lean_io_result_mk_ok(lean_mk_string(resolved));
 }
 
 /* Return the observed regular-file size for an open fd. */

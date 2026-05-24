@@ -54,11 +54,25 @@ edge cases instead of papering over them), it's called out below.
 - **Main executable's canonical name = path basename.** Executables
   conventionally don't set SONAME (nothing should link against an
   exe); we use `basename(mainPath)`, never consulting SONAME.
-- **Search order for NEEDED:** literal-path (if soname contains `/`)
-  → `LD_LIBRARY_PATH` → owning object's `DT_RUNPATH`. Matches ld.so.
-- **`DT_RPATH` ignored.** Deprecated by gABI in favor of `DT_RUNPATH`.
-  ld.so still honours both with quirky precedence rules; we just
-  refuse RPATH outright.
+- **Search order for NEEDED lives in Lean (`Discover/Search.lean`).**
+  gABI 08 order is: literal path after dynamic-string substitution if
+  the name contains `/`; otherwise `DT_RPATH` only when `DT_RUNPATH` is
+  absent; then `LD_LIBRARY_PATH`; then `DT_RUNPATH`; then default dirs.
+  Runtime C only opens exact candidate paths.
+- **Host-specific defaults are explicit policy.** gABI delegates default
+  directories to the psABI/system. LeanLoad records a deterministic
+  Linux x86-64 oriented list in `Discover.Search.defaultDirs`.
+- **RPATH scope is deliberately local.** gABI 08 explicitly scopes
+  `DT_RUNPATH` to immediate dependencies but does not state whether the
+  deprecated `DT_RPATH` should inherit down an ancestor chain. glibc does
+  ancestor-chain RPATH search when no RUNPATH is present; LeanLoad keeps
+  each `WorkItem` local to the referring object and uses only that
+  object's `DT_RPATH`.
+- **Opened-but-rejected candidates do not end search.** gABI requires
+  exhausting all paths after wrong ELF header attributes. LeanLoad applies
+  the same search-exhaustion behavior to any parse rejection from an
+  opened candidate, then reports all parse failures if no candidate
+  succeeds.
 
 **Layout & process startup** (`Parse/`, `Layout/`, `Finalize/`, `Main.lean`)
 
@@ -85,10 +99,17 @@ edge cases instead of papering over them), it's called out below.
 
 **Init / fini** (`Finalize/Build.lean`)
 
-- **Init order = DFS post-order over the dep DAG; fini = its
-  reverse.** gABI 08 mandates a *partial* order ("deps before
-  dependents") and leaves cycle order undefined. Our DFS post-order
-  matches glibc / musl; reverse-init for fini is also their choice.
+- **Init order = DFS post-order over the full dependency graph; fini =
+  its reverse.** gABI 08 mandates a *partial* order ("deps before
+  dependents") and leaves cycle order undefined. For acyclic graphs our
+  DFS post-order matches glibc / musl; reverse-init for fini is also
+  their choice.
+- **Cyclic `DT_NEEDED` graphs are supported with deterministic cycle
+  breaks.** gABI 08 does not specify cyclic initializer ordering, so
+  active-stack dedup hits are recorded as real graph edges and
+  `InitOrder.classifiesDeps` makes the chosen placement explicit:
+  normal edges place the dependency before the dependent; self/reverse
+  placements are LeanLoad's deterministic DFS cycle breaks.
 - **Zero entries in `DT_INIT_ARRAY` / `DT_FINI_ARRAY` skipped as
   no-ops.** gABI leaves them unspecified; glibc / musl skip them.
 
@@ -166,8 +187,45 @@ posture per field is in the bullet.
 - gABI deprecates `DT_RPATH` in favor of `DT_RUNPATH`, but ld.so still
   honors both with quirky precedence rules. So "deprecated in gABI"
   understates how alive it is in practice.
-- LeanLoad takes the stricter line — `DT_RPATH` is refused outright
-  (see "De facto conventions" above, `Discover/`).
+- LeanLoad implements the gABI compatibility rule: `DT_RPATH` is searched
+  before `LD_LIBRARY_PATH` only when `DT_RUNPATH` is absent; if both are
+  present, only `DT_RUNPATH` participates.
+- gABI does not state whether `$ORIGIN` substitution is valid inside
+  `DT_RPATH`: the substitution section names `DT_NEEDED` and
+  `DT_RUNPATH`, while the RPATH note says only that RPATH is a
+  colon-separated search facility. LeanLoad expands `$ORIGIN` in RPATH as
+  Linux loaders do; unsupported `$name` forms and malformed `$` sequences
+  are rejected because gABI marks them unspecified.
+
+**Dynamic-search policy gaps (gABI 08)**
+
+- **Default directories are host policy.** gABI names `/usr/lib` "or such
+  other directories as may be specified by the psABI supplement"; the
+  x86-64 psABI names `/lib`, `/usr/lib`, `/lib64`, and `/usr/lib64`;
+  Linux multi-arch directories such as `/lib/x86_64-linux-gnu` are distro
+  policy. LeanLoad fixes one deterministic Linux x86-64 order in
+  `Discover.Search.defaultDirs`.
+- **`$ORIGIN` requires a canonical directory but not a mechanism.** gABI
+  requires an absolute directory path with no symlinks and no `.`/`..`
+  components. LeanLoad gets that witness through the C shim
+  `leanload_canonical_origin_dir`, implemented with `realpath(3)`, and
+  stores it on `DiscoveredObject` rather than on `Runtime.File`.
+- **Privilege-sensitive search restrictions are out of model.** gABI notes
+  that set-user/set-group or otherwise privileged programs ignore
+  `LD_LIBRARY_PATH` and restrict `$ORIGIN`. LeanLoad is a userspace loader
+  inside an already-running process, not a kernel `execve` privilege
+  transition, so it does not model those restrictions.
+- **`DF_ORIGIN` is not used as a policy gate.** gABI says an
+  implementation may require `DF_ORIGIN` for some `$ORIGIN`-using
+  `dlopen()` cases. LeanLoad does not implement `dlopen()` and resolves
+  startup `DT_NEEDED` only, so `$ORIGIN` in startup dynamic strings is
+  accepted without checking `DF_ORIGIN`.
+- **RPATH inheritance is unspecified.** gABI gives immediate-dependency
+  scope only for `DT_RUNPATH`; it does not define whether old
+  `DT_RPATH` directories apply to descendants. LeanLoad does not inherit
+  ancestor RPATHs. If compatibility with glibc's historical chain search
+  becomes a goal, this should become an explicit graph/search invariant
+  rather than hidden in Runtime.
 
 **`EI_OSABI` / `EI_ABIVERSION` (gABI 02)**
 
@@ -279,6 +337,8 @@ LeanLoad/
   Discover.lean            public Discover interface: DiscoveredObject, LoadGraph,
                            WorkItem, monadic ObjectFinder
   Discover/
+    Search.lean            gABI dependency-search policy: RPATH/RUNPATH/env,
+                           `$ORIGIN`, default dirs, exact-open candidates
     Graph.lean             recordEdge / findDiscoveredIdx construction helpers
     Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
                            recordDep/markComplete) + characterisation theorems

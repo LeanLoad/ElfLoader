@@ -32,6 +32,9 @@ structure DiscoveredObject where
       Production paths carry C-backed read/mmap closures plus observed size;
       examples use a dummy `Runtime.File`. -/
   handle : Runtime.File
+  /-- Canonical directory used to expand this object's `$ORIGIN` dynamic strings
+      (gABI 08 § Substitution Sequences), if the provider can supply one. -/
+  originDir : Option String
   /-- Checked ELF — output of `Parse.parseFile`. The type is the witness
       that PT_LOAD well-formedness held and every dynamic relocation
       was located against a covering segment. -/
@@ -39,20 +42,24 @@ structure DiscoveredObject where
   deriving Repr
 
 /-- One dependency request to resolve next. `needed` is the raw `DT_NEEDED`
-    string from the referring object; `runpath` is that object's
-    `DT_RUNPATH`, if present. This keeps traversal work explicit instead
-    of passing loose strings around. -/
+    string from the referring object; `rpath`/`runpath` are that object's
+    dynamic search paths, if present; `originDir` is the referring file's
+    canonical directory for `$ORIGIN` expansion. This keeps the gABI 08 § Shared
+    Object Dependencies search context explicit instead of passing loose strings
+    around. -/
 structure WorkItem where
   needed  : String
+  originDir : Option String
+  rpath   : Option String
   runpath : Option String
   deriving Repr
 
 namespace WorkItem
 
 /-- Build the work items created by one object's `DT_NEEDED` array. -/
-def ofNeededArray (runpath : Option String) (needed : Array String) :
+def ofNeededArray (originDir rpath runpath : Option String) (needed : Array String) :
     List WorkItem :=
-  needed.toList.map (fun name => { needed := name, runpath })
+  needed.toList.map (fun name => { needed := name, originDir, rpath, runpath })
 
 end WorkItem
 
@@ -117,6 +124,21 @@ inductive Reachable (g : LoadGraph) : Nat → Nat → Prop
 def ReachableFromMain (g : LoadGraph) (i : Nat) : Prop :=
   g.Reachable 0 i
 
+/-- Nonempty reachability via dependency edges. Unlike `Reachable`, this has no
+    zero-step reflexive constructor, so `DepPath g i i` is an actual dependency
+    cycle. -/
+inductive DepPath (g : LoadGraph) : Nat → Nat → Prop
+  | step {i j : Nat} (h : g.Step i j) : DepPath g i j
+  | tail {i j k : Nat} (h_ij : DepPath g i j) (h_jk : g.Step j k) :
+      DepPath g i k
+
+/-- No nonempty dependency path returns to its start. This names the usual DAG
+    property for clients that want to reason about cycle-free graphs; Discover
+    itself records cyclic graphs because gabi 08 § Shared Object Dependencies
+    leaves cyclic initializer ordering unspecified rather than forbidden. -/
+def Acyclic (g : LoadGraph) : Prop :=
+  ∀ i, ¬ g.DepPath i i
+
 /-- `a` appears before `b` in an array of natural indices. This is the raw
     postorder relation used before `InitOrder.order` wraps indices as `Fin`s. -/
 def PostBefore (order : Array Nat) (a b : Nat) : Prop :=
@@ -129,10 +151,14 @@ end LoadGraph
 
 /-- A graph-indexed init schedule. This is derived from `LoadGraph.deps`, not
     part of graph identity: the graph gives the dependency relation, while
-    `InitOrder` certifies one dependency-before-dependent topological order.
+    `InitOrder` certifies the deterministic DFS post-order chosen for
+    initialization.
 
-    Discover computes this as DFS post-order and rejects cycles because gabi 08
-    leaves cyclic init ordering undefined. -/
+    For acyclic graphs this is the usual dependency-before-dependent order. For
+    cyclic graphs, a dependency-before-dependent order cannot exist; the
+    `classifiesDeps` field records that every edge is still placed in the total
+    order, with reverse/self cases representing LeanLoad's deterministic cycle
+    breaks. gabi 08 leaves cyclic init ordering undefined. -/
 structure InitOrder (g : LoadGraph) where
   /-- Object indices in dependency-before-dependent init order. -/
   order : Array (Fin g.objects.size)
@@ -144,9 +170,14 @@ structure InitOrder (g : LoadGraph) where
   covers : ∀ i, i < g.objects.size → i ∈ (order.map (fun ix => ix.val)).toList
   /-- No duplicate indices in `order` (treated as `Nat` via `.val`). -/
   nodup : (order.toList.map (·.val)).Nodup
-  /-- Every recorded `DT_NEEDED` edge is dependency-before-dependent in `order`. -/
-  respectsDeps :
-    ∀ i j, g.Step i j → LoadGraph.PostBefore (order.map (fun ix => ix.val)) j i
+  /-- Every recorded `DT_NEEDED` edge is placed in the total schedule. For an
+      edge `i → j`, the `j = i` and `i`-before-`j` cases are deterministic
+      cycle breaks; gabi 08 does not specify an order inside a dependency cycle. -/
+  classifiesDeps :
+    ∀ i j, g.Step i j →
+      j = i ∨
+      LoadGraph.PostBefore (order.map (fun ix => ix.val)) j i ∨
+      LoadGraph.PostBefore (order.map (fun ix => ix.val)) i j
   deriving Repr
 
 /-- Public Discover result: the dependency graph plus the init schedule derived

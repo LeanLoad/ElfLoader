@@ -10,6 +10,9 @@ promotes the final `Discovered` to a public `LoadGraph` plus graph-indexed
   · `closure` — every `deps[i]` row has one edge per `DT_NEEDED`.
   · `InitOrder.size` — the DFS post-order covers every object.
   · `InitOrder.nodup` — post-order contains no duplicate indices.
+  · `InitOrder.classifiesDeps` — every graph edge is placed by the total
+    schedule, with reverse/self placements representing deterministic cycle
+    breaks because gabi 08 leaves cyclic init ordering unspecified.
 -/
 
 import LeanLoad.Discover.Traversal
@@ -34,7 +37,9 @@ private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
     (finder : ObjectFinder m) (fuel : Nat)
     (mainObj : DiscoveredObject) : m Result := do
   let s0 := Discovered.initial mainObj
-  let initialWork := WorkItem.ofNeededArray mainObj.elf.runpath mainObj.elf.needed
+  let initialWork :=
+    WorkItem.ofNeededArray mainObj.originDir mainObj.elf.rpath mainObj.elf.runpath
+      mainObj.elf.needed
   -- Drive DFS over main's NEEDED via `discoverWorkList` with `newIdx = 0`. Each
   -- iteration: discoverWork(work) → (sub, childIdx), then recordDep 0 childIdx.
   -- Initial WorkListAcc: pending[0] = mainObj.elf.needed.size = initialWork.length.
@@ -74,19 +79,13 @@ private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
         intro j h_lo h_hi
         exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
       postOrderRange := by intro x h_mem; left; exact h_mem
-      newIdxNotInPostOrder := h_zero_not_in
-      newIdxDepsDone := by
-        intro t h_t
-        have h_get : s0.deps[0]'(by rw [s0.depsSize]; exact s0.sizePos)
-            = (#[] : Array Nat) := by rfl
-        rw [h_get] at h_t
-        exact absurd h_t (by simp) }
+      newIdxNotInPostOrder := h_zero_not_in }
   let final ← discoverWorkList finder fuel [0] s0 0 initialWork init
   -- After discoverWorkList, append main's idx (0) to postOrder via markComplete.
   -- markComplete needs 0 ∉ final.state.postOrder.toList, which is
   -- final.newIdxNotInPostOrder.
   let s_final := Discovered.markComplete final.state 0 final.newIdxLt
-    final.newIdxNotInPostOrder final.newIdxDepsDone
+    final.newIdxNotInPostOrder
   -- Promote to `Result` by discharging graph closure + init-order invariants.
   -- s_final.postOrder has size = s0.postOrder.size + (s_final.size - s0.size).
   -- s0.postOrder.size = 0, s_final.size = final.state.size = objects.size.
@@ -170,15 +169,20 @@ private def discoverFrom {m : Type → Type} [Monad m] [MonadExceptOf String m]
             ).toList.map (·.val)).Nodup
       simp [Array.toList_map, Array.toList_attach]
       exact s_final.postOrderNodup
-    respectsDeps := by
+    classifiesDeps := by
       intro i j h_edge
-      change LoadGraph.PostBefore (initOrderArr.map (fun ix => ix.val)) j i
+      change j = i ∨
+        LoadGraph.PostBefore (initOrderArr.map (fun ix => ix.val)) j i ∨
+        LoadGraph.PostBefore (initOrderArr.map (fun ix => ix.val)) i j
       rw [h_initOrderVals]
       rcases h_edge with ⟨h_i, h_j⟩
       have h_i_obj : i < s_final.objects.size := by
         rw [← s_final.depsSize]
         exact h_i
-      exact s_final.depsPostBefore i h_i j h_j (h_allDone i h_i_obj)
+      have h_j_obj : j < s_final.objects.size :=
+        s_final.depsBounds i h_i j h_j
+      exact LoadGraph.PostBefore.eq_or_before_or_after
+        (h_allDone j h_j_obj) (h_allDone i h_i_obj)
   }
   pure { graph := graph, initOrder := initOrder }
 

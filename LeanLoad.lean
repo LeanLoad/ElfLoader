@@ -55,6 +55,7 @@ import LeanLoad.Runtime.Exec
 import LeanLoad.Runtime.Run
 
 import LeanLoad.Discover
+import LeanLoad.Discover.Search
 import LeanLoad.Discover.Finalize
 import LeanLoad.Discover.Examples  -- pure #guard scenarios; elaborate on build
 

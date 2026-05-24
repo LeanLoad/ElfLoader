@@ -38,7 +38,7 @@ inductive FileBacking where
   deriving Repr
 
 /-- Open file-like byte source. `size` is captured when the source is created;
-    `read` accepts only ranges checked against that observed size. File-backed
+    `read` accepts only ranges checked against the observed size. File-backed
     mmap is a memory operation, not part of this read interface. -/
 structure File (m : Type → Type := IO) where
   backing  : FileBacking

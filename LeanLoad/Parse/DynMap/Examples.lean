@@ -112,6 +112,7 @@ def dynMap : DynMap 0x208 :=
 
 #guard dynMap.needed = #[(0x01 : StrtabOff)]
 #guard dynMap.soname = some (0x12 : StrtabOff)
+#guard dynMap.rpath = none
 #guard dynMap.runpath = some (0x1b : StrtabOff)  -- DT_RUNPATH present
 #guard dynMap.strtab.map (fun r => (r.off, r.size)) = some ((0xb0 : FileOff), (31 : ByteSize))
 #guard dynMap.symtab = some (0xd0 : Eaddr)
@@ -124,15 +125,15 @@ def dynMap : DynMap 0x208 :=
   some ((0x120 : FileOff), (8 : ByteSize))
 #guard dynMap.finiArr = none
 
--- `DT_RPATH` is intentionally not consulted: a table with only `DT_RPATH`
--- (no `DT_RUNPATH`) yields `runpath = none`.
+-- `DT_RPATH` is recorded separately from `DT_RUNPATH`; Discover.Search decides
+-- whether it participates in the gABI search order.
 private def rpathOnlyTab : RawDyntab := #[
   { d_tag := .rpath, d_un := 0x42 },
   { d_tag := .null,  d_un := 0 } ]
 
 #guard
   match DynMap.ofRawDyntab rpathOnlyTab loadMap with
-  | .ok map => map.runpath = none
+  | .ok map => map.rpath = some (0x42 : StrtabOff) && map.runpath = none
   | .error _ => false
 
 private def duplicateRunpathTab : RawDyntab := #[

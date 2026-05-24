@@ -25,6 +25,7 @@ resolved to file byte ranges by combining the raw table with `LoadMap`. -/
 structure DynMap (fileSize : ByteSize) where
   needed : Array StrtabOff
   soname : Option StrtabOff
+  rpath : Option StrtabOff
   runpath : Option StrtabOff
   strtab  : Option (FileRange fileSize)
   symtab  : Option Eaddr
@@ -43,6 +44,7 @@ def ofRawDyntab (tab : RawDyntab) (view : LoadMap fileSize) :
   let needed :=
     (tab.findAll .needed).map (fun e => StrtabOff.mk e.d_un)
   let soname := (← tab.single? .soname).map StrtabOff.mk
+  let rpath := (← tab.single? .rpath).map StrtabOff.mk
   let runpath := (← tab.single? .runpath).map StrtabOff.mk
   let strtab ← (← tab.rawRange? .strtab .strsz).mapM (LoadMap.fileRange view)
   let symtabRaw ← tab.single? .symtab
@@ -84,6 +86,7 @@ def ofRawDyntab (tab : RawDyntab) (view : LoadMap fileSize) :
   return {
     needed
     soname
+    rpath
     runpath
     strtab
     symtab

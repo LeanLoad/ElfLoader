@@ -104,6 +104,55 @@ theorem PostBefore.not_reverse_of_nodup {order : Array Nat} (h_nodup : order.toL
   have h_ia : ia' = ia := index_unique_of_nodup h_nodup hia' hia
   omega
 
+/-- Transitivity of `PostBefore` in a duplicate-free order. -/
+theorem PostBefore.trans_of_nodup {order : Array Nat} (h_nodup : order.toList.Nodup)
+    {a b c : Nat} (h_ab : PostBefore order a b) (h_bc : PostBefore order b c) :
+    PostBefore order a c := by
+  rcases h_ab with ⟨ia, ib, hia, hib, hlt_ab⟩
+  rcases h_bc with ⟨ib', ic, hib', hic, hlt_bc⟩
+  have h_ib : ib' = ib := index_unique_of_nodup h_nodup hib' hib
+  refine ⟨ia, ic, hia, hic, ?_⟩
+  omega
+
+/-- Any two values that occur in an array are either equal or one occurs before
+    the other. This is the total-order fact used to classify dependency edges
+    once `InitOrder` has established coverage. -/
+theorem PostBefore.eq_or_before_or_after {order : Array Nat} {a b : Nat}
+    (ha : a ∈ order.toList) (hb : b ∈ order.toList) :
+    a = b ∨ PostBefore order a b ∨ PostBefore order b a := by
+  obtain ⟨ia, hia⟩ := Array.mem_iff_getElem?.mp (Array.mem_toList_iff.mp ha)
+  obtain ⟨ib, hib⟩ := Array.mem_iff_getElem?.mp (Array.mem_toList_iff.mp hb)
+  by_cases hlt : ia < ib
+  · right
+    left
+    exact ⟨ia, ib, hia, hib, hlt⟩
+  · have hle : ib ≤ ia := Nat.le_of_not_gt hlt
+    by_cases heq : ia = ib
+    · left
+      subst heq
+      have h_some : some a = some b := hia.symm.trans hib
+      exact Option.some.inj h_some
+    · right
+      right
+      exact ⟨ib, ia, hib, hia, Nat.lt_of_le_of_ne hle (Ne.symm heq)⟩
+
+/-- A strict order for every direct dependency edge rules out all nonempty
+    dependency cycles. Useful for clients that separately establish a true
+    dependency-before-dependent topological order. -/
+theorem acyclic_of_postBefore_order {g : LoadGraph} {order : Array Nat}
+    (h_nodup : order.toList.Nodup)
+    (h_respects : ∀ i j, g.Step i j → PostBefore order j i) :
+    g.Acyclic := by
+  have path_before : ∀ {i j : Nat}, g.DepPath i j → PostBefore order j i := by
+    intro i j h_path
+    induction h_path with
+    | step h_step =>
+        exact h_respects _ _ h_step
+    | tail h_ij h_jk ih =>
+        exact PostBefore.trans_of_nodup h_nodup (h_respects _ _ h_jk) ih
+  intro i h_cycle
+  exact (PostBefore.ne_of_nodup h_nodup (path_before h_cycle)) rfl
+
 end LoadGraph
 
 namespace InitOrder
@@ -131,22 +180,24 @@ def InitBeforeIdx {g : LoadGraph} (init : InitOrder g) (a b : Nat) : Prop :=
 def Covers {g : LoadGraph} (init : InitOrder g) : Prop :=
   ∀ i, i < g.objects.size → i ∈ (init.order.map (fun ix => ix.val)).toList
 
-/-- Init-order topological property for produced graphs.
+/-- Cycle-aware edge placement property for produced init orders.
 
-    For a direct dependency edge `i → j`, the dependency `j` appears before its
-    dependent `i`. Discover rejects active-stack cycles while building the graph;
-    gabi 08 leaves cyclic init ordering undefined. -/
-def RespectsDeps {g : LoadGraph} (init : InitOrder g) : Prop :=
-  ∀ i j, g.Step i j → init.InitBeforeIdx j i
+    For a direct dependency edge `i → j`, either `j = i`, the dependency `j`
+    appears before dependent `i`, or the edge is placed in the reverse order as
+    a deterministic cycle break. gabi 08 leaves ordering inside cycles
+    unspecified; LeanLoad's policy is deterministic DFS post-order. -/
+def ClassifiesDeps {g : LoadGraph} (init : InitOrder g) : Prop :=
+  ∀ i j, g.Step i j →
+    j = i ∨ init.InitBeforeIdx j i ∨ init.InitBeforeIdx i j
 
 theorem covers_spec {g : LoadGraph} (init : InitOrder g) :
     init.Covers :=
   init.covers
 
-theorem respectsDeps_spec {g : LoadGraph} (init : InitOrder g) :
-    init.RespectsDeps := by
+theorem classifiesDeps_spec {g : LoadGraph} (init : InitOrder g) :
+    init.ClassifiesDeps := by
   intro i j h_step
-  exact init.respectsDeps i j h_step
+  exact init.classifiesDeps i j h_step
 
 /-- Every value in an `InitOrder` is a valid object index. -/
 theorem mem_lt_objects {g : LoadGraph} (init : InitOrder g) {i : Nat}
@@ -188,17 +239,12 @@ theorem InitBeforeIdx.not_reverse {g : LoadGraph} (init : InitOrder g) {a b : Na
   exact LoadGraph.PostBefore.not_reverse_of_nodup
     (by simpa [Array.toList_map] using init.nodup) h
 
-/-- A certified init order rules out direct self-dependencies. -/
-theorem step_ne {g : LoadGraph} (init : InitOrder g) {i j : Nat}
-    (h : g.Step i j) : j ≠ i := by
-  exact InitBeforeIdx.ne init (init.respectsDeps_spec i j h)
-
-/-- A certified init order rules out direct two-node dependency cycles. -/
-theorem step_not_reverse {g : LoadGraph} (init : InitOrder g) {i j : Nat}
-    (h : g.Step i j) : ¬ g.Step j i := by
-  have h_before := init.respectsDeps_spec i j h
-  intro h_rev
-  exact InitBeforeIdx.not_reverse init h_before (init.respectsDeps_spec j i h_rev)
+/-- Init-before is transitive because the order is duplicate-free. -/
+theorem InitBeforeIdx.trans {g : LoadGraph} (init : InitOrder g) {a b c : Nat}
+    (h_ab : init.InitBeforeIdx a b) (h_bc : init.InitBeforeIdx b c) :
+    init.InitBeforeIdx a c := by
+  exact LoadGraph.PostBefore.trans_of_nodup
+    (by simpa [Array.toList_map] using init.nodup) h_ab h_bc
 
 end InitOrder
 
