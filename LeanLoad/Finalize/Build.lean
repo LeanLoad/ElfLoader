@@ -48,7 +48,7 @@ namespace LeanLoad.Finalize
 
 open LeanLoad
 open LeanLoad.Layout (Layout ElfLayout SegmentLayout)
-open LeanLoad.Parse (Elf Eaddr)
+open LeanLoad.Parse (Elf)
 open LeanLoad.Reloc.ABI (Formula)
 
 -- ============================================================================
@@ -354,7 +354,7 @@ def build (bp : BoundPlan) :
 
 /-- Translate one target into its absolute call address. ET_DYN
     targets are base-relative (LeanLoad's only supported case);
-    checked `Parse.parseM` rejects ET_EXEC. -/
+    checked `Parse.parseFile` rejects ET_EXEC. -/
 @[inline] private def callAddrOf (base target : UInt64) : UInt64 := base + target
 
 /-- Collect function addresses to call, from a per-elf array selector
@@ -381,14 +381,14 @@ def collectAddrs (lp : Layout objCount) (bases : Vector UInt64 objCount)
 
 /-- Constructor (`DT_INIT_ARRAY`) addresses, in DFS post-order. -/
 def ctorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.layout bp.bases bp.graph.initOrder (·.callTargets.init)
+  collectAddrs bp.layout bp.bases bp.initOrder.order (·.callTargets.init)
 
 /-- Destructor (`DT_FINI_ARRAY`) addresses, in *reverse* DFS post-order
     so deepest-dep fini runs after shallower fini, mirroring init's
     "deps first" order. gabi 08 mandates a partial order; reverse-init
     is glibc / musl's conventional choice. -/
 def dtorAddrs (bp : BoundPlan) : Array UInt64 :=
-  collectAddrs bp.layout bp.bases bp.graph.initOrder.reverse (·.callTargets.fini)
+  collectAddrs bp.layout bp.bases bp.initOrder.order.reverse (·.callTargets.fini)
 
 -- ============================================================================
 -- Membership characterisation. Every emitted address came from
@@ -426,7 +426,7 @@ theorem collectAddrs_mem_iff (lp : Layout objCount)
 -- Ctor / dtor in-exec-seg theorems. The witness chain:
 --   `Elf.callTargets.init` / `Elf.callTargets.fini` targets carry the executable-segment
 --    witness → `ElfLayout.segmentsSegmentEq` (the parallel
---    `(bp.elfAt i).segments[k].segment = elf.segments.items[k]`) → translate
+--    `(bp.elfAt i).segments[k].segment ≅ elf.segments.items[k]`) → translate
 --    `addr = base + target` into the matching exec PT_LOAD's runtime
 --    bounds. The result lifts the checked-parse "in some exec
 --    PT_LOAD" witness to a `BoundPlan`-relative claim ready for a
@@ -483,7 +483,7 @@ private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
   -- Bridge to SegmentLayout for the no-wrap argument.
   have h_segLt_eo : segIdx < (bp.elfAt objectIdx).segments.size :=
     (bp.elfAt objectIdx).segmentsSizeEq.symm ▸ h_segLt
-  have h_segEq := (bp.elfAt objectIdx).segmentsSegmentEq segIdx h_segLt_eo
+  have h_segRangeEq := (bp.elfAt objectIdx).segmentsSegmentRangeEq segIdx h_segLt_eo
   have h_exec_bp :
       ((bp.elfAt objectIdx).elf.segments.items[segIdx]'h_segLt).perm.exec = true := by
     simpa using h_exec
@@ -503,7 +503,8 @@ private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
     show (Subtype.val target).toNat <
       ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.eaddr.toNat +
       ((bp.elfAt objectIdx).segments[segIdx]'h_segLt_eo).segment.memsz.toNat
-    rw [h_segEq]; exact h_hi_bp
+    rw [h_segRangeEq.1, h_segRangeEq.2]
+    exact h_hi_bp
   have h_no_wrap : (bp.baseAt objectIdx).toNat + (Subtype.val target).toNat < 2 ^ 64 :=
     base_add_target_no_wrap bp objectIdx ⟨segIdx, h_segLt_eo⟩ (Subtype.val target) h_hi_seg
   have h_no_wrap' :
@@ -525,12 +526,12 @@ private theorem collectAddrs_inExecSeg_aux (bp : BoundPlan)
     by each `Elf.callTargets.init` target. -/
 theorem ctorAddrs_inExecSeg (bp : BoundPlan) :
     ∀ addr ∈ ctorAddrs bp, InExecSeg bp addr :=
-  collectAddrs_inExecSeg_aux bp bp.graph.initOrder (·.callTargets.init)
+  collectAddrs_inExecSeg_aux bp bp.initOrder.order (·.callTargets.init)
 
 /-- Destructor addresses live in some exec PT_LOAD of `bp`, as witnessed
     by each `Elf.callTargets.fini` target. -/
 theorem dtorAddrs_inExecSeg (bp : BoundPlan) :
     ∀ addr ∈ dtorAddrs bp, InExecSeg bp addr :=
-  collectAddrs_inExecSeg_aux bp bp.graph.initOrder.reverse (·.callTargets.fini)
+  collectAddrs_inExecSeg_aux bp bp.initOrder.order.reverse (·.callTargets.fini)
 
 end LeanLoad.Finalize

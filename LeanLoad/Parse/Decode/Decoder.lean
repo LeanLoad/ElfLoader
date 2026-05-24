@@ -23,13 +23,14 @@ abbrev Decoder (α : Type) : Type := StateT Decoder.State (Except String) α
 
 namespace Decoder
 
-def run (bytes : ByteArray) (decoder : Decoder α) : Except String α :=
+/-- Decode a whole byte buffer with this decoder. -/
+def decode (decoder : Decoder α) (bytes : ByteArray) : Except String α :=
   Prod.fst <$> StateT.run decoder ({ bytes, pos := 0 } : State)
 
-/-- Run an arbitrary decoder over a whole byte buffer, returning `none` on failure.
+/-- Decode a whole byte buffer with this decoder, returning `none` on failure.
     Intended for examples and `#guard`s. -/
-def run? (bytes : ByteArray) (decoder : Decoder α) : Option α :=
-  (run bytes decoder).toOption
+def decode? (decoder : Decoder α) (bytes : ByteArray) : Option α :=
+  (decoder.decode bytes).toOption
 
 /-- Read one byte. Fails on EOF. -/
 def u8 : Decoder UInt8 := do
@@ -70,9 +71,9 @@ def array (count : Nat) (decoder : Decoder α) : Decoder (Array α) := do
 
 section Example
 
-#guard run? (ByteArray.mk #[0x12]) u8 == some 0x12
-#guard run? (ByteArray.mk #[0x34, 0x12]) u16le == some 0x1234
-#guard run? (ByteArray.mk #[0x78, 0x56, 0x34, 0x12]) u32le == some 0x12345678
+#guard u8.decode? (ByteArray.mk #[0x12]) == some 0x12
+#guard u16le.decode? (ByteArray.mk #[0x34, 0x12]) == some 0x1234
+#guard u32le.decode? (ByteArray.mk #[0x78, 0x56, 0x34, 0x12]) == some 0x12345678
 
 end Example
 

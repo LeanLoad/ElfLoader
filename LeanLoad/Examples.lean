@@ -1,330 +1,218 @@
 /-
-Cross-stage walkthrough of LeanLoad's pipeline with synthetic inputs.
+Fixture-driven integration examples.
 
-Per-stage unit `#guard`s next to each definition cover positive and
-edge cases for *that* unit. This file covers *integration* across
-stages plus boundary-rejection cases that span more than one file:
+`LeanLoad.Parse.Examples` owns the literal ELF bytes. This module starts from
+that checked parse result and walks the pure pipeline shape production uses:
 
-  1. `Inhabited Elf` and `synthElf` — fixtures used below. Production
-     never builds an `Elf` without going through checked `Parse.parseM`;
-     these synthesize partial Elfs for the compile-time `#guard`s.
+  * Discover loads the main fixture plus its two DT_NEEDED dependencies.
+  * Reloc resolves the fixture's dynamic relocations against that graph.
+  * Layout assigns deterministic example bases.
+  * Finalize bakes concrete load operations inside a fixed reservation.
 
-  2. **Checked parse boundary** — synthetic ELF bytes accepted by
-     `Parse.parseM`, surfacing the checked `Elf` fields.
-
-  3. **Resolve/Layout walkthrough** — symbol resolution (`Resolve`),
-     base assignment (`Layout`), and the `SegmentLayout` view
-     over a segment (base-free).
-
-  4. **Finalize** — the structured `LoadOps` tree that
-     `Main.realize` runs. Shows how
-     `Finalize.setupSegment` shapes change with BSS-only vs file+BSS
-     segments, and how `Finalize.build` constructs intrinsic-safe load ops.
-
-`./run.sh` exercises the real `examples/build/main` end-to-end —
-that remains the authoritative "the loader copes with musl-gcc's
-actual output" check. This file trades fidelity for synthesis-
-driven readability.
+The dependency objects deliberately reuse the parsed fixture's PT_LOAD layout so
+the example stays anchored to one real byte image, but they clear dynamic edges
+and relocations. `libc.so.6` defines the one strong symbol the fixture imports.
 -/
 
-import LeanLoad.Layout.Basic
-import LeanLoad.Reloc
-import LeanLoad.Reloc.Symbol
-import LeanLoad.Finalize.Build
 import LeanLoad.Parse.Examples
+import LeanLoad.Discover.Finalize
+import LeanLoad.Reloc
+import LeanLoad.Layout.Basic
+import LeanLoad.Finalize.Build
 
 namespace LeanLoad.Examples
 
-open LeanLoad
 open LeanLoad.Parse
-open LeanLoad.Layout
 
--- ============================================================================
--- 1. Test fixtures.
--- ============================================================================
+private def mainPath : String := "/examples/fixture-main"
+private def reservationBase : UInt64 := 0x80000000
 
-/-- Synthetic reservation base used by examples that don't need a
-    real kernel-picked address. Production loads use the address
-    returned by `Runtime.MemoryOps.io.reserve`. -/
-private def exampleAnchor : UInt64 := 0x80000000
+private def dummyFile : Runtime.File :=
+  { backing := .virtual
+    size := 0
+    read := fun range =>
+      throw s!"integration example dummy file cannot read {range.size.toNat} bytes \
+        at file offset 0x{range.off.toNat}" }
 
-private def exampleFileSize : UInt64 := 0x100000
+private def parsedFixture : Except String Elf :=
+  Parse.Examples.fixture
 
-private def syntheticHeader (elfType : Parse.ElfType) (notExec : elfType ≠ .exec) :
-    ElfHeader :=
-  { ident :=
-      { magic := .elf,
-        ei_class := .class64,
-        ei_data := .lsb,
-        ei_version := .current,
-        ei_osabi := .none,
-        ei_abiversion := default,
-        pad0 := 0, pad1 := 0, pad2 := 0, pad3 := 0, pad4 := 0, pad5 := 0, pad6 := 0 },
-    e_type := elfType,
-    e_machine := .x86_64,
-    e_version := .current,
-    e_entry := 0,
-    e_phoff := 0,
-    e_shoff := 0,
-    e_flags := 0,
-    e_ehsize := 64,
-    e_phentsize := 56,
-    e_phnum := 0,
-    e_shentsize := 0,
-    e_shnum := 0,
-    e_shstrndx := .undef,
-    class64 := rfl,
-    littleEndian := rfl,
-    ehsizeOk := by decide,
-    phentsizeOk := by decide,
-    notExec }
+private def putsDefinition : Symbol :=
+  { name := "puts", bind := .global, shndx := .concrete 1, value := 0x220 }
 
-/-- Default `Elf` — empty in every dimension. Used only by tests that
-    synthesize an `Elf` and override the few fields the test cares
-    about; production code always goes through `Parse.parseM`. -/
-instance : Inhabited Elf where
-  default :=
-    { header := syntheticHeader .none (by decide),
-      symtab := #[], needed := #[],
-      soname := Option.none, runpath := Option.none,
-      segments := SegmentTable.empty,
-      relocs := { rela := #[], jmprel := #[] },
-      callTargets := CallTargets.empty SegmentTable.empty }
+private def providerElf (soname : String) (symtab : Array Symbol) (template : Elf) :
+    Elf :=
+  { template with
+    symtab := symtab
+    needed := #[]
+    soname := some soname
+    runpath := none
+    relocs := { rela := #[], jmprel := #[] }
+    callTargets := CallTargets.empty template.segments }
 
-/-- Synthetic `Elf` with overrides for the fields a test cares about. -/
-def synthElf
-    (header  : ElfHeader                := syntheticHeader .none (by decide))
-    (needed  : Array String             := #[])
-    (symtab  : Array Parse.Symbol       := #[])
-    (segments : Parse.SegmentTable          := SegmentTable.empty)
-    (relocs : Dynamic.Reloc.RelocTable segments :=
-      { rela := #[], jmprel := #[] })
-    (callTargets : CallTargets segments := CallTargets.empty segments) : Elf :=
-  { (default : Elf) with
-    header,
-    needed, symtab,
-    segments,
-    relocs,
-    callTargets }
+private def libcElf (template : Elf) : Elf :=
+  providerElf "libc.so.6" #[default, putsDefinition] template
 
--- ============================================================================
--- 2. Checked parse boundary.
--- ============================================================================
+private def libmElf (template : Elf) : Elf :=
+  providerElf "libm.so.6" #[default] template
 
--- Real-world acceptance: the 488-byte hand-crafted ELF fixture
--- (`Parse.Examples.fixtureBytes` → `Parse.Examples.fixture`) is a
--- library-shaped ET_DYN with strtab, symtab, DT_HASH, rela,
--- init_array, and a 12-entry dynamic table — engineered to satisfy
--- every checked-parse invariant.
-#guard match Parse.Examples.fixture with
-       | .ok elf =>
-           elf.header.e_type    == .dyn
-        && elf.header.e_machine == .x86_64
-        && elf.callTargets.entry.val == 0x100
-        && elf.segments.items.size == 1           -- single PT_LOAD
-        && elf.needed.size == 1                   -- DT_NEEDED "libc.so.6"
-        && elf.callTargets.init.size == 1         -- one ctor
-       | .error _ => false
+private def dependencyObject (name : String) (elf : Elf) : Discover.LoadedObject :=
+  { name := name, handle := dummyFile, elf := elf }
 
--- ============================================================================
--- 3. Resolve/Layout walkthrough.
--- ============================================================================
+private def fixtureFinder (main libc libm : Elf) :
+    Discover.ObjectFinder (Except String) :=
+  { findMain := fun path =>
+     .ok (Discover.LoadedObject.ofMain path dummyFile main)
+    findDependency := fun work =>
+      match work.needed with
+      | "libc.so.6" => .ok (some (dependencyObject "libc.so.6" libc))
+      | "libm.so.6" => .ok (some (dependencyObject "libm.so.6" libm))
+      | _ => .ok none }
 
--- ---- 3a. Symbol resolution: main refs `printf`, libc defines it. -----------
+private def discovery : Except String Discover.Result := do
+  let main ← parsedFixture
+  Discover.discover (fixtureFinder main (libcElf main) (libmElf main)) 16 mainPath
 
-private def globalDef (name : String) (value : UInt64) : Symbol :=
-  { name, bind := .global, shndx := .concrete 1, value }
+private def graph? : Option Discover.LoadGraph :=
+  discovery.toOption.map (·.graph)
 
-private def undef (name : String) : Symbol :=
-  { name, bind := .global, shndx := .undef, value := 0 }
+private def graphNames? : Option (Array String) :=
+  graph?.map (fun g => g.objects.map (fun obj => obj.name))
 
-private def resolveElfs : Array Elf := #[
-  synthElf (needed := #["libc.so"])
-           (symtab := #[default, undef "printf"]),
-  synthElf (symtab := #[default, globalDef "printf" 0xc0ffee]) ]
+private def graphDeps? : Option (Array (Array Nat)) :=
+  graph?.map (fun g => g.deps)
 
-private def loadedObject (name : String) (elf : Elf) :
-    Discover.LoadedObject :=
-  { name, handle := (default : Runtime.File), elf }
+private def graphInitOrder? : Option (Array Nat) :=
+  discovery.toOption.map (fun d => d.initOrder.order.map (fun i => i.val))
 
-private def resolveGraph : Discover.LoadGraph :=
-  { objects := #[
-      loadedObject "main" resolveElfs[0]!,
-      loadedObject "libc.so" resolveElfs[1]! ],
-    deps := #[#[1], #[]],
-    initOrder := #[⟨1, by decide⟩, ⟨0, by decide⟩],
-    sizePos := by decide,
-    namesNodup := by native_decide,
-    depsSize := by decide,
-    depsBounds := by decide,
-    closure := by decide,
-    initOrderSize := by decide,
-    initOrderCovers := by
-      intro i h_i
-      have h_i_cases : i = 0 ∨ i = 1 := by
-        have h_lt : i < 2 := by simpa using h_i
-        omega
-      rcases h_i_cases with h_zero | h_one
-      · subst h_zero
-        simp
-      · subst h_one
-        simp
-    initOrderNodup := by decide,
-    initOrderRespectsDeps := by
-      intro i j h_edge
-      rcases h_edge with ⟨h_i, h_mem⟩
-      have h_i_cases : i = 0 ∨ i = 1 := by
-        have h_lt : i < (#[#[1], #[]] : Array (Array Nat)).size := h_i
-        simp at h_lt
-        omega
-      rcases h_i_cases with h_i_zero | h_i_one
-      · subst h_i_zero
-        have h_j_one : j = 1 := by
-          simpa using h_mem
-        subst h_j_one
-        refine ⟨0, 1, ?_, ?_, by decide⟩
-        · simp
-        · simp
-      · subst h_i_one
-        have h_empty : j ∈ (#[] : Array Nat) := by
-          simp at h_mem
-        exact absurd h_empty (by simp) }
+private def graphBfsOrder? : Option (Array Nat) :=
+  graph?.map (fun g => (Reloc.Symbol.bfsOrder g).map (fun i => i.val))
 
-#guard
-  (Reloc.Symbol.resolveByName resolveGraph (Reloc.Symbol.bfsOrder resolveGraph) "printf").map
-      (·.objectIdx.val) = some 1
-#guard
-  Reloc.Symbol.resolveByName resolveGraph (Reloc.Symbol.bfsOrder resolveGraph) "missing" = none
-#guard (Reloc.Result.ofGraph resolveGraph).isOk
+private def putsProvider? : Option Nat :=
+  graph?.bind fun g =>
+    (Reloc.Symbol.resolveByName g (Reloc.Symbol.bfsOrder g) "puts").map
+      (fun ref => ref.objectIdx.val)
 
--- ---- 3b. Layout: base assignment + page-aligned stacking. ------------------
+#guard graphNames? == some #["fixture-main", "libc.so.6", "libm.so.6"]
+#guard graphDeps? == some #[#[1, 2], #[], #[]]
+#guard graphInitOrder? == some #[1, 2, 0]
+#guard graphBfsOrder? == some #[0, 1, 2]
+#guard putsProvider? == some 1
 
-/-- Synthetic PT_LOAD segment built via `Segment.ofPhdr`. Returns
-    `Option` because `ofPhdr` returns `Except` for ill-formed programHeaders;
-    well-formed inputs always succeed. -/
-private def synthSegment? (eaddr : Eaddr) (memsz : ByteSize) : Option Parse.Segment :=
-  let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
-    p_type := .load,
-    p_vaddr := eaddr, p_memsz := memsz,
-    p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Parse.Segment.ofPhdr phdr exampleFileSize).toOption
+private def relocPlan : Except String Reloc.Result := do
+  let d ← discovery
+  Reloc.Result.ofDiscover d
 
--- ET_EXEC is rejected during checked parse, so every elf reaching
--- planning is ET_DYN. `assignBases` takes the reservation base
--- as a parameter; production gets it from `Runtime.MemoryOps.reserve`.
-#guard
-  let elfs : Array Elf := #[synthElf (header := syntheticHeader .dyn (by decide))]
-  match Layout.ofElfs elfs with
-  | .ok lp => (assignBases exampleAnchor lp).toArray == #[exampleAnchor]
-  | .error _ => false
+private def mainDataRelocTypes? : Option (Array UInt32) :=
+  relocPlan.toOption.bind fun rp =>
+    let mainIdx : Fin rp.graph.objects.size := ⟨0, rp.graph.sizePos⟩
+    if hSeg : 1 < rp.graph.objects[mainIdx].elf.segments.items.size then
+      let dataIdx : Fin rp.graph.objects[mainIdx].elf.segments.items.size := ⟨1, hSeg⟩
+      some ((rp.entries mainIdx dataIdx).map (fun entry => entry.type))
+    else
+      none
 
--- Stacking: each `.dyn` lib has a 0x2000-byte span (one PT_LOAD at
--- eaddr 0 of memsz 0x2000 → pageEndAddr 0x2000), `advance =
--- alignUp 0x2000 0x1000 = 0x2000`. So three libs get
--- exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000.
-private def stackingExample : Option (Array UInt64) := do
-  let seg ← synthSegment? 0 0x2000
-  let segments ← (SegmentTable.ofArray #[seg]).toOption
-  let libElf := synthElf
-    (header := syntheticHeader .dyn (by decide))
-    (segments := segments)
-  let elfs := #[libElf, libElf, libElf]
-  match Layout.ofElfs elfs with
-  | .ok lp => some ((assignBases exampleAnchor lp).toArray)
-  | .error _ => none
+private def mainDataRelocOffsets? : Option (Array Nat) :=
+  relocPlan.toOption.bind fun rp =>
+    let mainIdx : Fin rp.graph.objects.size := ⟨0, rp.graph.sizePos⟩
+    if hSeg : 1 < rp.graph.objects[mainIdx].elf.segments.items.size then
+      let dataIdx : Fin rp.graph.objects[mainIdx].elf.segments.items.size := ⟨1, hSeg⟩
+      some ((rp.entries mainIdx dataIdx).map (fun entry => entry.r_offset.toNat))
+    else
+      none
 
-#guard stackingExample = some #[exampleAnchor, exampleAnchor + 0x2000, exampleAnchor + 0x4000]
+private def mainDataRelocTargets? : Option (Array String) :=
+  relocPlan.toOption.bind fun rp =>
+    let mainIdx : Fin rp.graph.objects.size := ⟨0, rp.graph.sizePos⟩
+    if hSeg : 1 < rp.graph.objects[mainIdx].elf.segments.items.size then
+      let dataIdx : Fin rp.graph.objects[mainIdx].elf.segments.items.size := ⟨1, hSeg⟩
+      some ((rp.entries mainIdx dataIdx).map (fun entry => entry.target.tag))
+    else
+      none
 
--- ============================================================================
--- 4. Realize plan: `SegmentLayout` views and LoadOps shapes.
---
--- `SegmentLayout` is the base-free loader view of a segment; absolute
--- addresses come from `base + sp.pageEaddr` at exec time.
--- ============================================================================
+private def mainDataRelocProviders? : Option (Array (Option Nat)) :=
+  relocPlan.toOption.bind fun rp =>
+    let mainIdx : Fin rp.graph.objects.size := ⟨0, rp.graph.sizePos⟩
+    if hSeg : 1 < rp.graph.objects[mainIdx].elf.segments.items.size then
+      let dataIdx : Fin rp.graph.objects[mainIdx].elf.segments.items.size := ⟨1, hSeg⟩
+      some ((rp.entries mainIdx dataIdx).map fun entry =>
+        entry.target.symRef?.map (fun ref => ref.objectIdx.val))
+    else
+      none
 
--- ---- 4a. SegmentLayout view: base-free page math. ----------------------------
+#guard mainDataRelocTypes? == some #[8, 6]
+#guard mainDataRelocOffsets? == some #[0x1410, 0x1420]
+#guard mainDataRelocTargets? == some #["none", "ok"]
+#guard mainDataRelocProviders? == some #[none, some 1]
 
-/-- A 0x2000-byte BSS-only segment at eaddr 0 (page-aligned). With
-    `filesz = 0` and `memsz = 0x2000`, this is two pages of pure BSS
-    with no file backing. -/
-private def bssOnlySeg : Option Segment :=
-  let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
-    p_type := .load,
-    p_vaddr := 0, p_memsz := 0x2000,
-    p_filesz := 0, p_offset := 0, p_align := 0x1000 }
-  (Segment.ofPhdr phdr exampleFileSize).toOption
+private def withLayout? (f : (rp : Reloc.Result) → Layout.Layout rp.objCount → α) :
+    Option α := do
+  let rp ← relocPlan.toOption
+  let layout ← (Layout.Layout.ofRelocResult rp).toOption
+  some (f rp layout)
 
-private def bssOnlyPlan : Option (SegmentLayout 0) :=
-  bssOnlySeg.map (fun s => SegmentLayout.ofSegmentCore 0 s #[])
+private def layoutSpan? : Option UInt64 :=
+  withLayout? (fun _ layout => layout.totalSpan)
 
--- The plan's mmap'd range is `[pageEaddr, pageEaddr + pageLength)`,
--- absolute addresses computed as `base + pageEaddr`.
-#guard bssOnlyPlan.map (·.pageEaddr)   = some 0
-#guard bssOnlyPlan.map (·.pageLength)  = some 0x2000
+private def layoutAdvances? : Option (Array UInt64) :=
+  withLayout? (fun _ layout => layout.elfs.toArray.map (fun elfLayout => elfLayout.advance))
 
--- BSS-only: no file backing — the underlying object reservation
--- already covers it (kernel zero-fills MAP_ANONYMOUS).
-#guard bssOnlyPlan.map (·.hasFileBacked) = some false
+private def layoutBases? : Option (Array UInt64) :=
+  withLayout? (fun _ layout => (Layout.assignBases reservationBase layout).toArray)
 
--- ---- 4b. setupSegment shape — `#guard`-able since LoadOps are pure data. ------
---
--- Each segment emits 1–3 ops inside the kernel-picked reservation:
---   • mmapFile (if hasFileBacked) — file overlay (with PROT_WRITE widening)
---   • zero     (if hasPartialBss) — clear file content past `filesz`
---   • mprotect — final perms over the whole segment range
---
--- The reservation underneath (kernel-picked anon, RW) handles BSS;
--- no per-segment mmapAnon needed. The single mprotect covers both
--- file overlay and BSS tail since they're all inside the reservation.
---
---   filesz=0          (BSS-only):              [mprotect]                       (1)
---   filesz=memsz      (file-only, aligned):    [mmapFile, mprotect]             (2)
---   file+anon         (file + full-page BSS):  [mmapFile, mprotect]             (2)
---   file+partial      (partial-page BSS):      [mmapFile, zero, mprotect]       (3)
---   file+both         (partial + full-page):   [mmapFile, zero, mprotect]       (3)
---
--- Tests only inspect the planned ops; they never run the mmap, so a dummy
--- file is enough.
-private def dummyHandle : Runtime.File := default
+#guard layoutSpan? == some 0x6000
+#guard layoutAdvances? == some #[0x2000, 0x2000, 0x2000]
+#guard layoutBases? == some #[0x80000000, 0x80002000, 0x80004000]
 
-/-- A more general synth helper that lets us vary `filesz` to land in
-    each profile. -/
-private def synthSeg? (eaddr : Eaddr) (memsz filesz : ByteSize) : Option Segment :=
-  let phdr : Parse.ProgramHeader := { (default : Parse.ProgramHeader) with
-    p_type := .load,
-    p_vaddr := eaddr, p_memsz := memsz,
-    p_filesz := filesz, p_offset := 0, p_align := 0x1000 }
-  (Segment.ofPhdr phdr exampleFileSize).toOption
+private def exampleReservation : Reserve :=
+  { addr := reservationBase, len := 0x6000, noWrap := by decide }
 
-private def fileOnlySeg     : Option Segment := synthSeg? 0 0x1000 0x1000  -- file fills page
-private def filePartialBss  : Option Segment := synthSeg? 0 0x1000 0x800   -- partial-page BSS only
-private def fileAnonBss     : Option Segment := synthSeg? 0 0x2000 0x1000  -- full-page BSS only
-private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- partial + full-page
+private def boundPlan : Except String Finalize.BoundPlan := do
+  let rp ← relocPlan
+  let layout ← Layout.Layout.ofRelocResult rp
+  if h : layout.totalSpan = 0x6000 then
+    return {
+      rp with
+      layout := layout
+      rsv := exampleReservation
+      h_total := by
+        change (0x6000 : UInt64) = layout.totalSpan
+        exact h.symm }
+  else
+    .error "fixture layout span changed"
 
-/-- Count of ops (`MmapOp` + `ZeroOp` + `MprotectOp`) `setupSegment` emits
-    for one segment. `MmapOp` is 1 if `hasFileBacked`, else 0; `ZeroOp`
-    is 1 if `hasPartialBss`, else 0; `MprotectOp` is always 1. -/
-private def slotCount (seg : Option Segment) : Option Nat :=
-  seg.map fun s =>
-    let setup :=
-      Finalize.setupSegment (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
-    (if setup.mmap.isSome then 1 else 0) + (if setup.zero.isSome then 1 else 0) + 1
+private def boundPlan? : Option Finalize.BoundPlan :=
+  boundPlan.toOption
 
-#guard slotCount bssOnlySeg     = some 1  -- mprotect only
-#guard slotCount fileOnlySeg    = some 2  -- mmap + mprotect
-#guard slotCount filePartialBss = some 3  -- mmap + zero + mprotect
-#guard slotCount fileAnonBss    = some 2  -- mmap + mprotect
-#guard slotCount fileBothBss    = some 3  -- mmap + zero + mprotect
+private def ctorAddrs? : Option (Array UInt64) :=
+  boundPlan?.map Finalize.ctorAddrs
 
--- ---- 4c. Intrinsic safety: vacuously holds for an empty LoadOps. ----------
+private def dtorAddrs? : Option (Array UInt64) :=
+  boundPlan?.map Finalize.dtorAddrs
 
-private def exampleReserve : Reserve :=
-  { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
+private def loadElfCount? : Option Nat := do
+  let bp ← boundPlan?
+  let ops ← (Finalize.build bp).toOption
+  some ops.elfs.size
 
-example : Finalize.LoadOps exampleReserve.addr exampleReserve.len 0 :=
-  { elfs := #[]
-    mmapsDisjoint := by
-      intro _ _ hi
-      simp at hi }
+private def mainDataStoreAddrs? : Option (Array UInt64) := do
+  let bp ← boundPlan?
+  let ops ← (Finalize.build bp).toOption
+  let mainOps ← ops.elfs[0]?
+  let dataOps ← mainOps.segments[1]?
+  some (dataOps.stores.map (fun store => store.addr))
+
+private def mainDataStoreValues? : Option (Array UInt64) := do
+  let bp ← boundPlan?
+  let ops ← (Finalize.build bp).toOption
+  let mainOps ← ops.elfs[0]?
+  let dataOps ← mainOps.segments[1]?
+  some (dataOps.stores.map (fun store => store.value))
+
+#guard ctorAddrs? == some #[0x80000100]
+#guard dtorAddrs? == some #[0x80000108]
+#guard loadElfCount? == some 3
+#guard mainDataStoreAddrs? == some #[0x80001410, 0x80001420]
+#guard mainDataStoreValues? == some #[0x80000000, 0x80002220]
 
 end LeanLoad.Examples

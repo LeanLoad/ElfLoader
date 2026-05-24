@@ -33,7 +33,7 @@ wrapper lives in `Lookup.lean`.
 -/
 
 import LeanLoad.Parse
-import LeanLoad.Parse.Dynamic.Symbol.Checked
+import LeanLoad.Parse.Symbol.Checked
 
 namespace LeanLoad.Reloc.Symbol
 

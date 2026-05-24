@@ -8,20 +8,30 @@ namespace LeanLoad.Parse.LoadMap.Examples
 
 open LeanLoad.Parse
 
+private def loadMapFileSize : ByteSize := 0x4000
+
 -- Two non-contiguous PT_LOADs (handcrafted, not byte-decoded) exercise
 -- the `eaddr ≠ offset` case that the consolidated fixture's single PT_LOAD
 -- (with `eaddr = offset = 0`) cannot surface alone.
-def programHeaderVaTestSegments : Array ProgramHeader := #[
-  { (default : ProgramHeader) with
+def programHeaderVaTestSegments : Array (ProgramHeader loadMapFileSize) := #[
+  { (default : ProgramHeader loadMapFileSize) with
     p_type := .load,
     p_vaddr := 0x1000, p_memsz := 0x1000,
-    p_offset := 0x1000, p_filesz := 0x1000 },
-  { (default : ProgramHeader) with
+    p_offset := 0x1000, p_filesz := 0x1000,
+    fileInBounds := by decide,
+    eaddrNoWrap := by decide,
+    alignPow2 := by decide,
+    alignCong := by decide },
+  { (default : ProgramHeader loadMapFileSize) with
     p_type := .load,
     p_vaddr := 0x3000, p_memsz := 0x500,
-    p_offset := 0x2000, p_filesz := 0x500 } ]
+    p_offset := 0x2000, p_filesz := 0x500,
+    fileInBounds := by decide,
+    eaddrNoWrap := by decide,
+    alignPow2 := by decide,
+    alignCong := by decide } ]
 
-private def loadMapHeader : ElfHeader :=
+private def loadMapHeader : ElfHeader loadMapFileSize :=
   { ident :=
       { magic := .elf,
         ei_class := .class64,
@@ -47,10 +57,11 @@ private def loadMapHeader : ElfHeader :=
     littleEndian := rfl,
     ehsizeOk := by decide,
     phentsizeOk := by decide,
-    notExec := by decide }
+    notExec := by decide,
+    phdrInBounds := by decide }
 
-private def programHeaderLoadMap? : Except String LoadMap :=
-  LoadMap.ofHeaders 0x4000 loadMapHeader programHeaderVaTestSegments
+private def programHeaderLoadMap? : Except String (LoadMap loadMapFileSize) :=
+  LoadMap.ofHeaders loadMapFileSize loadMapHeader programHeaderVaTestSegments
 
 private def mappedOff? (va : Eaddr) : Option FileOff :=
   match programHeaderLoadMap? with

@@ -6,36 +6,15 @@ as `Finalize` import it to build typed operation records without depending on
 the IO interpreter.
 -/
 
+import LeanLoad.Runtime.File
+
 namespace LeanLoad
 
 namespace Runtime
 
--- ============================================================================
--- File — an open kernel fd plus the regular-file size observed at open time.
--- ============================================================================
-
-/-- Open read-only file, held until process exit. `size` is captured with
-    `fstat(2)` immediately after open so parse-time reads can reject ranges
-    beyond EOF before calling `pread(2)`. -/
-structure File where
-  fd   : UInt32
-  size : UInt64
-  deriving Repr, Inhabited, BEq
-
-namespace File
-
-/-- Does `[off, off + len)` fit inside this file's observed byte size? -/
-def containsRange (f : File) (off len : UInt64) : Prop :=
-  off.toNat + len.toNat ≤ f.size.toNat
-
-instance (f : File) (off len : UInt64) : Decidable (f.containsRange off len) := by
-  unfold containsRange; infer_instance
-
-end File
-
 /-- POSIX `PROT_WRITE` — used to widen a file overlay's initial
-    permission so relocation patches can write before the final
-    `mprotect` drops the bit. -/
+   permission so relocation patches can write before the final
+   `mprotect` drops the bit. -/
 def PROT_WRITE : UInt32 := 2
 
 end Runtime
@@ -81,7 +60,7 @@ structure MprotectOp where
 
     A successful `mmap(MAP_ANONYMOUS)` on Linux always satisfies
     `addr + len < 2^64` (userspace VM is 48-bit), but the FFI layer
-    can't prove that to Lean — so `Runtime.MemoryOps.reserve` validates at
+    can't prove that to Lean — so `Runtime.Memory.reserve` validates at
     runtime and converts the kernel's guarantee into a Lean proof. -/
 structure Reserve where
   addr   : UInt64

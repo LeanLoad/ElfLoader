@@ -1,49 +1,21 @@
 /-
-gabi 02 § ELF Header — `Elf64_Ehdr`. Field layout matches the C
-struct one-for-one, including the inlined 16-byte `e_ident` prefix
-(gabi 02 § ELF Identification).
-
-The identification fields are typed in `Parse/LoadMap/ElfIdent`; the remaining
-header tag/version/sentinel fields are typed in `Parse/LoadMap/ElfHeader/Fields`.
-Their decoders fold validation and sentinel decoding into byte decode, so later
-stages consume semantic fields rather than raw integers.
+Checked ELF header after file-size-dependent range validation.
 -/
 
-import LeanLoad.Parse.Decode.Decodable
-import LeanLoad.Parse.Decode.Deriving
-import LeanLoad.Parse.Address
-import LeanLoad.Parse.LoadMap.ElfIdent.Basic
-import LeanLoad.Parse.LoadMap.ElfHeader.Fields
+import LeanLoad.Parse.LoadMap.ElfHeader.Raw
 import LeanLoad.Parse.LoadMap.ProgramHeader.Basic
+import LeanLoad.Parse.Basic
+import LeanLoad.Runtime.File
 
 namespace LeanLoad.Parse
-
-/-- Size of `Elf64_Ehdr` on disk: 16-byte e_ident + 48 bytes = 64. -/
-def ElfHeaderSize : Nat := 64
 
 /-- ELF header accepted by LeanLoad's load-map stage. Field layout matches
     `Elf64_Ehdr`, with LeanLoad's header policy attached as proof fields.
 
     The `e_ident` prefix and header tags are decoded through semantic field
-    types; unknown or unsupported values fail decoding. -/
-structure ElfHeader where
-  -- ── e_ident (16 bytes, gabi 02 § ELF Identification) ─────────────────
-  ident : ElfIdent
-  -- ── rest of Elf64_Ehdr (48 bytes) ────────────────────────────────────
-  e_type      : ElfType
-  e_machine   : ElfMachine
-  e_version   : ElfVersion
-  e_entry     : Eaddr
-  e_phoff     : FileOff
-  e_shoff     : FileOff
-  e_flags     : UInt32
-  e_ehsize    : UInt16
-  e_phentsize : UInt16
-  e_phnum     : UInt16
-  e_shentsize : UInt16
-  e_shnum     : UInt16
-  e_shstrndx  : ElfShstrndx
-  -- ── LeanLoad-supported header properties ──────────────────────────────
+    types; unknown or unsupported values fail decoding. The program-header table
+    range is checked against the observed file size before any phdr read. -/
+structure ElfHeader (fileSize : ByteSize) extends RawElfHeader where
   /-- LeanLoad supports only ELFCLASS64 inputs. -/
   class64     : ident.ei_class = .class64
   /-- LeanLoad targets little-endian psABIs. -/
@@ -54,11 +26,51 @@ structure ElfHeader where
   phentsizeOk : e_phentsize.toNat = ProgramHeaderSize
   /-- LeanLoad supports PIE/shared-object style `ET_DYN`, not fixed-address `ET_EXEC`. -/
   notExec     : e_type ≠ .exec
-  deriving Repr, Decodable
+  /-- The `Elf64_Phdr` table described by `e_phoff/e_phnum` is inside the file. -/
+  phdrInBounds :
+    e_phoff.toNat +
+      (ByteSize.ofEntries e_phnum.toNat (Decodable.byteSize (α := RawProgramHeader))).toNat ≤
+        fileSize.toNat
+  deriving Repr
 
 namespace ElfHeader
 
-#guard Decodable.byteSize (α := ElfHeader) = ElfHeaderSize
+/-- Attach file-size-dependent phdr-table bounds to a byte-decoded header. -/
+def ofRaw (fileSize : ByteSize) (raw : RawElfHeader) : Except String (ElfHeader fileSize) := do
+  let size := ByteSize.ofEntries raw.e_phnum.toNat (Decodable.byteSize (α := RawProgramHeader))
+  let ⟨hClass⟩ ← require (raw.ident.ei_class = .class64)
+    "parse: non-64-bit ELF is unsupported; expected ELFCLASS64"
+  let ⟨hData⟩ ← require (raw.ident.ei_data = .lsb)
+    "parse: big-endian ELF is unsupported; expected ELFDATA2LSB"
+  let ⟨hEhdrSize⟩ ← require (raw.e_ehsize.toNat = ElfHeaderSize)
+    s!"parse: expected Elf64_Ehdr size {ElfHeaderSize}, got {raw.e_ehsize.toNat}"
+  let ⟨hPhdrSize⟩ ← require (raw.e_phentsize.toNat = ProgramHeaderSize)
+    s!"parse: expected Elf64_Phdr size {ProgramHeaderSize}, got {raw.e_phentsize.toNat}"
+  let ⟨hNotExec⟩ ← require (raw.e_type ≠ .exec)
+    "parse: ET_EXEC is unsupported; expected ET_DYN"
+  let ⟨hPhdr⟩ ← require (raw.e_phoff.toNat + size.toNat ≤ fileSize.toNat)
+    s!"parse: program header table at file offset 0x{raw.e_phoff.toNat} requested \
+      {size.toNat} bytes, past file size {fileSize.toNat}"
+  .ok { raw with
+    class64 := hClass,
+    littleEndian := hData,
+    ehsizeOk := hEhdrSize,
+    phentsizeOk := hPhdrSize,
+    notExec := hNotExec,
+    phdrInBounds := hPhdr }
+
+/-- Decode a checked ELF header from the current byte-decoder cursor. -/
+def decoder (fileSize : ByteSize) : Decoder (ElfHeader fileSize) := do
+  let raw : RawElfHeader ← Decodable.decoder
+  match ofRaw fileSize raw with
+  | .ok header => return header
+  | .error e   => throw e
+
+/-- Checked file range for the `Elf64_Phdr` table described by this header. -/
+def programHeaderRange (header : ElfHeader fileSize) : Runtime.FileRange fileSize :=
+  { off := header.e_phoff
+    size := ByteSize.ofEntries header.e_phnum.toNat (Decodable.byteSize (α := RawProgramHeader))
+    inBounds := header.phdrInBounds }
 
 end ElfHeader
 

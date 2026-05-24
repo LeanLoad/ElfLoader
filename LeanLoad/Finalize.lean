@@ -33,7 +33,7 @@ open LeanLoad.Layout (SegmentLayout)
 
 /-- The pure-pipeline `Reloc.Result` plus `Layout.Layout`, extended with the
     IO-supplied reservation, plus the coherence proof threaded from
-    `Runtime.MemoryOps.reserve`'s subtype. Every finalize-stage consumer
+    `Runtime.Memory.reserve`'s subtype. Every finalize-stage consumer
     (`build`, `ctorAddrs`, `Main.realize`) takes a `BoundPlan` and accesses its
     planning fields directly via inheritance. -/
 structure BoundPlan extends Reloc.Result where

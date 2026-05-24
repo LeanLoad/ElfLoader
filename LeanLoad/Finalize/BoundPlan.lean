@@ -15,11 +15,9 @@ has every link as a named lemma.
 import LeanLoad.Finalize
 import LeanLoad.Layout
 import LeanLoad.Reloc
-
 namespace LeanLoad.Finalize
 
 open LeanLoad
-open LeanLoad.Parse (Eaddr)
 open LeanLoad.Layout (cumOffset cumOffset_succ_of_lt cumOffset_mono
                      assignBases assignBases_at_toNat)
 

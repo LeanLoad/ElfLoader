@@ -115,13 +115,22 @@ structure ElfLayout (objCount : Nat) where
       re-index between the two arrays without recomputing. -/
   segmentsSizeEq : segments.size = elf.segments.items.size
   /-- Pointwise: each `SegmentLayout`'s underlying gabi segment is the
-      corresponding entry in `elf.segments.items`. Discharged at `ofElf` from
-      `Array.getElem_map` + `SegmentLayout.ofSegmentCore_segment`.
+      corresponding entry in `elf.segments.items`. This is heterogeneous because
+      `SegmentLayout` existentializes the file size carried by `Segment`.
+      Discharged at `ofElf` from `Array.getElem_map`.
       Lets `Finalize` propagate init/fini entry witnesses across the
       `Layout` ↔ checked-parse view boundary. -/
   segmentsSegmentEq : ∀ (k : Nat) (h : k < segments.size),
-    (segments[k]'h).segment =
-      elf.segments.items[k]'(segmentsSizeEq ▸ h)
+    HEq (segments[k]'h).segment
+      (elf.segments.items[k]'(segmentsSizeEq ▸ h))
+  /-- Pointwise address-range equality for the same parallel arrays.
+      This avoids forcing consumers to peel a heterogeneous `Segment` equality
+      when they only need the file-size-independent runtime range. -/
+  segmentsSegmentRangeEq : ∀ (k : Nat) (h : k < segments.size),
+    (segments[k]'h).segment.eaddr =
+        (elf.segments.items[k]'(segmentsSizeEq ▸ h)).eaddr ∧
+      (segments[k]'h).segment.memsz =
+        (elf.segments.items[k]'(segmentsSizeEq ▸ h)).memsz
   /-- Page-aligned segment ranges don't overlap pairwise. -/
   segmentsSorted : Sorted segments
   /-- Each segment's mmap'd range fits in `[0, advance)` (in `Nat`).
@@ -185,8 +194,8 @@ def ofElfCore (objCount : Nat) (e : Elf)
         have h := h_pe_le_obj i h_lt
         omega
       have h_seg_eq : ∀ (k : Nat) (h : k < segs.size),
-          (segs[k]'h).segment =
-            e.segments.items[k]'(h_size_eq ▸ h) := by
+          HEq (segs[k]'h).segment
+            (e.segments.items[k]'(h_size_eq ▸ h)) := by
         intro k h_lt
         have h_lt_e : k < e.segments.items.size := h_size_eq ▸ h_lt
         have h_get : segs[k]'h_lt = SegmentLayout.ofSegmentCore objCount
@@ -194,10 +203,24 @@ def ofElfCore (objCount : Nat) (e : Elf)
             (segmentRelocs ⟨k, h_lt_e⟩) := by
           simp [segs]
         rw [h_get]
-        exact SegmentLayout.ofSegmentCore_segment objCount _ _
+        exact HEq.rfl
+      have h_seg_range_eq : ∀ (k : Nat) (h : k < segs.size),
+          (segs[k]'h).segment.eaddr =
+             (e.segments.items[k]'(h_size_eq ▸ h)).eaddr ∧
+            (segs[k]'h).segment.memsz =
+             (e.segments.items[k]'(h_size_eq ▸ h)).memsz := by
+        intro k h_lt
+        have h_lt_e : k < e.segments.items.size := h_size_eq ▸ h_lt
+        have h_get : segs[k]'h_lt = SegmentLayout.ofSegmentCore objCount
+            (e.segments.items[k]'h_lt_e)
+            (segmentRelocs ⟨k, h_lt_e⟩) := by
+          simp [segs]
+        rw [h_get]
+        exact ⟨rfl, rfl⟩
       .ok { elf := e, segments := segs, advance,
             segmentsSizeEq := h_size_eq,
             segmentsSegmentEq := h_seg_eq,
+            segmentsSegmentRangeEq := h_seg_range_eq,
             segmentsSorted := h_sorted,
             pageEndAddr_le_advance := h_bound }
     else
@@ -264,7 +287,7 @@ theorem cumOffset_mono (elfs : Array (ElfLayout m)) {a b : Nat} (h : a ≤ b) :
 -- ============================================================================
 
 /-- Top-level base-free plan. `totalSpan` is the `len` to pass to
-    `Runtime.MemoryOps.reserve` at the IO boundary; `totalSpan_eq` says it equals
+    `Runtime.Memory.reserve` at the IO boundary; `totalSpan_eq` says it equals
     the `cumOffset` Nat sum (no UInt64 wrap during construction).
     `elfs` is a length-indexed `Vector` so `lp.elfs[i]` is total for
     any `i : Fin objCount` — no separate `elfs_size` rewrite needed

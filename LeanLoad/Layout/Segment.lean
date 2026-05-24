@@ -48,13 +48,13 @@ namespace SegmentLayout
 
 /-- `effectiveAlign` is the same alignment expression checked by
     `Segment.pageLayoutNoWrap`. -/
-private theorem pageLayoutNoWrap (s : Segment) :
+private theorem pageLayoutNoWrap {fileSize : ByteSize} (s : Segment fileSize) :
     s.eaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat < 2 ^ 64 := by
   simpa [Segment.eaddr, Segment.memsz, Segment.align, effectiveAlign, segmentLayoutAlign]
     using s.pageLayoutNoWrap
 
 /-- `eaddr + memsz` doesn't wrap, given `Segment.eaddrNoWrap`. -/
-private theorem vaddr_add_memsz_toNat (s : Segment) :
+private theorem vaddr_add_memsz_toNat {fileSize : ByteSize} (s : Segment fileSize) :
     (s.eaddr.val + s.memsz.val).toNat = s.eaddr.toNat + s.memsz.toNat := by
   have h_no_wrap : s.eaddr.toNat + s.memsz.toNat < 2 ^ 64 := by
     simpa [Segment.eaddr, Segment.memsz] using s.eaddrNoWrap
@@ -73,7 +73,7 @@ theorem effectiveAlign_le_succ (align : UInt64) :
 /-- `alignDown s.eaddr ea ≤ alignUp (s.eaddr + s.memsz) ea` —
     page-aligned start ≤ page-aligned end. Prerequisite for
     `pageLength`'s subtraction to be well-defined. -/
-private theorem pageEaddr_le_pageEnd_raw (s : Segment) :
+private theorem pageEaddr_le_pageEnd_raw {fileSize : ByteSize} (s : Segment fileSize) :
     alignDown s.eaddr.val (effectiveAlign s.align) ≤
     alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) := by
   have h_ea_ne : effectiveAlign s.align ≠ 0 :=
@@ -94,7 +94,7 @@ private theorem pageEaddr_le_pageEnd_raw (s : Segment) :
 
 /-- `(alignUp (s.eaddr + s.memsz) ea).toNat ≤ s.eaddr + s.memsz + ea`.
     Exposed for `Layout.Basic`'s `ElfLayout.ofElf` proof. -/
-theorem alignUp_vm_le (s : Segment) :
+theorem alignUp_vm_le {fileSize : ByteSize} (s : Segment fileSize) :
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat ≤
     s.eaddr.toNat + s.memsz.toNat + (effectiveAlign s.align).toNat := by
   have h_ea_ne : effectiveAlign s.align ≠ 0 := effectiveAlign_ne_zero s.align
@@ -107,7 +107,7 @@ theorem alignUp_vm_le (s : Segment) :
   exact h_au_le
 
 /-- `(alignUp (s.eaddr + s.memsz) ea).toNat < 2^64`. -/
-private theorem alignUp_vm_lt (s : Segment) :
+private theorem alignUp_vm_lt {fileSize : ByteSize} (s : Segment fileSize) :
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat < 2 ^ 64 := by
   have h := alignUp_vm_le s
   have h_no_wrap : s.eaddr.toNat + s.memsz.toNat +
@@ -115,7 +115,7 @@ private theorem alignUp_vm_lt (s : Segment) :
   omega
 
 /-- `s.eaddr + s.memsz ≤ alignUp (s.eaddr + s.memsz) ea` (toNat). -/
-private theorem vm_le_alignUp_vm (s : Segment) :
+private theorem vm_le_alignUp_vm {fileSize : ByteSize} (s : Segment fileSize) :
     s.eaddr.toNat + s.memsz.toNat ≤
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat := by
   rw [← vaddr_add_memsz_toNat]
@@ -130,7 +130,7 @@ private theorem vm_le_alignUp_vm (s : Segment) :
 /-- The `pageEnd - pageEaddr` UInt64 subtraction equals the Nat-level
     difference `pageEnd.toNat - pageEaddr.toNat`.
     Exposed for `Layout.Basic`'s `ElfLayout.ofElf` proof. -/
-theorem pageLength_toNat (s : Segment) :
+theorem pageLength_toNat {fileSize : ByteSize} (s : Segment fileSize) :
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
       alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align)).toNat -
@@ -138,7 +138,7 @@ theorem pageLength_toNat (s : Segment) :
   UInt64.toNat_sub_of_le _ _ (pageEaddr_le_pageEnd_raw s)
 
 /-- `pageEaddr + pageLength = pageEnd` (in `Nat`). -/
-private theorem pageEaddr_add_pageLength_raw (s : Segment) :
+private theorem pageEaddr_add_pageLength_raw {fileSize : ByteSize} (s : Segment fileSize) :
     (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
       alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
@@ -149,7 +149,7 @@ private theorem pageEaddr_add_pageLength_raw (s : Segment) :
 
 /-- The `pageEaddr + pageLength < 2^64` bound — used as
     `SegmentLayout.pageEnd_lt`. -/
-private theorem raw_pageEnd_lt (s : Segment) :
+private theorem raw_pageEnd_lt {fileSize : ByteSize} (s : Segment fileSize) :
     (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
       alignDown s.eaddr.val (effectiveAlign s.align)).toNat < 2 ^ 64 := by
@@ -157,7 +157,7 @@ private theorem raw_pageEnd_lt (s : Segment) :
 
 /-- The `eaddr + memsz ≤ pageEaddr + pageLength` bound — used as
     `SegmentLayout.vaddr_memsz_le_pageEnd`. -/
-private theorem raw_vaddr_memsz_le_pageEnd (s : Segment) :
+private theorem raw_vaddr_memsz_le_pageEnd {fileSize : ByteSize} (s : Segment fileSize) :
     s.eaddr.toNat + s.memsz.toNat ≤
     (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
@@ -166,7 +166,7 @@ private theorem raw_vaddr_memsz_le_pageEnd (s : Segment) :
 
 /-- The `pageEaddr + pageInset = eaddr` equality — used as
     `SegmentLayout.pageInset_eq_vaddr`. -/
-private theorem raw_pageInset_eq_vaddr (s : Segment) :
+private theorem raw_pageInset_eq_vaddr {fileSize : ByteSize} (s : Segment fileSize) :
     (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat =
     s.eaddr.toNat := by
@@ -181,7 +181,8 @@ private theorem raw_pageInset_eq_vaddr (s : Segment) :
   omega
 
 /-- `pageEaddr + fileOverlayLen ≤ pageEaddr + pageLength` (in `Nat`). -/
-private theorem pageEaddr_add_fileOverlayLen_le_pageEnd (s : Segment) :
+private theorem pageEaddr_add_fileOverlayLen_le_pageEnd {fileSize : ByteSize}
+    (s : Segment fileSize) :
     (alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
               s.filesz.val) (effectiveAlign s.align)).toNat ≤
@@ -262,7 +263,7 @@ private theorem pageEaddr_add_fileOverlayLen_le_pageEnd (s : Segment) :
 
 /-- The `fileOverlayLen ≤ pageLength` bound — used as
     `SegmentLayout.fileOverlay_le_pageLength`. -/
-private theorem raw_fileOverlay_le_pageLength (s : Segment) :
+private theorem raw_fileOverlay_le_pageLength {fileSize : ByteSize} (s : Segment fileSize) :
     (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
               s.filesz.val) (effectiveAlign s.align)).toNat ≤
     (alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
@@ -272,7 +273,7 @@ private theorem raw_fileOverlay_le_pageLength (s : Segment) :
 
 /-- The `pageInset + filesz + partialBssLen ≤ pageLength` bound —
     used as `SegmentLayout.zero_end_le_pageLength`. -/
-private theorem raw_zero_end_le_pageLength (s : Segment) :
+private theorem raw_zero_end_le_pageLength {fileSize : ByteSize} (s : Segment fileSize) :
     (s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)).toNat +
     s.filesz.toNat +
     (alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
@@ -357,7 +358,8 @@ end SegmentLayout
 structure SegmentLayout (objCount : Nat) where
   /-- Underlying gabi segment. Carries `rela`/`jmprel` for reloc
       planning plus range/page-layout no-wrap witnesses for proofs. -/
-  segment        : Segment
+  fileSize       : ByteSize
+  segment        : Segment fileSize
   /-- `alignDown eaddr ea` — page-aligned start. -/
   pageEaddr      : UInt64
   /-- Total page-aligned mmap length. -/
@@ -395,7 +397,7 @@ structure SegmentLayout (objCount : Nat) where
       filesz` for proofs. -/
   pageInset_eq_vaddr : pageEaddr.toNat + pageInset.toNat = segment.eaddr.toNat
   /-- Planned relocations targeting this segment, in
-      `Dynamic.Reloc.RelocTable.rela ++ Dynamic.Reloc.RelocTable.jmprel` order. Each
+      `Parse.Reloc.RelocTable.rela ++ Parse.Reloc.RelocTable.jmprel` order. Each
       entry carries its `Reloc.covered` witness keyed to `segment` so
       `SegmentOps.storesInRange` is structurally provable.
       `Finalize.bakeSegmentRelocs` reads this directly. -/
@@ -406,7 +408,8 @@ namespace SegmentLayout
 /-- Compute the page-math view of a `Segment` and discharge each
     per-segment invariant. Callers supply `relocs` separately
     (typically via `Reloc.planSegment`). -/
-def ofSegmentCore (objCount : Nat) (s : Segment) (relocs : Array (Entry objCount s)) :
+def ofSegmentCore (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize) (relocs : Array (Entry objCount s)) :
     SegmentLayout objCount :=
   let ea             := effectiveAlign s.align
   let pageEaddr      := alignDown s.eaddr.val ea
@@ -420,7 +423,7 @@ def ofSegmentCore (objCount : Nat) (s : Segment) (relocs : Array (Entry objCount
     (if s.perm.read  then (1 : UInt32) else 0) |||
     (if s.perm.write then (2 : UInt32) else 0) |||
     (if s.perm.exec  then (4 : UInt32) else 0)
-  { segment := s, pageEaddr, pageLength, pageInset,
+  { fileSize := fileSize, segment := s, pageEaddr, pageLength, pageInset,
     fileOverlayLen, fileOffset, partialBssLen, prot,
     pageEnd_lt := raw_pageEnd_lt s,
     fileOverlay_le_pageLength := raw_fileOverlay_le_pageLength s,
@@ -453,35 +456,41 @@ def hasPartialBss (sp : SegmentLayout objCount) : Bool := sp.partialBssLen > 0
 -- downstream `simp`-based reasoning.
 -- ============================================================================
 
-@[simp] theorem ofSegmentCore_pageEaddr (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_pageEaddr (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).pageEaddr =
       alignDown s.eaddr.val (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_pageLength (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_pageLength (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).pageLength =
       alignUp (s.eaddr.val + s.memsz.val) (effectiveAlign s.align) -
       alignDown s.eaddr.val (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_pageInset (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_pageInset (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).pageInset =
       s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_fileOverlayLen (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_fileOverlayLen (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).fileOverlayLen =
       alignUp ((s.eaddr.val - alignDown s.eaddr.val (effectiveAlign s.align)) +
                s.filesz.val) (effectiveAlign s.align) := rfl
 
-@[simp] theorem ofSegmentCore_partialBssLen (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_partialBssLen (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).partialBssLen =
       (ofSegmentCore objCount s relocs).fileOverlayLen -
         ((ofSegmentCore objCount s relocs).pageInset + s.filesz.val) := rfl
 
-@[simp] theorem ofSegmentCore_segment (objCount : Nat) (s : Segment)
+@[simp] theorem ofSegmentCore_segment (objCount : Nat) {fileSize : ByteSize}
+    (s : Segment fileSize)
     (relocs : Array (Entry objCount s)) :
     (ofSegmentCore objCount s relocs).segment = s := rfl
 

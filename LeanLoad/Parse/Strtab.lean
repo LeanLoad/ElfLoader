@@ -15,7 +15,7 @@ That makes accidental confusion with a `Eaddr` or file offset a
 type error rather than a silent runtime mis-read.
 -/
 
-import LeanLoad.Parse.Address
+import LeanLoad.Parse.Basic
 import LeanLoad.Parse.Decode.Decoder
 
 namespace LeanLoad.Parse

@@ -20,7 +20,7 @@ def elfIdentBytes : ByteArray := ⟨#[
 #guard elfIdentBytes.size == 16
 
 def elfIdent? : Option ElfIdent :=
-  Decoder.run? elfIdentBytes (Decodable.decode (α := ElfIdent))
+  (Decodable.decode (α := ElfIdent) elfIdentBytes).toOption
 
 #guard elfIdent?.isSome
 
@@ -38,18 +38,18 @@ def badMagicElfIdentBytes : ByteArray :=
   let bytes := bytes.set! 0x00 0x00
   ⟨bytes⟩
 
-#guard (Decoder.run? badMagicElfIdentBytes (Decodable.decode (α := ElfIdent))).isNone
+#guard (Decodable.decode (α := ElfIdent) badMagicElfIdentBytes).toOption.isNone
 
 def badClassElfIdentBytes : ByteArray :=
   let bytes := elfIdentBytes.toList.toArray
   let bytes := bytes.set! 0x04 0xff
   ⟨bytes⟩
 
-#guard (Decoder.run? badClassElfIdentBytes (Decodable.decode (α := ElfIdent))).isNone
+#guard (Decodable.decode (α := ElfIdent) badClassElfIdentBytes).toOption.isNone
 
 def truncatedElfIdentBytes : ByteArray :=
   elfIdentBytes.extract 0 15
 
-#guard (Decoder.run? truncatedElfIdentBytes (Decodable.decode (α := ElfIdent))).isNone
+#guard (Decodable.decode (α := ElfIdent) truncatedElfIdentBytes).toOption.isNone
 
 end LeanLoad.Parse.Examples

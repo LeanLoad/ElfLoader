@@ -23,16 +23,16 @@ private abbrev CliM := ExceptT String IO
 /-- Production object finder: C-side search/open/read plus Lean-side checked parse. -/
 private def objectFinder : Discover.ObjectFinder CliM :=
   { findMain := fun mainPath => do
-      match ← Runtime.FileOps.io.openByName mainPath none with
+      match ← Runtime.File.openByName mainPath none with
       | none => throw s!"discover: cannot open main '{mainPath}'"
       | some mainFile => do
-        let mainElf ← Parse.parseM Runtime.FileOps.io mainFile
+        let mainElf ← Parse.parseFile mainFile
         pure (Discover.LoadedObject.ofMain mainPath mainFile mainElf)
     findDependency := fun work => do
-      match ← Runtime.FileOps.io.openByName work.needed work.runpath with
+      match ← Runtime.File.openByName work.needed work.runpath with
       | none => pure none
       | some file => do
-        let elf ← Parse.parseM Runtime.FileOps.io file
+        let elf ← Parse.parseFile file
         match elf.soname with
         | some name => pure (some { name, handle := file, elf })
         | none      => throw s!"discover: '{work.needed}' is missing DT_SONAME (cannot dedup)" }
@@ -53,11 +53,11 @@ private def realize (bp : Finalize.BoundPlan)
     Parse.ProgramHeaderMap.ofSegments mainElf.segments mainElf.header.e_phoff programHeaderNbytes
   let entry  := mainBase + mainElf.callTargets.entry.val.val
   let programHeaderVa := mainBase + programHeaderMap.eaddr.val
-  let _ ← (Runtime.runLoadOps Runtime.MemoryOps.io lo : IO Unit)
+  let _ ← (Runtime.runLoadOps Runtime.Memory.io lo : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
   let _ ← (ctorAddrs.forM Runtime.callCtor : IO Unit)
-  let stack ← Runtime.MemoryOps.io.reserve stackBytes
+  let stack ← Runtime.Memory.io.reserve stackBytes
   let phnum  := mainElf.header.e_phnum.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
   let _ ← (Runtime.execAndJump
@@ -100,10 +100,10 @@ private def Nat.hex12 (objCount : Nat) : String :=
     relocation symbols) → Layout → kernel-picked reservation → Finalize → realize.
     **Does not return.** -/
 def load (path : String) : CliM Unit := do
-  let g ← Discover.discover objectFinder 4096 path
-  let relocPlan ← Reloc.Result.ofGraph g
+  let discovery ← Discover.discover objectFinder 4096 path
+  let relocPlan ← Reloc.Result.ofDiscover discovery
   let layout ← Layout.Layout.ofRelocResult relocPlan
-  let rsvW ← Runtime.MemoryOps.io.reserve layout.totalSpan
+  let rsvW ← Runtime.Memory.io.reserve layout.totalSpan
   let bp : Finalize.BoundPlan :=
     { relocPlan with layout, rsv := rsvW.val, h_total := rsvW.property }
   let witnessed ← Finalize.build bp
@@ -114,7 +114,8 @@ def load (path : String) : CliM Unit := do
     stderr. Like `load`, this transfers control and does not return. -/
 def debug (path : String) : CliM Unit := do
   IO.eprintln "== 1. Discover (DFS over DT_NEEDED) =="
-  let g ← Discover.discover objectFinder 4096 path
+  let discovery ← Discover.discover objectFinder 4096 path
+  let g := discovery.graph
   for obj in g.objects do
     IO.eprintln s!"  {obj.name}"
 
@@ -149,7 +150,7 @@ def debug (path : String) : CliM Unit := do
 
   -- One-shot pure-pipeline build. Reloc resolves only symbols referenced by
   -- relocation records; Layout then consumes those planned entries.
-  let relocPlan ← Reloc.Result.ofGraph g
+  let relocPlan ← Reloc.Result.ofDiscover discovery
 
   IO.eprintln "\n== 3. Reloc (resolve symbols referenced by dynamic relocations) =="
   let providerName (r : Reloc.Symbol.SymRef relocPlan.graph.objects.size) : String :=
@@ -179,7 +180,7 @@ def debug (path : String) : CliM Unit := do
 
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
   let lp := layout
-  let rsvW ← Runtime.MemoryOps.io.reserve lp.totalSpan
+  let rsvW ← Runtime.Memory.io.reserve lp.totalSpan
   let bp : Finalize.BoundPlan :=
     { relocPlan with layout := lp, rsv := rsvW.val, h_total := rsvW.property }
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
@@ -192,8 +193,8 @@ def debug (path : String) : CliM Unit := do
     for sp in ep.segments do
       let absVa := base + sp.pageEaddr
       IO.eprintln s!"  eaddr=0x{Nat.hex absVa.toNat} len=0x{Nat.hex sp.pageLength.toNat} prot={sp.prot}"
-  IO.eprintln s!"init order: {relocPlan.graph.initOrder.map (·.val)}"
-  IO.eprintln s!"fini order: {(relocPlan.graph.initOrder.map (·.val)).reverse}"
+  IO.eprintln s!"init order: {relocPlan.initOrder.order.map (·.val)}"
+  IO.eprintln s!"fini order: {(relocPlan.initOrder.order.map (·.val)).reverse}"
 
   IO.eprintln "\n== 5. Reloc (planned 4/8-byte stores, per-arch formula) =="
   let formula := relocPlan.formula

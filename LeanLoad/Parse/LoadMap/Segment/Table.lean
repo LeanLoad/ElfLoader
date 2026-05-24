@@ -14,7 +14,8 @@ namespace LeanLoad.Parse
 
 -- ============================================================================
 -- PT_LOAD-array well-formedness — the per-pair gabi-07 invariants on
--- `Array Segment`. Per-segment invariants are validated by `Segment.ofPhdr`.
+-- `Array (Segment fileSize)`. Per-segment invariants are validated by
+-- `Segment.ofPhdr`.
 --
 -- Spec: gabi 07 § Program Loading. These are *spec-level* (gabi eaddr/memsz
 -- ordering); page-aligned non-overlap is a separate runtime check via
@@ -24,13 +25,13 @@ namespace LeanLoad.Parse
 namespace SegmentTable
 
 /-- gabi 07 § Program Loading: PT_LOAD entries appear in `p_vaddr` order. -/
-def Sorted (segs : Array Segment) : Prop :=
+def Sorted {fileSize : ByteSize} (segs : Array (Segment fileSize)) : Prop :=
   ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
     i < j → segs[i].eaddr.toNat ≤ segs[j].eaddr.toNat
 
 /-- *De facto*, not gabi-mandated: PT_LOAD `[p_vaddr, p_vaddr + p_memsz)`
     ranges are pairwise disjoint. -/
-def NonOverlap (segs : Array Segment) : Prop :=
+def NonOverlap {fileSize : ByteSize} (segs : Array (Segment fileSize)) : Prop :=
   ∀ i, ∀ _ : i < segs.size, ∀ j, ∀ _ : j < segs.size,
     i < j → segs[i].eaddr.toNat + segs[i].memsz.toNat ≤ segs[j].eaddr.toNat
 
@@ -38,9 +39,9 @@ end SegmentTable
 
 /-- Checked PT_LOAD segment array. `items` keeps the phdr order, while `sorted`
     / `nonOverlap` are the array-level facts established at checked-parse time. -/
-structure SegmentTable where
+structure SegmentTable (fileSize : ByteSize) where
   private mk ::
-  items      : Array Segment
+  items      : Array (Segment fileSize)
   sorted     : SegmentTable.Sorted items
   nonOverlap : SegmentTable.NonOverlap items
   deriving Repr
@@ -49,7 +50,8 @@ namespace SegmentTable
 
 /-- A ELF-address range contained in one checked segment satisfying `need`
     (for example, executable or readable). -/
-structure EaddrRangeIn (segments : SegmentTable) (need : Segment → Prop)
+structure EaddrRangeIn {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (need : Segment fileSize → Prop)
     (addr : Eaddr) (len : ByteSize) where
   index    : Fin segments.items.size
   contains : Segment.ContainsEaddrRange segments.items[index] addr len
@@ -57,7 +59,8 @@ structure EaddrRangeIn (segments : SegmentTable) (need : Segment → Prop)
   deriving Repr
 
 /-- A file-offset range contained in one checked segment satisfying `need`. -/
-structure FileRangeIn (segments : SegmentTable) (need : Segment → Prop)
+structure FileRangeIn {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (need : Segment fileSize → Prop)
     (off : FileOff) (len : ByteSize) where
   index    : Fin segments.items.size
   contains : Segment.ContainsFileRange segments.items[index] off len
@@ -67,7 +70,8 @@ structure FileRangeIn (segments : SegmentTable) (need : Segment → Prop)
 /-- A ELF-address range that is backed by file bytes in one checked segment
     satisfying `need`. Dynamic-table pointers use this rather than plain memory
     containment so they cannot point into BSS. -/
-structure FileBackedEaddrRangeIn (segments : SegmentTable) (need : Segment → Prop)
+structure FileBackedEaddrRangeIn {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (need : Segment fileSize → Prop)
     (addr : Eaddr) (len : ByteSize) where
   index    : Fin segments.items.size
   contains : Segment.ContainsFileBackedEaddrRange segments.items[index] addr len
@@ -76,30 +80,36 @@ structure FileBackedEaddrRangeIn (segments : SegmentTable) (need : Segment → P
 
 /-- Point membership in one checked segment satisfying `need`. Kept as an
     `abbrev` so legacy existential proofs can still destruct it directly. -/
-abbrev ContainsEaddr (segments : SegmentTable) (need : Segment → Prop) (addr : Eaddr) : Prop :=
+abbrev ContainsEaddr {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (need : Segment fileSize → Prop) (addr : Eaddr) : Prop :=
   ∃ i, ∃ h : i < segments.items.size,
     need (segments.items[i]'h) ∧ Segment.ContainsEaddr (segments.items[i]'h) addr
 
-abbrev ExecAddr (segments : SegmentTable) (addr : Eaddr) : Prop :=
+abbrev ExecAddr {fileSize : ByteSize} (segments : SegmentTable fileSize) (addr : Eaddr) : Prop :=
   ContainsEaddr segments (fun s => s.perm.exec) addr
 
-abbrev ReadEaddrRange (segments : SegmentTable) (addr : Eaddr) (len : ByteSize) :=
+abbrev ReadEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize) (addr : Eaddr)
+    (len : ByteSize) :=
   EaddrRangeIn segments (fun s => s.perm.read) addr len
 
-abbrev ExecEaddrRange (segments : SegmentTable) (addr : Eaddr) (len : ByteSize) :=
+abbrev ExecEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize) (addr : Eaddr)
+    (len : ByteSize) :=
   EaddrRangeIn segments (fun s => s.perm.exec) addr len
 
-abbrev ReadFileRange (segments : SegmentTable) (off : FileOff) (len : ByteSize) :=
+abbrev ReadFileRange {fileSize : ByteSize} (segments : SegmentTable fileSize) (off : FileOff)
+    (len : ByteSize) :=
   FileRangeIn segments (fun s => s.perm.read) off len
 
-abbrev AnyFileBackedEaddrRange (segments : SegmentTable) (addr : Eaddr) (len : ByteSize) :=
+abbrev AnyFileBackedEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (addr : Eaddr) (len : ByteSize) :=
   FileBackedEaddrRangeIn segments (fun _ => True) addr len
 
-abbrev ReadFileBackedEaddrRange (segments : SegmentTable) (addr : Eaddr) (len : ByteSize) :=
+abbrev ReadFileBackedEaddrRange {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (addr : Eaddr) (len : ByteSize) :=
   FileBackedEaddrRangeIn segments (fun s => s.perm.read) addr len
 
 /-- Empty checked segment array. Useful for tests and synthetic Elfs. -/
-def empty : SegmentTable :=
+def empty {fileSize : ByteSize} : SegmentTable fileSize :=
   { items := #[],
     sorted := by
       intro i h_i
@@ -109,7 +119,8 @@ def empty : SegmentTable :=
       simp at h_i }
 
 /-- Check an array of PT_LOAD segments into the witnessed `SegmentTable` type. -/
-def ofArray (items : Array Segment) : Except String SegmentTable :=
+def ofArray {fileSize : ByteSize} (items : Array (Segment fileSize)) :
+    Except String (SegmentTable fileSize) :=
   letI : Decidable (Sorted items) := by
     unfold Sorted
     infer_instance
@@ -136,13 +147,15 @@ end SegmentTable
 
 /-- The PT_LOAD segment `s` file-backs the program-header table at file offset
     `phoff` of byte length `nbytes`. -/
-def coversProgramHeaders (s : Segment) (phoff : FileOff) (nbytes : Nat) : Prop :=
+def coversProgramHeaders {fileSize : ByteSize} (s : Segment fileSize) (phoff : FileOff)
+    (nbytes : Nat) : Prop :=
   s.offset.toNat ≤ phoff.toNat ∧
   phoff.toNat + nbytes ≤ s.offset.toNat + s.filesz.toNat
 
 /-- Checked program-header table mapping for `AT_PHDR`. This carries the segment index
     needed to translate the table's file offset into its loaded ELF address. -/
-inductive ProgramHeaderMap (segments : SegmentTable) (phoff : FileOff) (nbytes : Nat) where
+inductive ProgramHeaderMap {fileSize : ByteSize} (segments : SegmentTable fileSize)
+    (phoff : FileOff) (nbytes : Nat) where
   | empty (isEmpty : nbytes = 0)
   | mapped (index : Fin segments.items.size)
       (covers : coversProgramHeaders segments.items[index] phoff nbytes)
@@ -152,14 +165,14 @@ namespace ProgramHeaderMap
 
 /-- Virtual address of the program-header table in the loaded image, relative to
     the object's base. For `phnum = 0`, `AT_PHDR` is unused and this returns 0. -/
-def eaddr {segments : SegmentTable} {phoff : FileOff} {nbytes : Nat}
+def eaddr {fileSize : ByteSize} {segments : SegmentTable fileSize} {phoff : FileOff} {nbytes : Nat}
     (m : ProgramHeaderMap segments phoff nbytes) : Eaddr :=
   match m with
   | .empty _ => 0
   | .mapped index _ => segments.items[index].eaddrOfFileOff phoff
 
 /-- Build a checked program-header table mapping by searching the checked PT_LOAD array. -/
-def ofSegments (segments : SegmentTable) (phoff : FileOff) (nbytes : Nat) :
+def ofSegments {fileSize : ByteSize} (segments : SegmentTable fileSize) (phoff : FileOff) (nbytes : Nat) :
     Except String (ProgramHeaderMap segments phoff nbytes) := Id.run do
   if h_empty : nbytes = 0 then
     return .ok (.empty h_empty)
@@ -190,7 +203,7 @@ end ProgramHeaderMap
     leaves zero entries unspecified, but glibc/musl treat them as
     no-ops) or lives inside an executable PT_LOAD's
     `[eaddr, eaddr + memsz)`. -/
-def callTargetInExecSeg (segments : SegmentTable) (entry : Eaddr) : Prop :=
+def callTargetInExecSeg {fileSize : ByteSize} (segments : SegmentTable fileSize) (entry : Eaddr) : Prop :=
   entry.val = 0 ∨ SegmentTable.ExecAddr segments entry
 
 end LeanLoad.Parse

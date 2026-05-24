@@ -13,7 +13,7 @@ Bit-field accessors `sym` / `type` (which unpack `r_info`) live in
 
 import LeanLoad.Parse.Decode.Decodable
 import LeanLoad.Parse.Decode.Deriving
-import LeanLoad.Parse.Address
+import LeanLoad.Parse.Basic
 
 namespace LeanLoad.Parse
 
@@ -24,25 +24,7 @@ structure RawRela where
   r_addend : UInt64
   deriving Repr, Inhabited, Decodable
 
-#guard Decodable.byteSize (α := RawRela) = 24  -- gabi 06 § Relocation: `Elf64_Rela`
-
-namespace RawRela
-
-/-- Byte extent for `count` `Elf64_Rela` entries. -/
-def tableByteSize (count : Nat) : ByteSize :=
-  ByteSize.ofEntries count (Decodable.byteSize (α := RawRela))
-
-/-- Convert a `DT_RELASZ`/`DT_PLTRELSZ` byte size into an entry count,
-    rejecting sizes that are not a whole number of `Elf64_Rela` entries. -/
-def countFromByteSize (size : ByteSize) : Except String Nat :=
-  let entrySize := Decodable.byteSize (α := RawRela)
-  let bytes := size.toNat
-  if bytes % entrySize == 0 then
-    .ok (bytes / entrySize)
-  else
-    .error s!"rela table byte size {bytes} is not a multiple of {entrySize}"
-
-end RawRela
+#guard (Decodable.byteSize (α := RawRela)).toNat = 24  -- gabi 06 § Relocation: `Elf64_Rela`
 
 /-- 24-byte rela-table fixture: one `R_X86_64_RELATIVE` relocation at
     offset `0x100`. The `r_offset` lies inside the consolidated
@@ -57,14 +39,14 @@ def RawRela.fixtureBytes : ByteArray := ⟨#[
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00    -- r_addend = 0
 ]⟩
 
-#guard RawRela.fixtureBytes.size == Decodable.byteSize (α := RawRela)  -- = 24
+#guard RawRela.fixtureBytes.size == (Decodable.byteSize (α := RawRela)).toNat  -- = 24
 
 section Example
 
 open RawRela
 
 private def parsedRelas : Option (Array RawRela) :=
-  (Decodable.parseArray (α := RawRela) fixtureBytes 1).toOption
+  (Decodable.decodeArray (α := RawRela) fixtureBytes 1).toOption
 
 #guard parsedRelas.map (·.size) = some 1
 #guard (parsedRelas.bind (·[0]?)).map (·.r_offset) = some 0x100
@@ -74,12 +56,12 @@ private def parsedRelas : Option (Array RawRela) :=
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated rela: 15 bytes when 24 expected — EOF inside the `r_info` u64 read.
 #guard
-  (Decodable.parse (α := RawRela) (fixtureBytes.extract 0 15)).toOption.isNone
+  (Decodable.decode (α := RawRela) (fixtureBytes.extract 0 15)).toOption.isNone
 
 -- `Decoder.array` asking for 2 entries from a 1-entry buffer — second
 -- entry hits EOF.
 #guard
-  (Decodable.parseArray (α := RawRela) fixtureBytes 2).toOption.isNone
+  (Decodable.decodeArray (α := RawRela) fixtureBytes 2).toOption.isNone
 
 end Example
 

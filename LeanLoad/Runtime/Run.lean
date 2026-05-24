@@ -2,17 +2,17 @@
 Runtime interpreter for finalized load operations.
 
 `Finalize` constructs an intrinsic-safe `LoadOps` tree without doing IO. This
-module interprets that tree through an explicit `MemoryOps` capability, in
+module interprets that tree through an explicit `Memory` capability, in
 protocol order.
 -/
 
-import LeanLoad.Runtime.MemoryOps
+import LeanLoad.Runtime.Memory
 import LeanLoad.Finalize.LoadOps
 
 namespace LeanLoad.Runtime
 
 /-- Run one segment's intrinsic-safe ops in protocol order. -/
-def runSegmentOps [Monad m] (ops : MemoryOps m)
+def runSegmentOps [Monad m] (ops : Memory m)
     (so : Finalize.SegmentOps rsvAddr rsvLen objCount) : m Unit := do
   if let some mmap := so.mmap then
     ops.mmapFile mmap.handle mmap.addr mmap.len mmap.prot mmap.offset
@@ -24,7 +24,7 @@ def runSegmentOps [Monad m] (ops : MemoryOps m)
 
 /-- Run an intrinsic-safe op tree in protocol order. The safety proof fields are
     erased; runtime behaviour is plain per-op dispatch through `ops`. -/
-def runLoadOps [Monad m] (ops : MemoryOps m)
+def runLoadOps [Monad m] (ops : Memory m)
     (lo : Finalize.LoadOps rsvAddr rsvLen objCount) : m Unit :=
   lo.elfs.forM fun eo => eo.segments.forM (runSegmentOps ops)
 

@@ -6,19 +6,19 @@ may be invoked after mapping. For LeanLoad's supported ET_DYN inputs, each
 non-zero address is base-relative and must land in an executable PT_LOAD.
 -/
 
-import LeanLoad.Parse.LoadMap.SegmentTable.Basic
+import LeanLoad.Parse.LoadMap.Segment.Table
 
 namespace LeanLoad.Parse
 
 /-- A callable ELF-address slot: either zero or inside an executable PT_LOAD. -/
-abbrev CallTarget (segments : SegmentTable) :=
+abbrev CallTarget {fileSize : ByteSize} (segments : SegmentTable fileSize) :=
   { addr : Eaddr // callTargetInExecSeg segments addr }
 
 namespace CallTarget
 
 /-- Check one raw callable address. Zero is accepted as the ELF no-op sentinel;
     non-zero addresses must target an executable PT_LOAD. -/
-def ofRaw (label : String) (segments : SegmentTable) (addr : Eaddr) :
+def ofRaw {fileSize : ByteSize} (label : String) (segments : SegmentTable fileSize) (addr : Eaddr) :
     Except String (CallTarget segments) :=
   let decExec : Decidable (callTargetInExecSeg segments addr) := by
     unfold callTargetInExecSeg SegmentTable.ExecAddr SegmentTable.ContainsEaddr
@@ -30,7 +30,8 @@ def ofRaw (label : String) (segments : SegmentTable) (addr : Eaddr) :
       .error s!"parse: {label} = 0x{addr.toNat} is not zero or in any executable PT_LOAD"
 
 /-- Check one dynamic callable-address array, preserving table order. -/
-def arrayOfRaw (label : String) (segments : SegmentTable) (addrs : Array Eaddr) :
+def arrayOfRaw {fileSize : ByteSize} (label : String) (segments : SegmentTable fileSize)
+    (addrs : Array Eaddr) :
     Except String (Array (CallTarget segments)) := do
   let mut checked : Array (CallTarget segments) := #[]
   for h : i in [:addrs.size] do
@@ -46,7 +47,7 @@ end CallTarget
     `entry` comes from `Elf64_Ehdr.e_entry` (gabi 04 § ELF Header). `init` and
     `fini` preserve `DT_INIT_ARRAY` / `DT_FINI_ARRAY` order (gabi 08 § Dynamic
     Section). Each slot carries the zero-or-executable-target witness. -/
-structure CallTargets (segments : SegmentTable) where
+structure CallTargets {fileSize : ByteSize} (segments : SegmentTable fileSize) where
   entry : CallTarget segments
   init  : Array (CallTarget segments)
   fini  : Array (CallTarget segments)
@@ -55,13 +56,13 @@ structure CallTargets (segments : SegmentTable) where
 namespace CallTargets
 
 /-- Empty/default call-target set for examples that synthesize inert ELFs. -/
-def empty (segments : SegmentTable) : CallTargets segments :=
+def empty {fileSize : ByteSize} (segments : SegmentTable fileSize) : CallTargets segments :=
   { entry := ⟨0, Or.inl (by decide)⟩
     init := #[]
     fini := #[] }
 
 /-- Check the raw callable addresses decoded from the ELF header and dynamic table. -/
-def ofRaw (segments : SegmentTable) (entry : Eaddr)
+def ofRaw {fileSize : ByteSize} (segments : SegmentTable fileSize) (entry : Eaddr)
     (init fini : Array Eaddr) : Except String (CallTargets segments) := do
   let entry ← CallTarget.ofRaw "e_entry" segments entry
   let init ← CallTarget.arrayOfRaw "DT_INIT_ARRAY" segments init
@@ -70,11 +71,11 @@ def ofRaw (segments : SegmentTable) (entry : Eaddr)
 
 end CallTargets
 
-#guard (CallTarget.ofRaw "e_entry" SegmentTable.empty 0).isOk
-#guard (CallTarget.ofRaw "e_entry" SegmentTable.empty 1).isOk = false
+#guard (CallTarget.ofRaw "e_entry" (SegmentTable.empty (fileSize := 0)) 0).isOk
+#guard (CallTarget.ofRaw "e_entry" (SegmentTable.empty (fileSize := 0)) 1).isOk = false
 
 #guard
-  match CallTargets.ofRaw SegmentTable.empty 0 #[0] #[] with
+  match CallTargets.ofRaw (SegmentTable.empty (fileSize := 0)) 0 #[0] #[] with
   | .ok targets => targets.init.size == 1
   | .error _    => false
 

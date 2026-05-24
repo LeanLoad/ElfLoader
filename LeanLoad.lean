@@ -18,9 +18,10 @@ stage re-checks it — the witness travels in the type.
     production instantiates it with path search/open/parse in `ExceptT String IO`.
     The output type witnesses non-emptiness, name `Nodup`, and init-order coverage.
 
-  • Reloc — pure, base-free relocation planning. Takes `LoadGraph`,
+  • Reloc — pure, base-free relocation planning. Takes `Discover.Result`,
     walks dynamic relocation records, resolves only referenced symbols by
-    BFS, and rejects referenced unresolved strong symbols.
+    BFS, rejects referenced unresolved strong symbols, and preserves the
+    graph-indexed init order for finalization.
 
   • Layout — pure, base-free. Takes `Reloc.Result`, produces
     `Layout.Layout`: per-elf `SegmentLayout`s with page math +
@@ -42,6 +43,7 @@ stage re-checks it — the witness travels in the type.
     now; the current formal boundary is "we generate well-formed load
     operations".
  -/
+import LeanLoad.Basic
 import LeanLoad.Parse
 import LeanLoad.Parse.Examples
 import LeanLoad.Reloc.ABI

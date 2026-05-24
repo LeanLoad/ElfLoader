@@ -1,125 +1,82 @@
 # LeanLoad Design
 
-Verified ELF loader in Lean 4. The invariant-carrying core is Lean; syscall
-effects sit behind `LeanLoad/Runtime/{FileOps,MemoryOps,Exec}.lean` plus C
-shims in `LeanLoad/Runtime.c`.
-
-See `AGENTS.md` for working-style guidance.
+LeanLoad is an ELF64 loader whose core stages are Lean data transformations.
+Each stage adds data and/or witnesses; later stages consume those witnesses
+instead of re-checking the same facts. Native IO is isolated in `Runtime`.
 
 ## Pipeline
 
-| Stage           | Type     | Input → Output                                                                       |
-| --------------- | -------- | ------------------------------------------------------------------------------------ |
-| **Parse**       | monadic  | `Runtime.FileOps m h → h → ExceptT String m Elf` — bytes plus gabi-07 invariants on `Segment` / `Elf` |
-| **Discover**    | monadic  | `[MonadExceptOf String m] → ObjectFinder m → Nat → String → m LoadGraph` — DFS over `DT_NEEDED`; deps + init order recorded inline |
-| **Reloc**       | pure     | `LoadGraph → Reloc.Result` — relocation-driven symbol resolution                       |
-| **Layout**      | pure     | `Reloc.Result → Layout` — per-elf placement + cumulative span                         |
-| **Finalize**    | pure     | `BoundPlan → LoadOps rsv.addr rsv.len n` — intrinsic-safe ops                         |
-| **Runtime**     | IO       | intrinsic-safe `LoadOps → IO Unit` — mmap + zero + reloc stores + mprotect + ctor + jump; no return |
+| Stage        | Kind    | Input → Output | Main responsibility |
+| ------------ | ------- | -------------- | ------------------- |
+| **Parse**    | monadic | `Runtime.File m → ExceptT String m Parse.Elf` | Decode ELF64 ET_DYN, check load-map/dynamic ranges, attach relocs and call targets to checked segments. |
+| **Discover** | monadic | `ObjectFinder m → fuel → path → m LoadGraph` | DFS over `DT_NEEDED`, canonical-name dedup, dependency edges, init order, cycle rejection. |
+| **Reloc**    | pure    | `LoadGraph → Reloc.Result` | Resolve relocation-referenced symbols and reject referenced unresolved strong symbols. |
+| **Layout**   | pure    | `Reloc.Result → Layout.Layout` | Compute base-free per-segment/per-object placement and total span. |
+| **Finalize** | pure    | `BoundPlan → LoadOps rsv.addr rsv.len n` | Emit intrinsic-safe mmap/zero/store/mprotect ops. |
+| **Runtime**  | IO      | `LoadOps → IO Unit` | Run trusted syscalls, call ctors, build the startup stack, and jump. |
 
-The CLI runs its orchestration in `ExceptT String IO` and passes its production
-`ObjectFinder` to `Discover.discover`: open/parse the main object and use the
-same finder for path search + dependency parsing.
-Reloc runs relocation-driven BFS lookup (strong referenced undef rejected), then
-Layout computes per-segment, per-elf, and cumulative placement. Init order is
-computed during Discover's DFS and lives on `LoadGraph.initOrder`.
+The CLI wires these together in `ExceptT String IO`: production `ObjectFinder`
+opens/parses the main object, searches dependencies, and hands the resulting
+`LoadGraph` to Reloc → Layout → Finalize → Runtime.
 
 ## Witness flow
 
-Each stage adds either data or a Prop witness; no downstream stage
-re-checks.
-
-- **Parse**: per-`Segment` gabi-07 invariants + per-`Elf` (sorted,
-  non-overlap, phdr-covered, callable-targets-in-exec-seg).
-- **Discover**: `LoadGraph` carries `sizePos`, `namesNodup`,
-  `depsSize`, `depsBounds`, `closure`, `initOrderSize`, `initOrderCovers`,
-  and `initOrderNodup`; `LoadGraph.InitOrderRespectsDeps` witnesses every
-  recorded `DT_NEEDED` edge as dependency-before-dependent in `g.initOrder`.
-  Cycles are rejected during discovery because gabi 08 leaves cyclic init
-  ordering undefined.
-- **Reloc**: relocation-driven symbol resolution; discharges referenced
-  unresolved strong symbols.
-- **Layout**: per-`SegmentLayout` page-math invariants; `ElfLayout`
-  segment-sorting + advance; `Layout` cumulative span.
-- **Finalize**: intrinsic-safe `LoadOps` — every op in-range, mmaps pairwise
-  disjoint.
-- **Runtime**: capability dispatch on the intrinsic-safe tree; no further
-  pure-stage checks.
+- **Parse** establishes file-range validity, ELF policy, checked PT_LOAD
+  segment facts, dynamic-table range facts, relocation containment, and
+  executable call targets.
+- **Discover** produces a closed `LoadGraph`: nonempty objects, distinct names,
+  bounded dependency indices, one edge per `DT_NEEDED`, and an init order that
+  puts every dependency before its dependent.
+- **Reloc** records the relocation formula selected by `e_machine` and resolves
+  only symbols actually referenced by relocation records.
+- **Layout** carries page-math and cumulative-span facts needed to place every
+  segment inside one reservation.
+- **Finalize** turns the plan into typed `LoadOps`; each op carries its range
+  proof, and mmap operations are pairwise disjoint.
 
 ## Trust boundary
 
-- **Verified** (Lean, no direct `@[extern]`): `Parse/`, `Discover/`,
-  `Reloc/`, `Layout/`, `Finalize/`, and `Runtime/Basic.lean`.
-- **Trusted**: `LeanLoad/Runtime.c` (~150 lines of audited C shims),
-  `LeanLoad/Runtime/{FileOps,MemoryOps,Exec}.lean` (FFI declarations +
-  concrete IO capability values), `LeanLoad/Runtime/Run.lean`, and the IO
-  bookend (`Main.lean`).
+Verified Lean code has no direct `@[extern]` calls: `Parse/`, `Discover/`,
+`Reloc/`, `Layout/`, `Finalize/`, and `Runtime/Basic.lean`.
+
+Trusted code is the runtime edge: `LeanLoad/Runtime.c`,
+`Runtime/{File,Memory,Exec}.lean`, `Runtime/Run.lean`, and `Main.lean`.
+The current formal boundary is the finalized `LoadOps` tree plus its safety
+witnesses; syscall semantics and the final process handoff are trusted by
+inspection.
 
 ## Scope
 
-- **Architecture**: AArch64 and x86-64. Concrete `Elf64_*` struct
-  types; reloc planner parametric over `Formula`; `formulaFor`
-  dispatches on `e_machine`.
-- **Parser**: loader-minimal — ehdr, phdrs, `PT_DYNAMIC`, dynsym +
-  dynstr (size from `DT_HASH.nchain`), rela / JMPREL, init/fini
-  arrays. Section headers and debug info skipped.
-- **Binary type**: ET_DYN only.
+- **ELF format**: ELF64 ET_DYN only.
+- **Architectures**: AArch64 and x86-64 dynamic relocation subsets selected by
+  `e_machine`.
+- **Parsed data**: ELF header, program headers, `PT_DYNAMIC`, dynstr, dynsym
+  sized by `DT_HASH.nchain`, RELA/JMPREL, and init/fini arrays.
+- **Memory model**: in-process loading. Segments are mapped into leanload's
+  address space, then `Runtime.execAndJump` transfers control without
+  `execve(2)`.
 
-## CLI
+## Runtime assumptions
 
-```
-leanload <elf>             # load and run; does not return
-leanload --debug <elf>     # same, with stage-by-stage prints
-```
+The IO load path assumes:
 
-The `--debug` dump shows discovered objects, layouts, init/fini
-order, and planned ops.
+1. The kernel-picked reservation does not overlap existing leanload mappings.
+2. No other thread mutates the address space between reservation and jump.
+3. No libc locks are held across the trampoline.
+4. The loaded binary exits with `exit_group`; thread-scoped `_exit` would leave
+   Lean runtime threads alive.
+5. Signal handlers are reset to `SIG_DFL` before the jump.
 
-## In-process loading
-
-LeanLoad loads in-process: the binary's segments are `mmap`'d into
-leanload's own address space, and the trampoline (`Runtime.execAndJump`
-→ `leanload_exec_and_jump` in `LeanLoad/Runtime.c`) hands off without
-replacing the process image.
-The IO load path is conditioned on:
-
-1. **Address-space disjointness** — `mmapAnon`'s reservation doesn't
-   intersect existing leanload mappings (kernel anon-mmap guarantees).
-2. **No concurrent address-space mutation** between reservation and jump.
-3. **No libc locks held across the trampoline.**
-4. **Loaded binary uses `__NR_exit_group`** — thread-scoped `_exit`
-   would leave Lean's runtime threads alive.
-5. **Signal handlers reset to `SIG_DFL`** before transfer of control
-   — otherwise loaded-binary faults wake Lean's `segv_handler`
-   (deadlocks against libuv's pthread lock).
-
-The trampoline builds the same stack `execve(2)` would (argc/argv/
-envp/auxv at SP, strings above) and jumps to `e_entry`. SP is
-16-byte aligned. Auxv (`AT_RANDOM`, `AT_HWCAP`/`HWCAP2`, `AT_CLKTCK`,
-`AT_SECURE`, `AT_SYSINFO_EHDR`, `AT_UID`/`EUID`/`GID`/`EGID`) is
-forwarded from the host process via `getauxval`; musl's
-`__libc_start_main` crashes without it.
-
-## Memory ownership
-
-- **ELF files**: held open as `Runtime.File` for the loader's
-  lifetime. Per-section `pread`s — no whole-file `ByteArray`.
-- **Reservation**: one `Runtime.MemoryOps.reserve` per loaded binary returns a
-  kernel-picked anon block of size `layout.totalSpan`. Every per-elf base sits
-  inside it; every emitted op carries an in-reservation proof.
-- **Loaded image**: file overlays mmap'd on top of the reservation;
-  partial-page BSS zeroed in place; `mprotect`'d to final perms.
+The trampoline constructs an `execve(2)`-style initial stack
+(`argc/argv/envp/auxv` plus strings), preserves 16-byte stack alignment, forwards
+host auxv values needed by libc, and jumps to the parsed entry point.
 
 ## Out of scope
 
-- **TLS** (`PT_TLS`, TLS relocs, TLSDESC) — its own subsystem.
-- **Lazy binding via PLT** — eager-bind everything at load time.
-- **RELR-format relocations** — disabled by not passing
-  `-z pack-relative-relocs`.
-- **`IFUNC` / `STT_GNU_IFUNC`** — GNU extension; musl doesn't emit.
-- **`dlopen` / `dlsym`** — loader-as-library is a separate surface.
-- **GNU-only hash, `.gnu.version_*`** — match musl defaults.
-- **Other architectures** — adding a machine is one new file +
-  `formulaFor` dispatch.
-- **Abstract `mmap` / `mprotect` semantics** — trusted by inspection
-  today; research-tier.
+- TLS (`PT_TLS`, TLS relocations, TLSDESC).
+- Lazy PLT binding; LeanLoad eagerly resolves relocation records.
+- RELR-format relocations.
+- `IFUNC` / `STT_GNU_IFUNC`.
+- `dlopen` / `dlsym`.
+- GNU hash and `.gnu.version_*`.
+- A formal syscall or byte-level memory semantics.

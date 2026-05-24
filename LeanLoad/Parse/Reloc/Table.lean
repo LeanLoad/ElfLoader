@@ -5,12 +5,10 @@ Checked dynamic relocation tables.
 is located in a checked PT_LOAD segment by its dependent pair index.
 -/
 
-import LeanLoad.Parse.Dynamic.Reloc.Basic
-import LeanLoad.Parse.LoadMap.SegmentTable.Basic
+import LeanLoad.Parse.Reloc.Basic
+import LeanLoad.Parse.LoadMap.Segment.Table
 
 namespace LeanLoad.Parse
-
-namespace Dynamic
 
 namespace Reloc
 
@@ -19,13 +17,13 @@ namespace Reloc
     The table stays flat in ELF table order, while each entry carries the
     concrete segment index and the segment-indexed `Reloc` witness. Layout can
     project the rows for one segment when building that segment's plan. -/
-structure RelocTable (segments : SegmentTable) where
+structure RelocTable {fileSize : ByteSize} (segments : SegmentTable fileSize) where
   rela   : Array (Σ i : Fin segments.items.size, Reloc segments.items[i])
   jmprel : Array (Σ i : Fin segments.items.size, Reloc segments.items[i])
   deriving Repr
 
 /-- Find the PT_LOAD index that fully covers `r`'s 8-byte write window. -/
-private def locate (segments : SegmentTable) (r : RawRela) :
+private def locate {fileSize : ByteSize} (segments : SegmentTable fileSize) (r : RawRela) :
     Option (Σ i : Fin segments.items.size, Reloc segments.items[i]) := Id.run do
   for h : i in [:segments.items.size] do
     let idx : Fin segments.items.size := ⟨i, h.upper⟩
@@ -36,7 +34,8 @@ private def locate (segments : SegmentTable) (r : RawRela) :
   return none
 
 /-- Locate every relocation in a flat table. -/
-private def locateTable (label : String) (segments : SegmentTable) (rs : Array RawRela) :
+private def locateTable {fileSize : ByteSize} (label : String) (segments : SegmentTable fileSize)
+    (rs : Array RawRela) :
     Except String (Array (Σ i : Fin segments.items.size, Reloc segments.items[i])) := do
   let mut located : Array (Σ i : Fin segments.items.size, Reloc segments.items[i]) := #[]
   for r in rs do
@@ -51,7 +50,7 @@ private def locateTable (label : String) (segments : SegmentTable) (rs : Array R
 namespace RelocTable
 
 /-- Project a located relocation array to one segment, preserving table order. -/
-private def forSegmentFrom {segments : SegmentTable}
+private def forSegmentFrom {fileSize : ByteSize} {segments : SegmentTable fileSize}
     (items : Array (Σ i : Fin segments.items.size, Reloc segments.items[i]))
     (segmentIdx : Fin segments.items.size) :
     Array (Reloc segments.items[segmentIdx]) :=
@@ -61,12 +60,14 @@ private def forSegmentFrom {segments : SegmentTable}
     else none
 
 /-- `DT_RELA` entries located in `segmentIdx`. -/
-def relaFor (table : RelocTable segments) (segmentIdx : Fin segments.items.size) :
+def relaFor {fileSize : ByteSize} {segments : SegmentTable fileSize}
+    (table : RelocTable segments) (segmentIdx : Fin segments.items.size) :
     Array (Reloc segments.items[segmentIdx]) :=
   forSegmentFrom table.rela segmentIdx
 
 /-- `DT_JMPREL` entries located in `segmentIdx`. -/
-def jmprelFor (table : RelocTable segments) (segmentIdx : Fin segments.items.size) :
+def jmprelFor {fileSize : ByteSize} {segments : SegmentTable fileSize}
+    (table : RelocTable segments) (segmentIdx : Fin segments.items.size) :
     Array (Reloc segments.items[segmentIdx]) :=
   forSegmentFrom table.jmprel segmentIdx
 
@@ -76,14 +77,12 @@ end RelocTable
     PT_LOAD segments. Each resulting relocation carries the segment-local
     `covered` witness that its conservative 8-byte write window belongs to
     that segment. -/
-def locateAll (segments : SegmentTable) (rela jmprel : Array RawRela) :
+def locateAll {fileSize : ByteSize} (segments : SegmentTable fileSize) (rela jmprel : Array RawRela) :
     Except String (RelocTable segments) := do
   let rela ← locateTable "DT_RELA" segments rela
   let jmprel ← locateTable "DT_JMPREL" segments jmprel
   return { rela, jmprel }
 
 end Reloc
-
-end Dynamic
 
 end LeanLoad.Parse

@@ -1,16 +1,18 @@
 /-
 `deriving Decodable` handler.
 
-For any structure type whose data fields have a `Decodable` instance and whose
-proof fields are decidable, generates:
+For any raw fixed-width structure type whose fields all have a `Decodable`
+instance, generates:
 
     instance : Decodable T where
-      byteSize := Decodable.byteSize (α := F₁) + …
-      decode := do
-        let f₁ ← Decodable.decode
+      byteSize := ByteSize.ofNat (Decodable.byteSize (α := F₁)).toNat + …
+      decoder := do
+        let f₁ ← Decodable.decoder
         …
-        let ⟨h⟩ ← Decodable.require "T.h" (predicate over decoded fields)
-        return { f₁, …, h }
+        return { f₁, … }
+
+`Prop` fields are rejected with a direct error. Checked types should decode a
+raw structure first, then hand-roll validation that attaches proof witnesses.
 -/
 
 import LeanLoad.Parse.Decode.Decodable
@@ -31,25 +33,10 @@ private def withFieldResultType (typeName : Name) (fieldName : Name) (k : Expr �
     let projInfo ← getConstInfo (typeName ++ fieldName)
     forallTelescope projInfo.type fun _ body => k body
 
-/-- Pretty-print a field projection result type and rewrite `self.field`
-    projections to the local variables generated for previously decoded fields. -/
-private def fieldTypeTerm (typeName : Name) (fieldNames : Array Name) (fieldName : Name) :
-    CommandElabM String :=
-  withFieldResultType typeName fieldName fun body => do
-    let mut prop := (← ppExpr body).pretty
-    for f in fieldNames do
-      let f := fieldIdent f
-      prop := prop.replace s!"self.{f}" f
-    return prop
-
-/-- True iff the projection's result type is a proposition. -/
-private def isProofField (typeName : Name) (fieldName : Name) : CommandElabM Bool :=
-  withFieldResultType typeName fieldName isProp
-
-/-- Generate `instance : Decodable T`. Data fields contribute their fixed byte
-    size and are decoded from bytes; proof fields contribute no bytes and are
-    checked with `Decodable.require` after the fields they mention have been
-    decoded. -/
+/-- Generate `instance : Decodable T`. Every field contributes its fixed byte
+    size and is decoded from bytes. Proof fields are intentionally rejected:
+    split the structure into a raw decodable type and a checked type with a
+    hand-rolled decoder/smart constructor. -/
 private def mkInstance (typeName : Name) : CommandElabM Unit := do
   let env ← getEnv
   let some sInfo := getStructureInfo? env typeName
@@ -61,20 +48,20 @@ private def mkInstance (typeName : Name) : CommandElabM Unit := do
   let mut lets : Array String := #[]
   for fieldName in fieldNames do
     let field := fieldIdent fieldName
-    if ← isProofField typeName fieldName then
-      let prop ← fieldTypeTerm typeName fieldNames fieldName
-      lets := lets.push
-        s!"    let ⟨{field}⟩ ← LeanLoad.Parse.Decodable.require \"{typeName}.{field}\" ({prop})"
+    let (fieldType, isFieldProp) ← withFieldResultType typeName fieldName fun body => do
+      return ((← ppExpr body).pretty, ← isProp body)
+    if isFieldProp then
+      throwError "deriving Decodable: {typeName}.{field} is a Prop field; \
+        split into a raw Decodable type and a checked type with a hand-rolled decoder"
     else
-      let fieldType ← fieldTypeTerm typeName fieldNames fieldName
-      sizes := sizes.push s!"LeanLoad.Parse.Decodable.byteSize (α := {fieldType})"
-      lets := lets.push s!"    let {field} : {fieldType} ← LeanLoad.Parse.Decodable.decode"
+      sizes := sizes.push s!"(LeanLoad.Parse.Decodable.byteSize (α := {fieldType})).toNat"
+      lets := lets.push s!"    let {field} : {fieldType} ← LeanLoad.Parse.Decodable.decoder"
   let fields := String.intercalate ",\n" (fieldNames.toList.map (fun f => s!"      {fieldIdent f}"))
   let byteSize := if sizes.isEmpty then "0" else String.intercalate " + " sizes.toList
   let cmdString :=
     s!"instance : LeanLoad.Parse.Decodable {typeName} where\n" ++
-    s!"  byteSize := {byteSize}\n" ++
-    "  decode := do\n" ++
+    s!"  byteSize := LeanLoad.ByteSize.ofNat ({byteSize})\n" ++
+    "  decoder := do\n" ++
     String.intercalate "\n" lets.toList ++
     "\n    return {\n" ++ fields ++ "\n    }"
   match runParserCategory env `command cmdString with

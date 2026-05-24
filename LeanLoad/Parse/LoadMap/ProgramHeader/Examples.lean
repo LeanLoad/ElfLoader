@@ -34,18 +34,25 @@ def programHeaderBytes : ByteArray := ⟨#[
 
 #guard programHeaderBytes.size == 2 * ProgramHeaderSize  -- = 112
 
-def programHeaders? : Option (Array ProgramHeader) :=
-  (Decodable.parseArray (α := ProgramHeader) programHeaderBytes 2).toOption
+def rawProgramHeaders? : Option (Array RawProgramHeader) :=
+  (Decodable.decodeArray (α := RawProgramHeader) programHeaderBytes 2).toOption
+
+#guard rawProgramHeaders?.isSome
+
+def programHeaderFileSize : ByteSize := 0x208
+
+def programHeaders? : Option (Array (ProgramHeader programHeaderFileSize)) :=
+  (ProgramHeader.arrayDecoder programHeaderFileSize 2).decode? programHeaderBytes
 
 #guard programHeaders?.isSome
 
-def programHeaders : Array ProgramHeader :=
+def programHeaders : Array (ProgramHeader programHeaderFileSize) :=
   programHeaders?.get (by native_decide)
 
 #guard programHeaders.size = 2
 
-def loadProgramHeader : ProgramHeader := (programHeaders[0]?).getD default
-def dynamicProgramHeader : ProgramHeader := (programHeaders[1]?).getD default
+def loadProgramHeader : ProgramHeader programHeaderFileSize := (programHeaders[0]?).getD default
+def dynamicProgramHeader : ProgramHeader programHeaderFileSize := (programHeaders[1]?).getD default
 
 -- PT_LOAD
 #guard loadProgramHeader.p_type   = .load
@@ -57,16 +64,20 @@ def dynamicProgramHeader : ProgramHeader := (programHeaders[1]?).getD default
 #guard dynamicProgramHeader.p_type   = .dynamic
 #guard dynamicProgramHeader.p_offset = 0x128
 #guard dynamicProgramHeader.p_filesz = 0xe0
+#guard dynamicProgramHeader.fileRange.off = 0x128
+#guard dynamicProgramHeader.fileRange.size = 0xe0
+#guard (ProgramHeader.arrayDecoder 0x207 2).decode? programHeaderBytes |>.isNone
 
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated phdr: 20 bytes when 56 (ProgramHeaderSize) expected. EOF hits
 -- inside the `p_offset` u64 read.
 #guard
-  (Decodable.parse (α := ProgramHeader) (programHeaderBytes.extract 0 20)).toOption.isNone
+  (ProgramHeader.decoder programHeaderFileSize).decode?
+    (programHeaderBytes.extract 0 20) |>.isNone
 
 -- `Decoder.array` asking for 3 entries from a 2-entry buffer: third
 -- entry hits EOF.
 #guard
-  (Decodable.parseArray (α := ProgramHeader) programHeaderBytes 3).toOption.isNone
+  (ProgramHeader.arrayDecoder programHeaderFileSize 3).decode? programHeaderBytes |>.isNone
 
 end LeanLoad.Parse.Examples

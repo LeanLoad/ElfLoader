@@ -14,7 +14,7 @@ would force chain walking.
 
 import LeanLoad.Parse.Decode.Decodable
 import LeanLoad.Parse.Decode.Deriving
-import LeanLoad.Parse.Address
+import LeanLoad.Parse.Basic
 
 namespace LeanLoad.Parse
 
@@ -26,12 +26,12 @@ structure RawSysVHash where
   nchain  : UInt32
   deriving Repr, Inhabited, Decodable
 
-#guard Decodable.byteSize (α := RawSysVHash) = 8  -- gabi 08 § Hash Table: header
+#guard (Decodable.byteSize (α := RawSysVHash)).toNat = 8  -- gabi 08 § Hash Table: header
 
 namespace RawSysVHash
 
 /-- Byte extent of the SysV hash header LeanLoad reads. -/
-def byteSize : ByteSize := ByteSize.ofNat (Decodable.byteSize (α := RawSysVHash))
+def byteSize : ByteSize := Decodable.byteSize (α := RawSysVHash)
 
 /-- Dynamic-symbol count recorded in the SysV hash header. -/
 def symCount (h : RawSysVHash) : Nat := h.nchain.toNat

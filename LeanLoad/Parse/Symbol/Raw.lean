@@ -7,7 +7,7 @@ single byte; bit-field accessors live in `Parse/Dynamic/Symbol/Checked.lean`.
 
 import LeanLoad.Parse.Decode.Decodable
 import LeanLoad.Parse.Decode.Deriving
-import LeanLoad.Parse.Address
+import LeanLoad.Parse.Basic
 
 namespace LeanLoad.Parse
 
@@ -21,19 +21,11 @@ structure RawSym where
   st_size  : UInt64
   deriving Repr, Inhabited, Decodable
 
-#guard Decodable.byteSize (α := RawSym) = 24  -- gabi 05 § Symbol Table: `Elf64_Sym`
+#guard (Decodable.byteSize (α := RawSym)).toNat = 24  -- gabi 05 § Symbol Table: `Elf64_Sym`
 
 /-- Dynamic symbol table — the on-disk array of `RawSym` entries
     pointed at by `DT_SYMTAB`. Count comes from `DT_HASH.nchain`. -/
 abbrev RawSymtab := Array RawSym
-
-namespace RawSymtab
-
-/-- Byte extent for `count` `Elf64_Sym` entries. -/
-def tableByteSize (count : Nat) : ByteSize :=
-  ByteSize.ofEntries count (Decodable.byteSize (α := RawSym))
-
-end RawSymtab
 
 /-- 48-byte symbol-table fixture: the mandatory NULL symbol at index 0
     and a global undefined `printf` reference at index 1. Real
@@ -59,14 +51,14 @@ def RawSym.fixtureBytes : ByteArray := ⟨#[
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00    -- st_size  = 0
 ]⟩
 
-#guard RawSym.fixtureBytes.size == 2 * Decodable.byteSize (α := RawSym)  -- = 48
+#guard RawSym.fixtureBytes.size == 2 * (Decodable.byteSize (α := RawSym)).toNat  -- = 48
 
 section Example
 
 open RawSym
 
 private def parsedSymtab : Option (Array RawSym) :=
-  (Decodable.parseArray (α := RawSym) fixtureBytes 2).toOption
+  (Decodable.decodeArray (α := RawSym) fixtureBytes 2).toOption
 
 #guard parsedSymtab.map (·.size) = some 2
 -- NULL symbol — every field is zero.
@@ -81,12 +73,12 @@ private def parsedSymtab : Option (Array RawSym) :=
 -- ── Error cases ──────────────────────────────────────────────────────
 -- Truncated sym: 10 bytes when 24 expected — EOF inside the `st_value` u64 read.
 #guard
-  (Decodable.parse (α := RawSym) (fixtureBytes.extract 0 10)).toOption.isNone
+  (Decodable.decode (α := RawSym) (fixtureBytes.extract 0 10)).toOption.isNone
 
 -- `Decoder.array` asking for 3 entries from a 2-entry (48-byte) buffer —
 -- third entry hits EOF.
 #guard
-  (Decodable.parseArray (α := RawSym) fixtureBytes 3).toOption.isNone
+  (Decodable.decodeArray (α := RawSym) fixtureBytes 3).toOption.isNone
 
 end Example
 

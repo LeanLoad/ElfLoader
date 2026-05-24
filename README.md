@@ -99,7 +99,7 @@ edge cases instead of papering over them), it's called out below.
 - **`R_*_GLOB_DAT` addend `A` treated as 0.** psABI documents the
   formula as `S + A` for completeness, but linkers emit GLOB_DAT
   with `A = 0`; a nonzero addend would be a malformed link.
-- **Strong undef → fail loud at `Reloc.Result.ofGraph`.** ld.so
+- **Strong undef → fail loud at `Reloc.Result.ofDiscover`.** ld.so
   fails at startup; we fail at planning time (earlier).
 - **Weak undef → resolves to 0.** psABI convention.
 - **psABI `OVERFLOW_CHECK` enforced per-relocation.** A 32-bit
@@ -268,7 +268,7 @@ never describes.
 LeanLoad.lean              package root (re-exports)
 Main.lean                  CLI executable entry — Lake-blessed top-level
 LeanLoad/
-  Parse.lean               public parse entry: checked `Elf`, `parseM`
+  Parse.lean               public parse entry: checked `Elf`, `parseM`, `parseByteArray`
   Parse/
     Decode/                byte decoder primitives + `Decodable` deriving support
     Address.lean           parse-stage address / offset / byte-size wrappers

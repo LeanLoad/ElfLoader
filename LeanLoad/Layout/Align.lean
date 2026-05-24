@@ -10,7 +10,7 @@ Base-free.
 assume a positive alignment without adding a precondition.
 -/
 
-import LeanLoad.Parse.Address
+import LeanLoad.Parse.Basic
 
 namespace LeanLoad.Layout
 

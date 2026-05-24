@@ -2,7 +2,7 @@
 Recursive discovery over explicit dependency work items.
 
 The construction carrier (`Discovered`, with its smart constructors
-and characterisation theorems) lives in `Discovered.lean`. This file adds
+and characterisation theorems) lives in `Builder.lean`. This file adds
 the state-evolution layer on top:
 
   · `ActiveStack` — object indices currently on the recursive call stack.
@@ -25,13 +25,13 @@ the state-evolution layer on top:
      On miss, pushes the object and folds over its child work items,
      recording each child edge via `recordDep`.
 
-Object finders are abstract — `ObjectFinder m` from the public `LeanLoad.Discover` interface.
+Object finders are abstract — `ObjectFinder m` from `Discover.Provider`.
 `Discover.Finalize` seeds the traversal from the main object and
-promotes the final `Discovered` to `LoadGraph`.
+promotes the final `Discovered` to `Result`.
 -/
 
-import LeanLoad.Discover.Discovered
-import LeanLoad.Discover
+import LeanLoad.Discover.Builder
+import LeanLoad.Discover.Provider
 
 namespace LeanLoad.Discover
 

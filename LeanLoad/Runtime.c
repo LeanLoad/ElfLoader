@@ -2,11 +2,11 @@
  * kernel. Counterpart to `LeanLoad/Runtime/IO.lean`.
  *
  * Two topic groups:
- *   1. IO ops — file ops + memory ops. Lean's `Runtime.File` carries a
- *      transparent `uint32_t` fd plus the regular-file size captured by
- *      `fstat(2)`. Lifetime is process-bounded (we never close; the
- *      loaded program inherits the fd table when `exec_run` switches
- *      stack). All addresses cross the boundary as `uint64_t`.
+ *   1. IO ops — file ops + memory ops. Lean's `Runtime.File` carries
+ *      read/mmap closures over a private `uint32_t` fd plus the regular-file
+ *      size captured by `fstat(2)`. Lifetime is process-bounded (we never
+ *      close; the loaded program inherits the fd table when `exec_run`
+ *      switches stack). All addresses cross the boundary as `uint64_t`.
  *   2. Control transfer — `leanload_exec_run` builds the
  *      kernel-`exec`-style stack and switches SP. Doesn't return.
  *

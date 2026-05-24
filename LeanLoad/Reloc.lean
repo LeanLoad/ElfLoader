@@ -22,7 +22,7 @@ Phase split:
      4-or-8-byte `StoreOp`. Used by `Finalize.buildSegment`.
 
 The split exists because the runtime picks the per-elf base
-(`Runtime.MemoryOps.reserve`) between phases 1 and 2; phase 1 is pure and runs
+(`Runtime.Memory.reserve`) between phases 1 and 2; phase 1 is pure and runs
 ahead of any IO.
 
 Key types:
@@ -32,11 +32,11 @@ Key types:
     collapses both unresolved cases via `Target.symRef?`.
   • `Entry objCount seg` — parameterised by the owning `Segment` so
     the `Reloc.covered` segment-containment witness from
-    `Dynamic.Reloc.RelocTable` propagates forward into the
+    `Parse.Reloc.RelocTable` propagates forward into the
     planned tree. `SegmentOps.storesInRange` reads this witness
     structurally (via `BoundPlan.segment_storeRange_in_rsv`).
 
-`Result.ofGraph` validates every relocation-bearing segment up front; the
+`Result.ofDiscover` validates every relocation-bearing segment up front; the
 `Result.entries` projection is total because `Result`'s constructor is private.
 -/
 
@@ -49,12 +49,12 @@ namespace LeanLoad.Reloc
 
 open LeanLoad
 open LeanLoad.Discover (LoadGraph)
-open LeanLoad.Parse (Elf RawRela Segment Eaddr)
+open LeanLoad.Parse (Elf RawRela Segment)
 
 -- ============================================================================
 -- Entry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `Reloc.covered` witness
--- (inherited from `Dynamic.Reloc.RelocTable`) can be
+-- (inherited from `Parse.Reloc.RelocTable`) can be
 -- preserved through planning. `SegmentOps.storesInRange` needs
 -- `r_offset + 8 ≤ seg.eaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
@@ -96,7 +96,7 @@ end Target
     provider). `Finalize.bakeReloc` collapses the two unresolved
     cases to `S = 0`. The `covered` witness carries the 8-byte-window
     containment from the parent segment forward into the planned tree. -/
-structure Entry (objCount : Nat) (seg : Segment) where
+structure Entry (objCount : Nat) {fileSize : ByteSize} (seg : Segment fileSize) where
   /-- Per-arch relocation type (`R_*`); the low 32 bits of `r_info`. -/
   type     : UInt32
   /-- Segment-relative byte offset for the patch. The absolute address
@@ -107,7 +107,7 @@ structure Entry (objCount : Nat) (seg : Segment) where
   /-- Resolution outcome — see `Target`. -/
   target   : Target objCount
   /-- 8-byte write window fits in `[seg.eaddr, seg.eaddr + seg.memsz)`.
-      Inherited from the checked `Reloc.covered` field on `Dynamic.Reloc.RelocTable`;
+      Inherited from the checked `Reloc.covered` field on `Parse.Reloc.RelocTable`;
       preserved through `planOne` so the
       exec builder can prove `StoresContained` structurally. -/
   covered  : seg.eaddr.toNat ≤ r_offset.toNat ∧
@@ -151,7 +151,8 @@ private def resolveTarget (g : LoadGraph) (order : Array (Fin g.objects.size))
 /-- Plan one rela: resolve target, preserve the `Reloc.covered` witness
     from the parent segment. -/
 def planOne (g : LoadGraph) (order : Array (Fin g.objects.size))
-    (objectIdx : Fin g.objects.size) (seg : Segment) (r : RawRela)
+    (objectIdx : Fin g.objects.size) {fileSize : ByteSize}
+    (seg : Segment fileSize) (r : RawRela)
     (h_cov : seg.eaddr.toNat ≤ r.r_offset.toNat ∧
       r.r_offset.toNat + 8 ≤ seg.eaddr.toNat + seg.memsz.toNat) :
     Except String (Entry g.objects.size seg) := do
@@ -171,7 +172,7 @@ def planOne (g : LoadGraph) (order : Array (Fin g.objects.size))
 /-- Plan one segment's relas (then jmprel — both go through the same
     formula at exec time). Used by `Layout.Basic` when
     constructing each `SegmentLayout`. The `Reloc.covered` witness on each
-    `Dynamic.Reloc.RelocTable` entry is threaded into the planned `Entry`'s
+    `Parse.Reloc.RelocTable` entry is threaded into the planned `Entry`'s
     `covered` field. -/
 def planSegment (g : LoadGraph) (order : Array (Fin g.objects.size))
     (objectIdx : Fin g.objects.size)
@@ -187,12 +188,13 @@ def planSegment (g : LoadGraph) (order : Array (Fin g.objects.size))
     acc := acc.push (← planOne g order objectIdx seg entry.raw entry.covered)
   return acc
 
-/-- Base-free relocation plan for a discovered graph. The constructor is private:
-    callers use `Result.ofGraph`, which validates every segment's relocation records
+/-- Base-free relocation plan for a discovered result. The constructor is private:
+    callers use `Result.ofDiscover`, which validates every segment's relocation records
     before exposing total `entries`. -/
 structure Result where
   private mk ::
   graph : LoadGraph
+  initOrder : Discover.InitOrder graph
   order : Array (Fin graph.objects.size)
   segmentRelocs :
     (i : Fin graph.objects.size) →
@@ -214,17 +216,17 @@ theorem objectElfs_size (p : Result) :
 
 /-- Per-arch relocation formula, picked off the main elf's `e_machine`. -/
 def formula (p : Result) : Reloc.ABI.Formula :=
-  Reloc.ABI.formulaFor p.graph.main.elf.header.e_machine
+  Reloc.ABI.formulaFor p.graph.main.elf.machine
 
 /-- Fallible segment entries. Mostly useful for diagnostics; `entries` is the
-    total projection for consumers after `Result.ofGraph` validation. -/
+    total projection for consumers after `Result.ofDiscover` validation. -/
 def segment (p : Result) (i : Fin p.graph.objects.size)
     (j : Fin p.graph.objects[i].elf.segments.items.size) :
     Except String (Array (Entry p.graph.objects.size (p.graph.objects[i].elf.segments.items[j]))) :=
   p.segmentRelocs i j
 
 /-- Total entries for a checked segment. The `.error` branch is unreachable for
-    values produced by `Result.ofGraph`; the constructor is private so external code
+    values produced by `Result.ofDiscover`; the constructor is private so external code
     cannot manufacture an unchecked plan. -/
 def entries (p : Result) (i : Fin p.graph.objects.size)
     (j : Fin p.graph.objects[i].elf.segments.items.size) :
@@ -233,17 +235,17 @@ def entries (p : Result) (i : Fin p.graph.objects.size)
   | .ok entries => entries
   | .error _ => #[]
 
-/-- Build and validate the relocation plan for a discovered graph. -/
-def ofGraph (g : LoadGraph) : Except String Result := do
-  let order := Reloc.Symbol.bfsOrder g
+/-- Build and validate the relocation plan for a discovered result. -/
+def ofDiscover (d : Discover.Result) : Except String Result := do
+  let order := Reloc.Symbol.bfsOrder d.graph
   let segmentRelocs :=
-    fun (i : Fin g.objects.size) (j : Fin g.objects[i].elf.segments.items.size) =>
-      planSegment g order i j
-  let result : Result := { graph := g, order, segmentRelocs }
-  for h : i in [:g.objects.size] do
-    let objectIdx : Fin g.objects.size := ⟨i, h.upper⟩
-    for h_seg : j in [:g.objects[objectIdx].elf.segments.items.size] do
-      let segIdx : Fin g.objects[objectIdx].elf.segments.items.size := ⟨j, h_seg.upper⟩
+    fun (i : Fin d.graph.objects.size) (j : Fin d.graph.objects[i].elf.segments.items.size) =>
+      planSegment d.graph order i j
+  let result : Result := { graph := d.graph, initOrder := d.initOrder, order, segmentRelocs }
+  for h : i in [:d.graph.objects.size] do
+    let objectIdx : Fin d.graph.objects.size := ⟨i, h.upper⟩
+    for h_seg : j in [:d.graph.objects[objectIdx].elf.segments.items.size] do
+      let segIdx : Fin d.graph.objects[objectIdx].elf.segments.items.size := ⟨j, h_seg.upper⟩
       match result.segment objectIdx segIdx with
       | .ok _ => pure ()
       | .error e => .error e

@@ -15,7 +15,7 @@ Phase 2 of 2 in the relocation pipeline:
      `OVERFLOW_CHECK`); see the banner below.
 
 The split exists because the runtime picks the per-elf base
-(`Runtime.MemoryOps.reserve`) between phases 1 and 2; phase 1 is pure and runs
+(`Runtime.Memory.reserve`) between phases 1 and 2; phase 1 is pure and runs
 ahead of any IO.
 
 Entry points:
@@ -94,7 +94,8 @@ private def symValueOf (elfs : Array Elf) (bases : Array UInt64)
     directly. -/
 private def bakeRelocImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg) :
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (entry : Entry elfs.size seg) :
     Except String (Option StoreOp) :=
   match formula entry.type
     { symValue := symValueOf elfs bases h_bases entry.target,
@@ -120,7 +121,8 @@ private def bakeRelocImpl (formula : Formula) (elfs : Array Elf)
     `Array.foldlM`'s induction principle. -/
 private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg)) :
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (relocs : Array (Entry elfs.size seg)) :
     Except String (Array StoreOp) :=
   relocs.foldlM (init := (#[] : Array StoreOp)) fun acc entry => do
     match ← bakeRelocImpl formula elfs bases h_bases base seg entry with
@@ -136,7 +138,8 @@ private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
 def bakeSegmentRelocs (formula : Formula) {objCount : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = objCount)
     (bases : Array UInt64) (h_bases : bases.size = objCount)
-    (base : UInt64) (seg : Segment) (relocs : Array (Entry objCount seg)) :
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (relocs : Array (Entry objCount seg)) :
     Except String (Array StoreOp) := by
   subst h_elfs
   exact bakeSegmentRelocsImpl formula elfs bases h_bases base seg relocs
@@ -146,7 +149,8 @@ def bakeSegmentRelocs (formula : Formula) {objCount : Nat}
 def bakeReloc (formula : Formula) {objCount : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = objCount)
     (bases : Array UInt64) (h_bases : bases.size = objCount)
-    (base : UInt64) (seg : Segment) (entry : Entry objCount seg) :
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (entry : Entry objCount seg) :
     Except String (Option StoreOp) := by
   subst h_elfs
   exact bakeRelocImpl formula elfs bases h_bases base seg entry
@@ -166,7 +170,8 @@ def bakeReloc (formula : Formula) {objCount : Nat}
     `s.addr = base + entry.r_offset.val` and `s.size ∈ {4, 8}`. -/
 private theorem bakeReloc_ok_someImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (entry : Entry elfs.size seg)
     (s : StoreOp)
     (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.addr = base + (entry.r_offset.val) ∧ (s.size = 4 ∨ s.size = 8) := by
@@ -193,7 +198,8 @@ private theorem bakeReloc_ok_someImpl (formula : Formula) (elfs : Array Elf)
 /-- `StoreOp.byteLen.toNat ≤ 8` for any store emitted by `bakeReloc`. -/
 private theorem bakeReloc_byteLen_le_8Impl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (entry : Entry elfs.size seg)
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (entry : Entry elfs.size seg)
     (s : StoreOp)
     (h : bakeRelocImpl formula elfs bases h_bases base seg entry = .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
@@ -254,7 +260,8 @@ private theorem listFoldlM_except_preserves {α : Type} {β : Type}
     entry.r_offset.val` for some `entry`). -/
 private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs : Array Elf)
     (bases : Array UInt64) (h_bases : bases.size = elfs.size)
-    (base : UInt64) (seg : Segment) (relocs : Array (Entry elfs.size seg))
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (relocs : Array (Entry elfs.size seg))
     (P : StoreOp → Prop)
     (h_baked : ∀ entry, ∀ s, bakeRelocImpl formula elfs bases h_bases base seg entry =
                               .ok (some s) → P s)
@@ -318,7 +325,8 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
 theorem bakeReloc_ok_some (formula : Formula) {objCount : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = objCount)
     (bases : Array UInt64) (h_bases : bases.size = objCount)
-    (base : UInt64) (seg : Segment) (entry : Entry objCount seg) (s : StoreOp)
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (entry : Entry objCount seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.addr = base + (entry.r_offset.val) ∧ (s.size = 4 ∨ s.size = 8) := by
@@ -328,7 +336,8 @@ theorem bakeReloc_ok_some (formula : Formula) {objCount : Nat} (elfs : Array Elf
 theorem bakeReloc_byteLen_le_8 (formula : Formula) {objCount : Nat} (elfs : Array Elf)
     (h_elfs : elfs.size = objCount)
     (bases : Array UInt64) (h_bases : bases.size = objCount)
-    (base : UInt64) (seg : Segment) (entry : Entry objCount seg) (s : StoreOp)
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (entry : Entry objCount seg) (s : StoreOp)
     (h : bakeReloc formula elfs h_elfs bases h_bases base seg entry =
          .ok (some s)) :
     s.byteLen.toNat ≤ 8 := by
@@ -338,7 +347,8 @@ theorem bakeReloc_byteLen_le_8 (formula : Formula) {objCount : Nat} (elfs : Arra
 theorem bakeSegmentRelocs_storesInvariant (formula : Formula) {objCount : Nat}
     (elfs : Array Elf) (h_elfs : elfs.size = objCount)
     (bases : Array UInt64) (h_bases : bases.size = objCount)
-    (base : UInt64) (seg : Segment) (relocs : Array (Entry objCount seg))
+    (base : UInt64) {fileSize : ByteSize} (seg : Segment fileSize)
+    (relocs : Array (Entry objCount seg))
     (P : StoreOp → Prop)
     (h_baked : ∀ entry, ∀ s, bakeReloc formula elfs h_elfs bases h_bases base
                                 seg entry = .ok (some s) → P s)
