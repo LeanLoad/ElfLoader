@@ -27,21 +27,23 @@ structure LoadMap (fileSize : ByteSize) where
 
 namespace LoadMap
 
-/-- Dynamic-table ELF-address range translated through a checked PT_LOAD. The
-    segment range must be file-backed (`p_filesz`), not merely memory-backed
-    (`p_memsz`), because the decoder is about to read bytes from the ELF file. -/
-structure FileBackedEaddrRange (view : LoadMap fileSize) (range : EaddrRange) where
-  segmentRange : SegmentTable.FileBackedEaddrRangeIn view.segments range.start range.size
+/-- ELF-address range translated through a checked PT_LOAD to file bytes.
+    Containment is checked against `p_filesz`, not `p_memsz`, because this
+    conversion is only valid for bytes present in the file image. -/
+structure MappedEaddrRange (view : LoadMap fileSize) (range : EaddrRange) where
+  segmentIdx : Fin view.segments.items.size
+  contains   : Segment.ContainsFileBackedEaddrRange view.segments.items[segmentIdx]
+    range.start range.size
 
-namespace FileBackedEaddrRange
+namespace MappedEaddrRange
 
 /-- File offset obtained by translating the checked ELF-address range through
     the file-backed segment that contains it. -/
-def fileOff (checked : FileBackedEaddrRange view range) : FileOff :=
-  (view.segments.items[checked.segmentRange.index]).fileOffOfEaddr range.start
+def fileOff (checked : MappedEaddrRange view range) : FileOff :=
+  (view.segments.items[checked.segmentIdx]).fileOffOfEaddr range.start
 
 /-- Checked file range obtained by translating through the containing PT_LOAD. -/
-def fileRange (checked : FileBackedEaddrRange view range) :
+def fileRange (checked : MappedEaddrRange view range) :
     Except String (FileRange fileSize) :=
   let off := checked.fileOff
   let size := range.size
@@ -51,7 +53,7 @@ def fileRange (checked : FileBackedEaddrRange view range) :
     .error s!"parse: translated ELF-address range at file offset 0x{off.toNat} \
       requested {size.toNat} bytes, past file size {fileSize.toNat}"
 
-end FileBackedEaddrRange
+end MappedEaddrRange
 
 /-- Validate header policy and PT_LOAD invariants before any dynamic pointer is
     followed. This pushes parse facts earlier than the final checked-ELF
@@ -72,7 +74,7 @@ def ofHeaders (fileSize : ByteSize) (header : ElfHeader fileSize)
 
 /-- Resolve a dynamic ELF-address range through the checked load map. -/
 def mapRange (view : LoadMap fileSize) (range : EaddrRange) :
-    Except String (FileBackedEaddrRange view range) := Id.run do
+    Except String (MappedEaddrRange view range) := Id.run do
   let va := range.start
   let len := range.size
   for h : i in [:view.segments.items.size] do
@@ -80,9 +82,7 @@ def mapRange (view : LoadMap fileSize) (range : EaddrRange) :
     let seg := view.segments.items[idx]
     match (inferInstance : Decidable (Segment.ContainsFileBackedEaddrRange seg va len)) with
     | .isTrue h_in =>
-       let segmentRange : SegmentTable.FileBackedEaddrRangeIn view.segments va len :=
-         { index := idx, contains := h_in }
-       return .ok { segmentRange }
+       return .ok { segmentIdx := idx, contains := h_in }
     | .isFalse _ => pure ()
   return .error s!"parse: ELF-address range 0x{va.toNat}..+{len.toNat} is not \
     covered by any file-backed PT_LOAD"
