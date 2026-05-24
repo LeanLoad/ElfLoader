@@ -1,8 +1,8 @@
 /-
-Examples and fixture bytes for `Parse/LoadMap/ProgramHeader/Basic.lean`.
+Examples and fixture bytes for program-header parsing and `AT_PHDR` mapping.
 -/
 
-import LeanLoad.Parse.LoadMap.ProgramHeader.Basic
+import LeanLoad.Parse.LoadMap.ProgramHeader.Map
 
 namespace LeanLoad.Parse.Examples
 
@@ -79,5 +79,100 @@ def dynamicProgramHeader : ProgramHeader programHeaderFileSize := (programHeader
 -- entry hits EOF.
 #guard
   (ProgramHeader.arrayDecoder programHeaderFileSize 3).decode? programHeaderBytes |>.isNone
+
+-- ── Checked AT_PHDR mapping ────────────────────────────────────────────────
+
+private def mapExampleFileSize : ByteSize := 0x4000
+
+private def mapExecProgramHeader : ProgramHeader mapExampleFileSize :=
+  { (default : ProgramHeader mapExampleFileSize) with
+    p_type := .load,
+    p_flags := ProgramHeaderFlags.ofRaw 0x5, -- R|X
+    p_offset := 0,
+    p_vaddr := 0,
+    p_filesz := 0x200,
+    p_memsz := 0x200,
+    p_align := 0x1000,
+    fileInBounds := by decide,
+    eaddrNoWrap := by decide,
+    alignPow2 := by decide,
+    alignCong := by decide }
+
+private def mapDataProgramHeader : ProgramHeader mapExampleFileSize :=
+  { (default : ProgramHeader mapExampleFileSize) with
+    p_type := .load,
+    p_flags := ProgramHeaderFlags.ofRaw 0x6, -- R|W
+    p_offset := 0x1000,
+    p_vaddr := 0x1000,
+    p_filesz := 0x100,
+    p_memsz := 0x200,
+    p_align := 0x1000,
+    fileInBounds := by decide,
+    eaddrNoWrap := by decide,
+    alignPow2 := by decide,
+    alignCong := by decide }
+
+private def shiftedProgramHeader : ProgramHeader mapExampleFileSize :=
+  { (default : ProgramHeader mapExampleFileSize) with
+    p_type := .load,
+    p_flags := ProgramHeaderFlags.ofRaw 0x4, -- R
+    p_offset := 0x2000,
+    p_vaddr := 0x3000,
+    p_filesz := 0x100,
+    p_memsz := 0x100,
+    p_align := 0x1000,
+    fileInBounds := by decide,
+    eaddrNoWrap := by decide,
+    alignPow2 := by decide,
+    alignCong := by decide }
+
+private def mapSegments? : Option (SegmentTable mapExampleFileSize) :=
+  match Segment.ofPhdr mapExecProgramHeader,
+      Segment.ofPhdr mapDataProgramHeader with
+  | .ok execSeg, .ok dataSeg =>
+      match SegmentTable.ofArray #[execSeg, dataSeg] with
+      | .ok segs => some segs
+      | .error _ => none
+  | _, _ => none
+
+private def shiftedSegments? : Option (SegmentTable mapExampleFileSize) :=
+  match Segment.ofPhdr shiftedProgramHeader with
+  | .ok seg =>
+      match SegmentTable.ofArray #[seg] with
+      | .ok segs => some segs
+      | .error _ => none
+  | .error _ => none
+
+private def programHeaderMapped? (segments : SegmentTable mapExampleFileSize) (phoff : FileOff)
+    (nbytes : Nat) : Bool :=
+  match ProgramHeaderMap.ofSegments segments phoff nbytes with
+  | .ok _    => true
+  | .error _ => false
+
+#guard
+  match mapSegments? with
+  | some segs => programHeaderMapped? segs 0x40 0x80
+  | none => false
+
+#guard
+  match mapSegments? with
+  | some segs => !(programHeaderMapped? segs 0x3000 0x10)
+  | none => false
+
+-- `ProgramHeaderMap` requires bytes covered by `p_filesz`, not the PT_LOAD's BSS tail.
+#guard
+  match mapSegments? with
+  | some segs => !(programHeaderMapped? segs 0x1150 0x10)
+  | none => false
+
+-- Non-identity `p_offset`/`p_vaddr` program-header coverage is accepted, and the checked
+-- map records the translated ELF address used for `AT_PHDR`.
+#guard
+  match shiftedSegments? with
+  | some segs =>
+      match ProgramHeaderMap.ofSegments segs 0x2040 0x20 with
+      | .ok m    => m.eaddr == 0x3040
+      | .error _ => false
+  | none => false
 
 end LeanLoad.Parse.Examples

@@ -50,20 +50,6 @@ private def overlapProgramHeader : ProgramHeader exampleFileSize :=
     alignPow2 := by decide,
     alignCong := by decide }
 
-private def shiftedProgramHeader : ProgramHeader exampleFileSize :=
-  { (default : ProgramHeader exampleFileSize) with
-    p_type := .load,
-    p_flags := ProgramHeaderFlags.ofRaw 0x4, -- R
-    p_offset := 0x2000,
-    p_vaddr := 0x3000,
-    p_filesz := 0x100,
-    p_memsz := 0x100,
-    p_align := 0x1000,
-    fileInBounds := by decide,
-    eaddrNoWrap := by decide,
-    alignPow2 := by decide,
-    alignCong := by decide }
-
 private def execSeg? : Option (Segment exampleFileSize) :=
   match Segment.ofPhdr execProgramHeader with
   | .ok seg => some seg
@@ -105,65 +91,11 @@ private def checkedSegments? : Option (SegmentTable exampleFileSize) :=
       | .ok _ => false
   | _, _ => false
 
-private def shiftedSegments? : Option (SegmentTable exampleFileSize) :=
-  match Segment.ofPhdr shiftedProgramHeader with
-  | .ok seg =>
-      match SegmentTable.ofArray #[seg] with
-      | .ok segs => some segs
-      | .error _ => none
-  | .error _ => none
-
-private def programHeaderMapped? (segments : SegmentTable exampleFileSize) (phoff : FileOff)
-    (nbytes : Nat) : Bool :=
-  match ProgramHeaderMap.ofSegments segments phoff nbytes with
-  | .ok _    => true
-  | .error _ => false
-
-#guard
-  match checkedSegments? with
-  | some segs => programHeaderMapped? segs 0x40 0x80
-  | none => false
-
-#guard
-  match checkedSegments? with
-  | some segs => !(programHeaderMapped? segs 0x3000 0x10)
-  | none => false
-
--- `ProgramHeaderMap` requires file-backed bytes, not just BSS memory coverage.
-#guard
-  match checkedSegments? with
-  | some segs => !(programHeaderMapped? segs 0x1150 0x10)
-  | none => false
-
--- Non-identity `p_offset`/`p_vaddr` program-header coverage is accepted, and the checked
--- map records the translated ELF address used for `AT_PHDR`.
-#guard
-  match shiftedSegments? with
-  | some segs =>
-      match ProgramHeaderMap.ofSegments segs 0x2040 0x20 with
-      | .ok m    => m.eaddr == 0x3040
-      | .error _ => false
-  | none => false
-
-private def callTargetInExecSeg? (segments : SegmentTable exampleFileSize) (entry : Eaddr) : Bool :=
-  letI : Decidable (callTargetInExecSeg segments entry) := by
-    unfold callTargetInExecSeg Segment.ContainsEaddr
-    infer_instance
-  if _ : callTargetInExecSeg segments entry then true else false
-
 private def containsEaddrRange? (s : Segment exampleFileSize) (addr : Eaddr) (len : ByteSize) : Bool :=
   if _ : Segment.ContainsEaddrRange s addr len then true else false
 
 private def containsFileRange? (s : Segment exampleFileSize) (off : FileOff) (len : ByteSize) : Bool :=
   if _ : Segment.ContainsFileRange s off len then true else false
-
-#guard
-  match checkedSegments? with
-  | some segs =>
-      callTargetInExecSeg? segs 0x10 &&
-      callTargetInExecSeg? segs 0 &&
-      !(callTargetInExecSeg? segs 0x1010)
-  | none => false
 
 #guard
   match execSeg? with

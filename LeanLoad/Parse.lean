@@ -9,6 +9,7 @@ import LeanLoad.Parse.Symbol.SysVHash
 import LeanLoad.Parse.CallTargets
 import LeanLoad.Parse.LoadMap.Basic
 import LeanLoad.Parse.LoadMap.ProgramHeader.Basic
+import LeanLoad.Parse.LoadMap.ProgramHeader.Map
 import LeanLoad.Runtime.File
 
 namespace LeanLoad.Parse

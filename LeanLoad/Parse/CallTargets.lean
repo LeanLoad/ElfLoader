@@ -10,9 +10,21 @@ import LeanLoad.Parse.LoadMap.Segment.Table
 
 namespace LeanLoad.Parse
 
+namespace CallTarget
+
+/-- A function pointer (relative eaddr) is either zero (skip — gabi leaves zero
+    entries unspecified, but glibc/musl treat them as no-ops) or lives inside an
+    executable PT_LOAD's `[eaddr, eaddr + memsz)`. -/
+def Valid {fileSize : ByteSize} (segments : SegmentTable fileSize) (entry : Eaddr) : Prop :=
+  entry.val = 0 ∨
+    ∃ i, ∃ h : i < segments.items.size,
+      (segments.items[i]'h).perm.exec ∧ Segment.ContainsEaddr (segments.items[i]'h) entry
+
+end CallTarget
+
 /-- A callable ELF-address slot: either zero or inside an executable PT_LOAD. -/
 abbrev CallTarget {fileSize : ByteSize} (segments : SegmentTable fileSize) :=
-  { addr : Eaddr // callTargetInExecSeg segments addr }
+  { addr : Eaddr // CallTarget.Valid segments addr }
 
 namespace CallTarget
 
@@ -20,8 +32,8 @@ namespace CallTarget
     non-zero addresses must target an executable PT_LOAD. -/
 def ofRaw {fileSize : ByteSize} (label : String) (segments : SegmentTable fileSize) (addr : Eaddr) :
     Except String (CallTarget segments) :=
-  let decExec : Decidable (callTargetInExecSeg segments addr) := by
-    unfold callTargetInExecSeg Segment.ContainsEaddr
+  let decExec : Decidable (Valid segments addr) := by
+    unfold Valid Segment.ContainsEaddr
     infer_instance
   match decExec with
   | .isTrue h_exec => .ok ⟨addr, h_exec⟩
