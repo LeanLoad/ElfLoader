@@ -6,9 +6,10 @@ import LeanLoad.Parse.Decode.Decoder
 
 namespace LeanLoad.Parse
 
-/-- A type with a canonical byte decoder. The decoder may also check and
-    construct proof fields required by `α`. -/
+/-- A fixed-width type with a canonical byte decoder. Runtime-sized tables and
+    blobs use explicit `Decoder` values instead of a `Decodable` instance. -/
 class Decodable (α : Type) where
+  byteSize : Nat
   decoder : Decoder α
 
 namespace Decodable
@@ -24,10 +25,21 @@ def require (label : String) (p : Prop) [Decidable p] : Decoder (PLift p) := do
 
 end Decodable
 
-instance : Decodable UInt8  := ⟨Decoder.u8⟩
-instance : Decodable UInt16 := ⟨Decoder.u16le⟩
-instance : Decodable UInt32 := ⟨Decoder.u32le⟩
-instance : Decodable UInt64 := ⟨Decoder.u64le⟩
+instance : Decodable UInt8 where
+  byteSize := 1
+  decoder := Decoder.u8
+
+instance : Decodable UInt16 where
+  byteSize := 2
+  decoder := Decoder.u16le
+
+instance : Decodable UInt32 where
+  byteSize := 4
+  decoder := Decoder.u32le
+
+instance : Decodable UInt64 where
+  byteSize := 8
+  decoder := Decoder.u64le
 
 /-- Semantic decoding from an on-disk scalar to a typed field.
 
@@ -39,8 +51,9 @@ class DecodableFromScalar (α : Type) (Backing : outParam Type) where
 /-- `Decodable α` derived from `DecodableFromScalar`: decode the backing scalar and
     classify it, surfacing classifier failures as decoder failures. -/
 instance [M : DecodableFromScalar α Backing] [Decodable Backing] : Decodable α where
+  byteSize := Decodable.byteSize (α := Backing)
   decoder := do
-    let raw : Backing ← Decodable.decoder
+    let raw : Backing ← Decodable.decoder (α := Backing)
     match M.fromScalar raw with
     | .ok v     => return v
     | .error e  => throw e

@@ -30,28 +30,11 @@ def ProgramHeaderSize : Nat := 56
 
 namespace ProgramHeader
 
+#guard Decodable.byteSize (α := ProgramHeader) = ProgramHeaderSize
+
 /-- Byte extent of a `count`-entry program-header table. -/
 def tableByteSize (count : Nat) : ByteSize :=
-  ByteSize.ofEntries count ProgramHeaderSize
-
-/-- File range occupied by a `count`-entry program-header table. -/
-def tableRange (fileSize : UInt64) (off : FileOff) (count : Nat) :
-    Except String (FileRange fileSize off (tableByteSize count)) :=
-  let len := tableByteSize count
-  if h : off.toNat + len.toNat ≤ fileSize.toNat then
-    .ok { inFile := h }
-  else
-    .error s!"read at file offset 0x{off.toNat} requested {len.toNat} bytes, \
-      past file size {fileSize.toNat}"
-
-/-- File range occupied by the contents of this program header. -/
-def fileRange (fileSize : UInt64) (phdr : ProgramHeader) :
-    Except String (FileRange fileSize phdr.p_offset phdr.p_filesz) :=
-  if h : phdr.p_offset.toNat + phdr.p_filesz.toNat ≤ fileSize.toNat then
-    .ok { inFile := h }
-  else
-    .error s!"read at file offset 0x{phdr.p_offset.toNat} requested {phdr.p_filesz.toNat} bytes, \
-      past file size {fileSize.toNat}"
+  ByteSize.ofEntries count (Decodable.byteSize (α := ProgramHeader))
 
 /-- Decode `count` consecutive program-header entries from the current cursor. -/
 def decodeTable (count : Nat) : Decoder (Array ProgramHeader) :=

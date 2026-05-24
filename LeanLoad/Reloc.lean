@@ -3,7 +3,7 @@ Relocation planning — base-free.
 
 This stage walks checked dynamic relocation records, resolves only the symbols
 those records reference, and produces base-free relocation entries. Layout later
-attaches those entries to `SegmentLayout`; Exec later bakes them into concrete
+attaches those entries to `SegmentLayout`; Finalize later bakes them into concrete
 `StoreOp`s after the kernel has chosen a reservation base.
 
 Phase split:
@@ -16,18 +16,19 @@ Phase split:
      base.
   2. **Layout** — consumes a `Reloc.Result` and puts the planned entries on
      each `SegmentLayout.relocs`.
-  2. **Bake** (`Exec/Reloc.lean`) — `Entry objCount seg + base →
+  2. **Bake** (`Finalize/Reloc.lean`) — `Entry objCount seg + base →
      Option StoreOp`. Computes the absolute place and symbol value once
      a reservation base is chosen, then turns each entry into a
-     4-or-8-byte `StoreOp`. Used by `Exec.buildSegment`.
+     4-or-8-byte `StoreOp`. Used by `Finalize.buildSegment`.
 
-The split exists because the kernel picks the per-elf base (`Reserve.run`)
-between phases 1 and 2; phase 1 is pure and runs ahead of any IO.
+The split exists because the runtime picks the per-elf base
+(`Runtime.MemoryOps.reserve`) between phases 1 and 2; phase 1 is pure and runs
+ahead of any IO.
 
 Key types:
   • `Target objCount` — 3-case inductive replacing the old
     `Option (SymRef objCount)`. Lets `Main.debug` distinguish "no symbol"
-    from "weak-unresolved" diagnostically; `Exec.bakeReloc`
+    from "weak-unresolved" diagnostically; `Finalize.bakeReloc`
     collapses both unresolved cases via `Target.symRef?`.
   • `Entry objCount seg` — parameterised by the owning `Segment` so
     the `Reloc.covered` segment-containment witness from
@@ -61,7 +62,7 @@ open LeanLoad.Parse (Elf RawRela Segment Eaddr)
 /-- Resolution outcome for one rela's symbol reference. Three
     explicit cases collapse the old `Option (SymRef objCount)` to a richer
     discriminator so `Main.debug` can distinguish "no symbol"
-    from "weak-undefined" diagnostically, and so `Exec.bakeReloc`
+    from "weak-undefined" diagnostically, and so `Finalize.bakeReloc`
     pattern-matches without an outer `Option`. All three cases drive
     `S = 0` in the formula except `resolved`. -/
 inductive Target (objCount : Nat) where
@@ -92,7 +93,7 @@ end Target
 
 /-- One planned relocation, owned by `seg`. `target` discriminates the
     three resolution outcomes (no symbol / weak unresolved / resolved
-    provider). `Exec.bakeReloc` collapses the two unresolved
+    provider). `Finalize.bakeReloc` collapses the two unresolved
     cases to `S = 0`. The `covered` witness carries the 8-byte-window
     containment from the parent segment forward into the planned tree. -/
 structure Entry (objCount : Nat) (seg : Segment) where

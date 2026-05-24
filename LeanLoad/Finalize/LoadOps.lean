@@ -5,13 +5,13 @@ the typed op records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
 defined in `Runtime`.
 
 Stage boundary:
-  • `Resolve` and `Layout` produce base-free facts: symbol resolution,
+  • `Reloc` and `Layout` produce base-free facts: symbol resolution,
     page math, `objectSpan`, `totalSpan`, per-segment relocs, and the
     DFS post-order init sequence. None of those know an mmap base.
-  • `Exec/` consumes those plus the IO-supplied reservation
-    base and emits the structured ops below. The runtime seam
-    (`LoadOps.run`) consumes the witnessed tree directly — there is no
-    flat `Array` intermediate.
+  • `Finalize/` consumes those plus the IO-supplied reservation
+    base and emits the structured ops below. The runtime seam in
+    `Runtime/Run.lean` consumes the witnessed tree directly — there is no flat
+    `Array` intermediate.
 
 The natural number parameter `objCount` is the elf count, threaded through
 from `SegmentLayout objCount` (for the per-segment `Entry objCount`s).
@@ -32,22 +32,22 @@ Hierarchy:
   • `LoadOps rsvAddr rsvLen objCount`    — the top-level op bundle for all elfs.
 
 Safety witnesses are fields on the op records themselves and are built
-constructively by `Exec.build` from `BoundPlan`'s per-(i, j)
+constructively by `Finalize.build` from `BoundPlan`'s per-(i, j)
 `InRange` / `Disjoint` theorems. There is no separate flat predicate.
 -/
 
-import LeanLoad.Exec
+import LeanLoad.Finalize
 import LeanLoad.Layout.Basic
-import LeanLoad.Runtime
+import LeanLoad.Runtime.Basic
 
-namespace LeanLoad.Exec
+namespace LeanLoad.Finalize
 
 open LeanLoad
 open LeanLoad.Layout (SegmentLayout)
 
 -- ============================================================================
 -- Construction helper — compute the setup ops from a SegmentLayout.
--- Reloc stores are added separately by `Exec.bakeSegmentRelocs`.
+-- Reloc stores are added separately by `Finalize.bakeSegmentRelocs`.
 -- ============================================================================
 
 /-- Compute the setup ops for one segment at the chosen base. The
@@ -118,17 +118,6 @@ theorem setupSegment_mprotect_eq (sp : SegmentLayout objCount) (handle : Runtime
 -- fields do not consume them.
 -- ============================================================================
 
-namespace SegmentOps
-
-/-- Run one segment's intrinsic-safe ops in protocol order. -/
-def run (so : SegmentOps rsvAddr rsvLen objCount) : IO Unit := do
-  if let some m := so.mmap then m.run
-  if let some z := so.zero then z.run
-  for s in so.stores do s.run
-  so.mprotect.run
-
-end SegmentOps
-
 namespace LoadOps
 
 /-- Every mmap across every elf and segment, in tree-walk order. -/
@@ -147,11 +136,6 @@ def stores (lo : LoadOps rsvAddr rsvLen objCount) : Array StoreOp :=
 def mprotects (lo : LoadOps rsvAddr rsvLen objCount) : Array MprotectOp :=
   lo.elfs.flatMap fun eo => eo.segments.map (·.mprotect)
 
-/-- Run an intrinsic-safe op tree in protocol order. The safety proof fields are
-    erased; IO behaviour is plain per-op dispatch. -/
-def run (lo : LoadOps rsvAddr rsvLen objCount) : IO Unit :=
-  lo.elfs.forM fun eo => eo.segments.forM SegmentOps.run
-
 end LoadOps
 
-end LeanLoad.Exec
+end LeanLoad.Finalize

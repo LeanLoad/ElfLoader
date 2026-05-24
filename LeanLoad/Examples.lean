@@ -6,7 +6,7 @@ edge cases for *that* unit. This file covers *integration* across
 stages plus boundary-rejection cases that span more than one file:
 
   1. `Inhabited Elf` and `synthElf` — fixtures used below. Production
-     never builds an `Elf` without going through checked `Parse.parse`;
+     never builds an `Elf` without going through checked `Parse.parseM`;
      these synthesize partial Elfs for the compile-time `#guard`s.
 
   2. **Checked parse boundary** — synthetic ELF bytes accepted by
@@ -16,10 +16,10 @@ stages plus boundary-rejection cases that span more than one file:
      base assignment (`Layout`), and the `SegmentLayout` view
      over a segment (base-free).
 
-  4. **Exec** — the structured `LoadOps` tree that
+  4. **Finalize** — the structured `LoadOps` tree that
      `Main.realize` runs. Shows how
-     `Exec.setupSegment` shapes change with BSS-only vs file+BSS
-     segments, and how `Exec.build` constructs intrinsic-safe load ops.
+     `Finalize.setupSegment` shapes change with BSS-only vs file+BSS
+     segments, and how `Finalize.build` constructs intrinsic-safe load ops.
 
 `./run.sh` exercises the real `examples/build/main` end-to-end —
 that remains the authoritative "the loader copes with musl-gcc's
@@ -30,7 +30,7 @@ driven readability.
 import LeanLoad.Layout.Basic
 import LeanLoad.Reloc
 import LeanLoad.Reloc.Symbol
-import LeanLoad.Exec.Build
+import LeanLoad.Finalize.Build
 import LeanLoad.Parse.Examples
 
 namespace LeanLoad.Examples
@@ -45,7 +45,7 @@ open LeanLoad.Layout
 
 /-- Synthetic reservation base used by examples that don't need a
     real kernel-picked address. Production loads use the address
-    returned by `Runtime.mmapAnonAlloc`. -/
+    returned by `Runtime.MemoryOps.io.reserve`. -/
 private def exampleAnchor : UInt64 := 0x80000000
 
 private def exampleFileSize : UInt64 := 0x100000
@@ -81,7 +81,7 @@ private def syntheticHeader (elfType : Parse.ElfType) (notExec : elfType ≠ .ex
 
 /-- Default `Elf` — empty in every dimension. Used only by tests that
     synthesize an `Elf` and override the few fields the test cares
-    about; production code always goes through `Parse.parse`. -/
+    about; production code always goes through `Parse.parseM`. -/
 instance : Inhabited Elf where
   default :=
     { header := syntheticHeader .none (by decide),
@@ -89,7 +89,7 @@ instance : Inhabited Elf where
       soname := Option.none, runpath := Option.none,
       segments := SegmentTable.empty,
       relocs := { rela := #[], jmprel := #[] },
-      initArr := #[], finiArr := #[] }
+      callTargets := CallTargets.empty SegmentTable.empty }
 
 /-- Synthetic `Elf` with overrides for the fields a test cares about. -/
 def synthElf
@@ -98,13 +98,14 @@ def synthElf
     (symtab  : Array Parse.Symbol       := #[])
     (segments : Parse.SegmentTable          := SegmentTable.empty)
     (relocs : Dynamic.Reloc.RelocTable segments :=
-      { rela := #[], jmprel := #[] }) : Elf :=
+      { rela := #[], jmprel := #[] })
+    (callTargets : CallTargets segments := CallTargets.empty segments) : Elf :=
   { (default : Elf) with
     header,
     needed, symtab,
     segments,
     relocs,
-    initArr := #[], finiArr := #[] }
+    callTargets }
 
 -- ============================================================================
 -- 2. Checked parse boundary.
@@ -119,10 +120,10 @@ def synthElf
        | .ok elf =>
            elf.header.e_type    == .dyn
         && elf.header.e_machine == .x86_64
-        && elf.header.e_entry   == 0x100
+        && elf.callTargets.entry.val == 0x100
         && elf.segments.items.size == 1           -- single PT_LOAD
         && elf.needed.size == 1                   -- DT_NEEDED "libc.so.6"
-        && elf.initArr.size == 1                  -- one ctor
+        && elf.callTargets.init.size == 1         -- one ctor
        | .error _ => false
 
 -- ============================================================================
@@ -158,7 +159,36 @@ private def resolveGraph : Discover.LoadGraph :=
     depsBounds := by decide,
     closure := by decide,
     initOrderSize := by decide,
-    initOrderNodup := by decide }
+    initOrderCovers := by
+      intro i h_i
+      have h_i_cases : i = 0 ∨ i = 1 := by
+        have h_lt : i < 2 := by simpa using h_i
+        omega
+      rcases h_i_cases with h_zero | h_one
+      · subst h_zero
+        simp
+      · subst h_one
+        simp
+    initOrderNodup := by decide,
+    initOrderRespectsDeps := by
+      intro i j h_edge
+      rcases h_edge with ⟨h_i, h_mem⟩
+      have h_i_cases : i = 0 ∨ i = 1 := by
+        have h_lt : i < (#[#[1], #[]] : Array (Array Nat)).size := h_i
+        simp at h_lt
+        omega
+      rcases h_i_cases with h_i_zero | h_i_one
+      · subst h_i_zero
+        have h_j_one : j = 1 := by
+          simpa using h_mem
+        subst h_j_one
+        refine ⟨0, 1, ?_, ?_, by decide⟩
+        · simp
+        · simp
+      · subst h_i_one
+        have h_empty : j ∈ (#[] : Array Nat) := by
+          simp at h_mem
+        exact absurd h_empty (by simp) }
 
 #guard
   (Reloc.Symbol.resolveByName resolveGraph (Reloc.Symbol.bfsOrder resolveGraph) "printf").map
@@ -181,7 +211,7 @@ private def synthSegment? (eaddr : Eaddr) (memsz : ByteSize) : Option Parse.Segm
 
 -- ET_EXEC is rejected during checked parse, so every elf reaching
 -- planning is ET_DYN. `assignBases` takes the reservation base
--- as a parameter; production gets it from `Runtime.mmapAnon`.
+-- as a parameter; production gets it from `Runtime.MemoryOps.reserve`.
 #guard
   let elfs : Array Elf := #[synthElf (header := syntheticHeader .dyn (by decide))]
   match Layout.ofElfs elfs with
@@ -240,7 +270,7 @@ private def bssOnlyPlan : Option (SegmentLayout 0) :=
 --
 -- Each segment emits 1–3 ops inside the kernel-picked reservation:
 --   • mmapFile (if hasFileBacked) — file overlay (with PROT_WRITE widening)
---   • zeroout  (if hasPartialBss) — clear file content past `filesz`
+--   • zero     (if hasPartialBss) — clear file content past `filesz`
 --   • mprotect — final perms over the whole segment range
 --
 -- The reservation underneath (kernel-picked anon, RW) handles BSS;
@@ -250,8 +280,8 @@ private def bssOnlyPlan : Option (SegmentLayout 0) :=
 --   filesz=0          (BSS-only):              [mprotect]                       (1)
 --   filesz=memsz      (file-only, aligned):    [mmapFile, mprotect]             (2)
 --   file+anon         (file + full-page BSS):  [mmapFile, mprotect]             (2)
---   file+partial      (partial-page BSS):      [mmapFile, zeroout, mprotect]    (3)
---   file+both         (partial + full-page):   [mmapFile, zeroout, mprotect]    (3)
+--   file+partial      (partial-page BSS):      [mmapFile, zero, mprotect]       (3)
+--   file+both         (partial + full-page):   [mmapFile, zero, mprotect]       (3)
 --
 -- Tests only inspect the planned ops; they never run the mmap, so a dummy
 -- file is enough.
@@ -277,7 +307,7 @@ private def fileBothBss     : Option Segment := synthSeg? 0 0x2000 0x800   -- pa
 private def slotCount (seg : Option Segment) : Option Nat :=
   seg.map fun s =>
     let setup :=
-      Exec.setupSegment (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
+      Finalize.setupSegment (SegmentLayout.ofSegmentCore 0 s #[]) dummyHandle exampleAnchor
     (if setup.mmap.isSome then 1 else 0) + (if setup.zero.isSome then 1 else 0) + 1
 
 #guard slotCount bssOnlySeg     = some 1  -- mprotect only
@@ -291,7 +321,7 @@ private def slotCount (seg : Option Segment) : Option Nat :=
 private def exampleReserve : Reserve :=
   { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
 
-example : Exec.LoadOps exampleReserve.addr exampleReserve.len 0 :=
+example : Finalize.LoadOps exampleReserve.addr exampleReserve.len 0 :=
   { elfs := #[]
     mmapsDisjoint := by
       intro _ _ hi

@@ -59,13 +59,6 @@ def ByteSize.ofEntries (count entrySize : Nat) : ByteSize :=
 def segmentLayoutAlign (align : UInt64) : UInt64 :=
   if align == 0 then 1 else align
 
-/-- Half-open file-byte range `[off, off + len)` known to fit inside a file of
-    observed byte size `fileSize`. This strengthens `(FileOff, ByteSize)`
-    without making raw `FileOff` depend on a particular file. -/
-structure FileRange (fileSize : UInt64) (off : FileOff) (len : ByteSize) where
-  marker : Unit := ()
-  inFile : off.toNat + len.toNat ≤ fileSize.toNat
-
 instance : DecodableFromScalar Eaddr UInt64 where fromScalar v := .ok ⟨v⟩
 instance : DecodableFromScalar FileOff UInt64 where fromScalar v := .ok ⟨v⟩
 instance : DecodableFromScalar ByteSize UInt64 where fromScalar v := .ok ⟨v⟩

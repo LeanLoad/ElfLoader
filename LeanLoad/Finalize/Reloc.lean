@@ -14,23 +14,23 @@ Phase 2 of 2 in the relocation pipeline:
      32-bit writes are overflow-checked (psABI per-relocation
      `OVERFLOW_CHECK`); see the banner below.
 
-The split exists because the kernel picks the per-elf base
-(`Reserve.run`) between phases 1 and 2; phase 1 is pure and runs ahead
-of any IO.
+The split exists because the runtime picks the per-elf base
+(`Runtime.MemoryOps.reserve`) between phases 1 and 2; phase 1 is pure and runs
+ahead of any IO.
 
 Entry points:
   • `bakeReloc` — one entry → `Option StoreOp` (none for `R_*_NONE`).
   • `bakeSegmentRelocs` — one segment's relas → flat `Array StoreOp`.
 
-Used by `Exec.buildSegment` (one call per segment).
+Used by `Finalize.buildSegment` (one call per segment).
 -/
 
 import LeanLoad.Layout.Basic
-import LeanLoad.Exec.LoadOps
+import LeanLoad.Finalize.LoadOps
 import LeanLoad.Reloc.ABI
 import LeanLoad.Parse.LoadMap.Segment.Basic
 
-namespace LeanLoad.Exec
+namespace LeanLoad.Finalize
 
 open LeanLoad
 open LeanLoad.Reloc (Entry)
@@ -129,7 +129,7 @@ private def bakeSegmentRelocsImpl (formula : Formula) (elfs : Array Elf)
 
 /-- Public entry point for baking a whole segment's relocations. The
     explicit `h_elfs : elfs.size = objCount` retypes `relocs` at any
-    provably-equal size — used by `Exec.buildSegment` to
+    provably-equal size — used by `Finalize.buildSegment` to
     accept `sp.relocs : Array (Entry bp.objCount seg)` directly without an
     outer `▸` cast. The `subst h_elfs; exact bakeSegmentRelocsImpl …`
     body absorbs the rewrite. -/
@@ -311,7 +311,7 @@ private theorem bakeSegmentRelocs_storesInvariantImpl (formula : Formula) (elfs 
 -- Public characterisation lemmas. Each is one `subst h_elfs; exact
 -- impl` line — after substituting `objCount := elfs.size`, they reduce to
 -- the private `*Impl` versions above. Callers
--- (`Exec.buildSegment`) chain through the public surface
+-- (`Finalize.buildSegment`) chain through the public surface
 -- so the relocs array's `objCount` parameter doesn't need an outer `▸` cast.
 -- ============================================================================
 
@@ -350,4 +350,4 @@ theorem bakeSegmentRelocs_storesInvariant (formula : Formula) {objCount : Nat}
   exact bakeSegmentRelocs_storesInvariantImpl formula elfs bases h_bases base seg
     relocs P h_baked out h_out
 
-end LeanLoad.Exec
+end LeanLoad.Finalize

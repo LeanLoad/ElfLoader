@@ -24,22 +24,17 @@ structure LoadMap where
 
 namespace LoadMap
 
-/-- Dynamic-table ELF-address range translated through a checked PT_LOAD into a
-    checked file range. The segment range must be file-backed (`p_filesz`), not
-    merely memory-backed (`p_memsz`), because the decoder is about to read bytes
-    from the ELF file. -/
-structure FileBackedEaddrRange (view : LoadMap) (fileSize : UInt64) (range : EaddrRange) where
+/-- Dynamic-table ELF-address range translated through a checked PT_LOAD. The
+    segment range must be file-backed (`p_filesz`), not merely memory-backed
+    (`p_memsz`), because the decoder is about to read bytes from the ELF file. -/
+structure FileBackedEaddrRange (view : LoadMap) (range : EaddrRange) where
   segmentRange : SegmentTable.AnyFileBackedEaddrRange view.segments range.start range.size
-  fileRange    :
-    FileRange fileSize
-      ((view.segments.items[segmentRange.index]).fileOffOfEaddr range.start)
-      range.size
 
 namespace FileBackedEaddrRange
 
 /-- File offset obtained by translating the checked ELF-address range through
     the file-backed segment that contains it. -/
-def fileOff (checked : FileBackedEaddrRange view fileSize range) : FileOff :=
+def fileOff (checked : FileBackedEaddrRange view range) : FileOff :=
   (view.segments.items[checked.segmentRange.index]).fileOffOfEaddr range.start
 
 end FileBackedEaddrRange
@@ -60,10 +55,9 @@ def ofHeaders (fileSize : UInt64) (header : ElfHeader) (programHeaders : Array P
   | .ok segments => .ok { header, segments }
   | .error e     => .error e
 
-/-- Resolve a dynamic ELF-address range through the checked load map and
-    prove the corresponding file range is inside the observed file. -/
-def mapRange (view : LoadMap) (fileSize : UInt64) (range : EaddrRange) :
-    Except String (FileBackedEaddrRange view fileSize range) := Id.run do
+/-- Resolve a dynamic ELF-address range through the checked load map. -/
+def mapRange (view : LoadMap) (range : EaddrRange) :
+    Except String (FileBackedEaddrRange view range) := Id.run do
   let va := range.start
   let len := range.size
   for h : i in [:view.segments.items.size] do
@@ -71,15 +65,9 @@ def mapRange (view : LoadMap) (fileSize : UInt64) (range : EaddrRange) :
     let seg := view.segments.items[idx]
     match (inferInstance : Decidable (Segment.ContainsFileBackedEaddrRange seg va len)) with
     | .isTrue h_in =>
-        let segmentRange : SegmentTable.AnyFileBackedEaddrRange view.segments va len :=
-          { index := idx, contains := h_in, permits := trivial }
-        let off := (view.segments.items[segmentRange.index]).fileOffOfEaddr range.start
-        if h_file : off.toNat + len.toNat ≤ fileSize.toNat then
-          let fileRange : FileRange fileSize off len := { inFile := h_file }
-          return .ok { segmentRange, fileRange }
-        else
-          return .error s!"parse: mapped file range 0x{off.toNat}..+{len.toNat} is past \
-            file size {fileSize.toNat}"
+       let segmentRange : SegmentTable.AnyFileBackedEaddrRange view.segments va len :=
+         { index := idx, contains := h_in, permits := trivial }
+       return .ok { segmentRange }
     | .isFalse _ => pure ()
   return .error s!"parse: ELF-address range 0x{va.toNat}..+{len.toNat} is not \
     covered by any file-backed PT_LOAD"

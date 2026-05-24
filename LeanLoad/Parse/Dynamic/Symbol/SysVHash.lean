@@ -26,14 +26,12 @@ structure RawSysVHash where
   nchain  : UInt32
   deriving Repr, Inhabited, Decodable
 
-/-- Size of the header read: 4 + 4 = 8 bytes. Bucket / chain arrays
-    that follow are not parsed. -/
-def RawSysVHashSize : Nat := 8
+#guard Decodable.byteSize (α := RawSysVHash) = 8  -- gabi 08 § Hash Table: header
 
 namespace RawSysVHash
 
 /-- Byte extent of the SysV hash header LeanLoad reads. -/
-def byteSize : ByteSize := ByteSize.ofNat RawSysVHashSize
+def byteSize : ByteSize := ByteSize.ofNat (Decodable.byteSize (α := RawSysVHash))
 
 /-- Dynamic-symbol count recorded in the SysV hash header. -/
 def symCount (h : RawSysVHash) : Nat := h.nchain.toNat

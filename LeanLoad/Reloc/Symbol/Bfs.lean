@@ -296,7 +296,7 @@ theorem bfsOrder_head (g : LoadGraph) :
 --       (bfsOrder g).size = g.objects.size
 --
 -- Follows from `bfsOrder_nodup` + `bfsOrder_complete` + the
--- "everything-is-reachable" property of `Discover.discoverWith`.
+-- "everything-is-reachable" property of `Discover.discover`.
 -- Combined with Nodup makes `bfsOrder` a permutation of
 -- `Fin g.objects.size`.
 --

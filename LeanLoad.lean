@@ -1,7 +1,7 @@
 /-
 Root of the `LeanLoad` library; re-exports every public module.
 
-Pipeline: `Parse → Discover → Reloc → Layout → Exec → Runtime`.
+Pipeline: `Parse → Discover → Reloc → Layout → Finalize → Runtime`.
 
 Each stage takes the *previous* stage's output and adds either data
 or a Prop witness. Once an invariant is witnessed, no downstream
@@ -14,8 +14,9 @@ stage re-checks it — the witness travels in the type.
     resolves dynamic strings, checks phdr coverage, and validates init/fini
     targets.
 
-  • Discover — `Path → IO LoadGraph`. DFS over `DT_NEEDED`. The
-    output type witnesses non-emptiness and name `Nodup`.
+  • Discover — monadic DFS over `DT_NEEDED` via `ObjectFinder m`;
+    production instantiates it with path search/open/parse in IO. The output
+    type witnesses non-emptiness, name `Nodup`, and init-order coverage.
 
   • Reloc — pure, base-free relocation planning. Takes `LoadGraph`,
     walks dynamic relocation records, resolves only referenced symbols by
@@ -24,17 +25,17 @@ stage re-checks it — the witness travels in the type.
   • Layout — pure, base-free. Takes `Reloc.Result`, produces
     `Layout.Layout`: per-elf `SegmentLayout`s with page math +
     per-segment relocs and the cumulative span (`totalSpan`). Carries
-    the no-wrap invariants needed for exec-time safety proofs
+    the no-wrap invariants needed for finalize-time safety proofs
     (`pageEnd_lt`, `fileOverlay_le`, `vaddr_memsz_le`, `zero_end_le`,
     `pageInset_eq_vaddr`).
 
-  • Exec — base-aware. Takes a `BoundPlan` (= `Reloc.Result` +
+  • Finalize — base-aware and pure. Takes a `BoundPlan` (= `Reloc.Result` +
     `Layout.Layout` + IO `Reserve` + coherence proof) and emits a `LoadOps` tree of
     typed ops (`Mmap` / `Zero` / `Store` / `Mprotect`). The tree carries
     per-op containment and mmap-disjointness witnesses intrinsically.
 
   • Runtime — the trust seam. `@[extern]` primitives wrapped in
-    typed op records; `LoadOps.run` accepts the intrinsic-safe tree only.
+    typed op records; `Runtime.Run` interprets the intrinsic-safe tree only.
 
   • Formal boundary — the final structured load ops plus safety witnesses.
     Semantic byte-level memory modelling is intentionally out of scope for
@@ -45,11 +46,10 @@ import LeanLoad.Parse
 import LeanLoad.Parse.Examples
 import LeanLoad.Reloc.ABI
 
-import LeanLoad.Exec.Range
 import LeanLoad.Runtime
 
 import LeanLoad.Discover
-import LeanLoad.Discover.Runtime
+import LeanLoad.Discover.IO
 import LeanLoad.Discover.Examples  -- pure #guard scenarios; elaborate on build
 
 import LeanLoad.Layout.Align
@@ -59,8 +59,8 @@ import LeanLoad.Reloc.Symbol
 import LeanLoad.Reloc
 import LeanLoad.Layout
 
-import LeanLoad.Exec
-import LeanLoad.Exec.LoadOps
-import LeanLoad.Exec.Reloc
-import LeanLoad.Exec.BoundPlan
-import LeanLoad.Exec.Build
+import LeanLoad.Finalize
+import LeanLoad.Finalize.LoadOps
+import LeanLoad.Finalize.Reloc
+import LeanLoad.Finalize.BoundPlan
+import LeanLoad.Finalize.Build

@@ -1,25 +1,53 @@
 /-
-Checked ELF parse-stage product and public parse entry points.
+Checked ELF parse-stage product and monad-polymorphic driver.
 -/
 
 import LeanLoad.Parse.Dynamic.Dyntab.Basic
-import LeanLoad.Parse.Dynamic.InitFini
 import LeanLoad.Parse.Dynamic.Reloc.Table
 import LeanLoad.Parse.Dynamic.Symbol.Checked
 import LeanLoad.Parse.Dynamic.Symbol.SysVHash
+import LeanLoad.Parse.CallTargets
 import LeanLoad.Parse.LoadMap.Basic
 import LeanLoad.Parse.LoadMap.ProgramHeader.Basic
-import LeanLoad.Parse.Reader
-import LeanLoad.Runtime
+import LeanLoad.Runtime.FileOps
 
 namespace LeanLoad.Parse
 
 open Dynamic
 
+private def readBytes [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (off : FileOff) (len : ByteSize) : ExceptT String m ByteArray := do
+  let fileSize := ops.fileSize file
+  if off.toNat + len.toNat ≤ fileSize.toNat then
+    let bytes ← ops.pread file off.val len.val
+    if bytes.size == len.toNat then
+      pure bytes
+    else
+      throw s!"read at file offset 0x{off.toNat} requested {len.toNat} bytes, \
+        got {bytes.size}"
+  else
+    throw s!"read at file offset 0x{off.toNat} requested {len.toNat} bytes, \
+      past file size {fileSize.toNat}"
+
+private def parseBytesAt [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (off : FileOff) (len : ByteSize) (decoder : Decoder α) : ExceptT String m α := do
+  let bytes ← readBytes ops file off len
+  liftExcept (Decoder.run bytes decoder)
+
+private def parseAt [Monad m] [Decodable α] (ops : Runtime.FileOps m h)
+    (file : h) (off : FileOff) : ExceptT String m α :=
+  parseBytesAt ops file off (ByteSize.ofNat (Decodable.byteSize (α := α)))
+    (Decodable.decoder (α := α))
+
+private def parseArrayAt [Monad m] [Decodable α] (ops : Runtime.FileOps m h)
+    (file : h) (off : FileOff) (count : Nat) : ExceptT String m (Array α) :=
+  parseBytesAt ops file off (ByteSize.ofEntries count (Decodable.byteSize (α := α)))
+    (Decoder.array count (Decodable.decoder (α := α)))
+
 /-- The checked form of an ELF.
 
     Construction enforces per-rela segment containment, checked symbol names, and
-    init/fini target coverage. Header policy, PT_LOAD well-formedness, and
+    callable target coverage. Header policy, PT_LOAD well-formedness, and
     dynamic string resolution are established by the parse driver below. -/
 structure Elf where
   /-- Parsed ELF header. `ElfHeader` is already semantically typed: magic,
@@ -35,73 +63,43 @@ structure Elf where
   segments : SegmentTable
   /-- Dynamic relocations located in their target segments. -/
   relocs   : Reloc.RelocTable segments
-  /-- `DT_INIT_ARRAY` entries — ctors, walked forward on startup. Each entry is
-      zero or targets an executable PT_LOAD in `segments`. -/
-  initArr  : InitFiniArray segments
-  /-- `DT_FINI_ARRAY` entries — dtors, walked backward on exit. Each entry is
-      zero or targets an executable PT_LOAD in `segments`. -/
-  finiArr  : InitFiniArray segments
+  /-- Checked `e_entry`, `DT_INIT_ARRAY`, and `DT_FINI_ARRAY` call targets.
+      Each slot is zero or targets an executable PT_LOAD in `segments`. -/
+  callTargets : CallTargets segments
   deriving Repr
 
-/-- Decode bytes from an already-checked file range.
-
-    This is the parse orchestration seam: `Reader` supplies exact bytes for a
-    witnessed range, and `Decoder` interprets those bytes as a typed value. -/
-private def decodeRange [Monad m] (r : FileReader m)
-    {off : FileOff} {len : ByteSize} (range : FileRange r.fileSize off len)
-    (decoder : Decoder α) : ExceptT String m α := do
-  let bytes ← readRange r range
-  match Decoder.run bytes decoder with
-  | .ok v    => pure v
-  | .error e => throw e
-
-/-- Resolve a dynamic string-table offset while preserving diagnostic context
-    for the tag that supplied it. -/
-private def resolveStrtabOff (label : String) (strtab : Strtab) (off : StrtabOff) :
-    Except String String :=
-  match StrtabEntry.ofOff strtab off with
-  | .ok entry => .ok entry.value
-  | .error e  => .error s!"parse: {label}: {e}"
-
-/-- Resolve an optional dynamic string-table reference with the tag name in
-    diagnostics. -/
-private def resolveStrtabOff? (label : String) (strtab : Strtab) :
-    Option StrtabOff → Except String (Option String)
-  | none     => .ok none
-  | some off => do
-      let s ← resolveStrtabOff label strtab off
-      pure (some s)
+private def parseMapped [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (view : LoadMap) (range : EaddrRange) (decoder : Decoder α) :
+    ExceptT String m α := do
+  let mapped ← liftExcept (LoadMap.mapRange view range)
+  parseBytesAt ops file mapped.fileOff range.size decoder
 
 /-- Read `.dynstr` bytes. UTF-8 validation is delayed until `StrtabEntry`. -/
-private def readStrtab [Monad m] (r : FileReader m) (view : LoadMap)
-    (loc : Option EaddrRange) : ExceptT String m Strtab :=
+private def readMappedStrtab [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (view : LoadMap) (loc : Option EaddrRange) : ExceptT String m Strtab :=
   match loc with
   | none       => pure Strtab.empty
-  | some range => do
-      let mapped ← liftExcept (LoadMap.mapRange view r.fileSize range)
-      decodeRange r mapped.fileRange Strtab.decode
+  | some range => parseMapped ops file view range Strtab.decode
 
 /-- Read `.dynsym` using `DT_HASH.nchain` as the symbol count. LeanLoad requires
     `DT_SYMTAB` and `DT_HASH` to appear together. -/
-private def readSymtab [Monad m] (r : FileReader m) (view : LoadMap)
-    (symVa hashVa : Option Eaddr) : ExceptT String m RawSymtab := do
+private def readMappedSymtab [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (view : LoadMap) (symVa hashVa : Option Eaddr) : ExceptT String m RawSymtab := do
   match symVa, hashVa with
   | none, none => pure #[]
   | some _, none => throw "parse: DT_SYMTAB present without DT_HASH"
   | none, some _ => throw "parse: DT_HASH present without DT_SYMTAB"
   | some symVa, some hashVa =>
       let hashRange : EaddrRange := { start := hashVa, size := RawSysVHash.byteSize }
-      let mappedHash ← liftExcept (LoadMap.mapRange view r.fileSize hashRange)
-      let hash : RawSysVHash ← decodeRange r mappedHash.fileRange Decodable.decoder
+      let hash : RawSysVHash ← parseMapped ops file view hashRange Decodable.decoder
       if hash.symCount == 0 then
         return #[]
       let symRange : EaddrRange := { start := symVa, size := RawSymtab.tableByteSize hash.symCount }
-      let mappedSym ← liftExcept (LoadMap.mapRange view r.fileSize symRange)
-      decodeRange r mappedSym.fileRange (RawSymtab.decode hash.symCount)
+      parseMapped ops file view symRange (RawSymtab.decode hash.symCount)
 
 /-- Read a `DT_RELA` / `DT_JMPREL` table. -/
-private def readRelas [Monad m] (label : String) (r : FileReader m)
-    (view : LoadMap) (loc : Option EaddrRange) :
+private def readMappedRelaTable [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (view : LoadMap) (label : String) (loc : Option EaddrRange) :
     ExceptT String m (Array RawRela) := do
   match loc with
   | none       => pure #[]
@@ -110,65 +108,100 @@ private def readRelas [Monad m] (label : String) (r : FileReader m)
         match RawRela.countFromByteSize range.size with
         | .ok count => pure count
         | .error e  => throw s!"parse: {label}: {e}"
-      let mapped ← liftExcept (LoadMap.mapRange view r.fileSize range)
-      decodeRange r mapped.fileRange (RawRela.decodeTable count)
+      parseMapped ops file view range (RawRela.decodeTable count)
 
 /-- Read `DT_JMPREL` after validating its separate `DT_PLTREL` encoding tag. -/
-private def readJmprel [Monad m] (r : FileReader m) (view : LoadMap)
-    (loc : Option EaddrRange) (kind : Option PltRelKind) :
+private def readMappedJmprel [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (view : LoadMap) (loc : Option EaddrRange) (kind : Option PltRelKind) :
     ExceptT String m (Array RawRela) := do
   match loc, kind with
   | none, _ => pure #[]
   | some _, none => throw "parse: DT_JMPREL present without DT_PLTREL"
   | some _, some .rel => throw "parse: DT_PLTREL=DT_REL, expected DT_RELA"
-  | some range, some .rela => readRelas "DT_JMPREL" r view (some range)
+  | some range, some .rela => readMappedRelaTable ops file view "DT_JMPREL" (some range)
 
 /-- Read a `DT_INIT_ARRAY` / `DT_FINI_ARRAY` table of 64-bit function
     pointers. -/
-private def readEaddrArray [Monad m] (label : String) (r : FileReader m)
-    (view : LoadMap) (loc : Option EaddrRange) :
+private def readMappedEaddrArray [Monad m] (ops : Runtime.FileOps m h) (file : h)
+    (view : LoadMap) (label : String) (loc : Option EaddrRange) :
     ExceptT String m (Array Eaddr) := do
   match loc with
   | none      => pure #[]
   | some range =>
       let bytes := range.size.toNat
-      if bytes % 8 == 0 then
-        let mapped ← liftExcept (LoadMap.mapRange view r.fileSize range)
-        decodeRange r mapped.fileRange (Decoder.array (bytes / 8) (Decodable.decoder (α := Eaddr)))
+      let entrySize := Decodable.byteSize (α := Eaddr)
+      if bytes % entrySize == 0 then
+        parseMapped ops file view range
+          (Decoder.array (bytes / entrySize) (Decodable.decoder (α := Eaddr)))
       else
-        throw s!"parse: {label}: byte size {bytes} is not a multiple of 8"
+        throw s!"parse: {label}: byte size {bytes} is not a multiple of {entrySize}"
 
-/-- Monad-polymorphic checked parse. The `FileReader m` abstracts byte delivery;
-    all parse and validation errors flow through `ExceptT`. -/
-def parseM [Monad m] (r : FileReader m) : ExceptT String m Elf := do
-  let headerRange ← liftExcept (ElfHeader.fileRange r.fileSize)
-  let header : ElfHeader ← decodeRange r headerRange Decodable.decoder
-  let phdrRange ← liftExcept (ProgramHeader.tableRange r.fileSize header.e_phoff header.e_phnum.toNat)
-  let programHeaders ← decodeRange r phdrRange (ProgramHeader.decodeTable header.e_phnum.toNat)
+namespace Dyntab
+
+/-- Read `.dynstr` through the checked load map using this dynamic table's tags. -/
+private def readStrtab [Monad m] (dyn : Dyntab) (ops : Runtime.FileOps m h)
+    (file : h) (view : LoadMap) :
+    ExceptT String m Strtab := do
+  readMappedStrtab ops file view (← liftExcept dyn.strtab?)
+
+/-- Read `.dynsym` through the checked load map using this dynamic table's tags. -/
+private def readSymtab [Monad m] (dyn : Dyntab) (ops : Runtime.FileOps m h)
+    (file : h) (view : LoadMap) :
+    ExceptT String m RawSymtab := do
+  readMappedSymtab ops file view (← liftExcept dyn.symtab?) (← liftExcept dyn.hash?)
+
+/-- Read `DT_RELA` relocations through the checked load map. -/
+private def readRelaTable [Monad m] (dyn : Dyntab) (ops : Runtime.FileOps m h)
+    (file : h) (view : LoadMap) :
+    ExceptT String m (Array RawRela) := do
+  readMappedRelaTable ops file view "DT_RELA" (← liftExcept dyn.rela?)
+
+/-- Read `DT_JMPREL` relocations through the checked load map. -/
+private def readJmprelTable [Monad m] (dyn : Dyntab) (ops : Runtime.FileOps m h)
+    (file : h) (view : LoadMap) :
+    ExceptT String m (Array RawRela) := do
+  readMappedJmprel ops file view (← liftExcept dyn.jmprel?) (← liftExcept dyn.pltrel?)
+
+/-- Read `DT_INIT_ARRAY` function pointers through the checked load map. -/
+private def readInitArray [Monad m] (dyn : Dyntab) (ops : Runtime.FileOps m h)
+    (file : h) (view : LoadMap) :
+    ExceptT String m (Array Eaddr) := do
+  readMappedEaddrArray ops file view "DT_INIT_ARRAY" (← liftExcept dyn.initArr?)
+
+/-- Read `DT_FINI_ARRAY` function pointers through the checked load map. -/
+private def readFiniArray [Monad m] (dyn : Dyntab) (ops : Runtime.FileOps m h)
+    (file : h) (view : LoadMap) :
+    ExceptT String m (Array Eaddr) := do
+  readMappedEaddrArray ops file view "DT_FINI_ARRAY" (← liftExcept dyn.finiArr?)
+
+end Dyntab
+
+/-- Monad-polymorphic checked parse over the runtime file capability. -/
+def parseM [Monad m] (ops : Runtime.FileOps m h) (file : h) : ExceptT String m Elf := do
+  let header : ElfHeader ← parseAt ops file 0
+  let programHeaders ←
+    parseArrayAt (α := ProgramHeader) ops file header.e_phoff header.e_phnum.toNat
   let view ←
-    match LoadMap.ofHeaders r.fileSize header programHeaders with
+    match LoadMap.ofHeaders (ops.fileSize file) header programHeaders with
     | .ok view => pure view
     | .error e => throw e
-  let dyn ← match programHeaders.find? (·.p_type == .dynamic) with
+  let dyn : Dyntab ← match programHeaders.find? (·.p_type == .dynamic) with
     | none    => pure #[]
     | some ph =>
-        let dynRange ← liftExcept (ProgramHeader.fileRange r.fileSize ph)
-        decodeRange r dynRange (Dyntab.decode ph.p_filesz)
-  let strtab ← readStrtab r view (← liftExcept (Dyntab.strtab? dyn))
-  let symtabRaw ←
-    readSymtab r view (← liftExcept (Dyntab.symtab? dyn)) (← liftExcept (Dyntab.hash? dyn))
-  let rela ← readRelas "DT_RELA" r view (← liftExcept (Dyntab.rela? dyn))
-  let jmprel ←
-    readJmprel r view (← liftExcept (Dyntab.jmprel? dyn)) (← liftExcept (Dyntab.pltrel? dyn))
-  let initArrRaw ← readEaddrArray "DT_INIT_ARRAY" r view (← liftExcept (Dyntab.initArr? dyn))
-  let finiArrRaw ← readEaddrArray "DT_FINI_ARRAY" r view (← liftExcept (Dyntab.finiArr? dyn))
-  let needed ← liftExcept ((Dyntab.needed dyn).mapM (resolveStrtabOff "DT_NEEDED" strtab))
-  let soname ← liftExcept (resolveStrtabOff? "DT_SONAME" strtab (← Dyntab.soname? dyn))
-  let runpath ← liftExcept (resolveStrtabOff? "DT_RUNPATH" strtab (← Dyntab.runpath? dyn))
+        parseBytesAt ops file ph.p_offset ph.p_filesz (Dyntab.decode ph.p_filesz)
+  let strtab : Strtab ← Dyntab.readStrtab dyn ops file view
+  let symtabRaw ← Dyntab.readSymtab dyn ops file view
+  let rela ← Dyntab.readRelaTable dyn ops file view
+  let jmprel ← Dyntab.readJmprelTable dyn ops file view
+  let initArrRaw ← Dyntab.readInitArray dyn ops file view
+  let finiArrRaw ← Dyntab.readFiniArray dyn ops file view
+  let needed ← liftExcept ((Dyntab.needed dyn).mapM (strtab.resolve "DT_NEEDED"))
+  let soname ← liftExcept (strtab.resolve? "DT_SONAME" (← Dyntab.soname? dyn))
+  let runpath ← liftExcept (strtab.resolve? "DT_RUNPATH" (← Dyntab.runpath? dyn))
   let relocs ← liftExcept (Reloc.locateAll view.segments rela jmprel)
   let symtab ← liftExcept (symtabRaw.mapM (Symbol.ofRaw strtab))
-  let initArr ← liftExcept (InitFiniArray.ofRaw "DT_INIT_ARRAY" view.segments initArrRaw)
-  let finiArr ← liftExcept (InitFiniArray.ofRaw "DT_FINI_ARRAY" view.segments finiArrRaw)
+  let callTargets ←
+    liftExcept (CallTargets.ofRaw view.segments view.header.e_entry initArrRaw finiArrRaw)
   return {
     header := view.header,
     segments := view.segments,
@@ -177,13 +210,6 @@ def parseM [Monad m] (r : FileReader m) : ExceptT String m Elf := do
     soname,
     runpath,
     relocs,
-    initArr,
-    finiArr }
-
-/-- Production entry point: parse and check an open file. -/
-def parse (f : Runtime.File) : IO Elf := do
-  match ← (parseM (Runtime.fileReader f)).run with
-  | .ok elf  => pure elf
-  | .error e => throw (IO.userError e)
+    callTargets }
 
 end LeanLoad.Parse

@@ -122,7 +122,7 @@ def Symbol.ofRaw (strtab : Strtab) (s : RawSym) : Except String Symbol := do
     | .error s!"unknown st_info binding={bindRaw}"
   let nameOff : StrtabOff := ⟨s.st_name.toUInt64⟩
   let nameEntry ←
-    match StrtabEntry.ofOff strtab nameOff with
+    match strtab.entry nameOff with
     | .ok entry => .ok entry
     | .error e  => .error s!"invalid symbol st_name={s.st_name}: {e}"
   return { name  := nameEntry.value

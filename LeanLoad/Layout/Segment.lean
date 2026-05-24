@@ -3,7 +3,7 @@ Per-segment plan — base-free.
 
 A `SegmentLayout objCount` lifts one PT_LOAD `Segment` into the loader's view:
 page math precomputed once, stored as fields, plus the five
-per-segment invariants the exec-stage safety proofs read by
+per-segment invariants the finalize-stage safety proofs read by
 direct projection (`sp.pageEnd_lt`, `sp.fileOverlay_le_pageLength`, …):
 
   • `pageEnd_lt`         — `pageEaddr + pageLength < 2^64` (no wrap).
@@ -374,7 +374,7 @@ structure SegmentLayout (objCount : Nat) where
   partialBssLen  : UInt64
   /-- POSIX `PROT_*` bits derived from gabi `PF_*`. -/
   prot           : UInt32
-  /-- `pageEaddr + pageLength < 2^64` — the exec-stage UInt64
+  /-- `pageEaddr + pageLength < 2^64` — the finalize-stage UInt64
       addition lifts to `Nat` without wrap. -/
   pageEnd_lt : pageEaddr.toNat + pageLength.toNat < 2 ^ 64
   /-- The file overlay sits inside the page-aligned segment range —
@@ -398,7 +398,7 @@ structure SegmentLayout (objCount : Nat) where
       `Dynamic.Reloc.RelocTable.rela ++ Dynamic.Reloc.RelocTable.jmprel` order. Each
       entry carries its `Reloc.covered` witness keyed to `segment` so
       `SegmentOps.storesInRange` is structurally provable.
-      `Exec.bakeSegmentRelocs` reads this directly. -/
+      `Finalize.bakeSegmentRelocs` reads this directly. -/
   relocs         : Array (Entry objCount segment)
 
 namespace SegmentLayout
@@ -435,7 +435,7 @@ def pageEndAddr (sp : SegmentLayout objCount) : UInt64 := sp.pageEaddr + sp.page
 /-- `pageEndAddr.toNat = pageEaddr.toNat + pageLength.toNat` — the
     `pageEnd_lt` invariant rules out wrap. Saves the inline
     `UInt64.toNat_add` + `mod_eq_of_lt` ritual every per-op
-    `Exec` proof would otherwise duplicate. -/
+    `Finalize` proof would otherwise duplicate. -/
 theorem pageEndAddr_toNat (sp : SegmentLayout objCount) :
     sp.pageEndAddr.toNat = sp.pageEaddr.toNat + sp.pageLength.toNat := by
   show (sp.pageEaddr + sp.pageLength).toNat = _

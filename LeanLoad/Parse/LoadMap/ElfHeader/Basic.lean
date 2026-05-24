@@ -58,13 +58,7 @@ structure ElfHeader where
 
 namespace ElfHeader
 
-/-- File range occupied by the ELF header at the start of the file. -/
-def fileRange (fileSize : UInt64) : Except String (FileRange fileSize 0 (ByteSize.ofNat ElfHeaderSize)) :=
-  if h : ElfHeaderSize ≤ fileSize.toNat then
-    .ok { inFile := by simpa [FileOff.toNat, ByteSize.toNat, ByteSize.ofNat] using h }
-  else
-    .error s!"read at file offset 0x0 requested {ElfHeaderSize} bytes, \
-      past file size {fileSize.toNat}"
+#guard Decodable.byteSize (α := ElfHeader) = ElfHeaderSize
 
 end ElfHeader
 

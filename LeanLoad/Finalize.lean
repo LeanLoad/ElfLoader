@@ -1,8 +1,9 @@
 /-
-Exec stage public interface.
+Finalize stage public interface.
 
-Exec is the base-aware stage: it takes pure relocation/layout output plus the
-IO-supplied reservation and emits an intrinsic-safe tree of runtime operations.
+Finalize is the base-aware pure stage: it takes relocation/layout output plus
+the IO-supplied reservation and emits an intrinsic-safe tree of runtime
+operations.
 
 Public model:
   · `BoundPlan` — relocation/layout facts bound to a concrete reservation.
@@ -10,18 +11,18 @@ Public model:
     Safety witnesses live on the op tree itself, so invalid runtime op trees are
     not representable.
 
-Implementation lives under `LeanLoad/Exec/`: `BoundPlan.lean` proves the
-reservation bounds consumed by `Build.lean`, `LoadOps.lean` computes setup ops
-and interprets the intrinsic-safe tree, `Reloc.lean` bakes relocation stores,
-and `Build.lean` constructs the full witnessed tree.
+Implementation lives under `LeanLoad/Finalize/`: `BoundPlan.lean` proves the
+reservation bounds consumed by `Build.lean`, `LoadOps.lean` computes setup ops,
+`Reloc.lean` bakes relocation stores, and `Build.lean` constructs the full
+witnessed tree. `Runtime/Run.lean` owns IO interpretation.
 -/
 
-import LeanLoad.Exec.Range
+import LeanLoad.Finalize.Range
 import LeanLoad.Layout
 import LeanLoad.Reloc
-import LeanLoad.Runtime
+import LeanLoad.Runtime.Basic
 
-namespace LeanLoad.Exec
+namespace LeanLoad.Finalize
 
 open LeanLoad
 open LeanLoad.Layout (SegmentLayout)
@@ -32,9 +33,9 @@ open LeanLoad.Layout (SegmentLayout)
 
 /-- The pure-pipeline `Reloc.Result` plus `Layout.Layout`, extended with the
     IO-supplied reservation, plus the coherence proof threaded from
-    `Reserve.run`'s subtype. Every exec-stage consumer (`build`, `ctorAddrs`,
-    `Main.realize`) takes a `BoundPlan` and accesses its planning fields
-    directly via inheritance. -/
+    `Runtime.MemoryOps.reserve`'s subtype. Every finalize-stage consumer
+    (`build`, `ctorAddrs`, `Main.realize`) takes a `BoundPlan` and accesses its
+    planning fields directly via inheritance. -/
 structure BoundPlan extends Reloc.Result where
   layout  : Layout.Layout graph.objects.size
   rsv     : Reserve
@@ -59,7 +60,7 @@ structure SegmentSetup where
 /-- Per-segment ops bundle: extends `SegmentSetup` (the three setup-time
     ops) with the underlying layout and the baked relocation stores.
     `setupSegment` produces the parent `SegmentSetup`; `bakeSegmentRelocs`
-    produces `stores`; `Exec.buildSegment` combines them via
+    produces `stores`; `Finalize.buildSegment` combines them via
     `{ setup with layout, stores }`. -/
 structure SegmentOps (rsvAddr rsvLen : UInt64) (objCount : Nat) extends SegmentSetup where
   layout   : SegmentLayout objCount
@@ -74,7 +75,7 @@ structure SegmentOps (rsvAddr rsvLen : UInt64) (objCount : Nat) extends SegmentS
     `StoreOp.addr`, etc.) — those carry absolute addresses computed
     via `setupSegment` with the base mixed in. The source-of-truth
     base lives on `BoundPlan.bases[i]` for callers that need it
-    (e.g. `Exec.ctorAddrs`, `Main.debug`). -/
+    (e.g. `Finalize.ctorAddrs`, `Main.debug`). -/
 structure ElfOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
   segments : Array (SegmentOps rsvAddr rsvLen objCount)
   mmapsDisjoint : ∀ i j, ∀ hi : i < segments.size, ∀ hj : j < segments.size,
@@ -92,4 +93,4 @@ structure LoadOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
     ((elfs[i]'hi).segments[k_i]'h_ki).mmap = some m_i →
     ((elfs[j]'hj).segments[k_j]'h_kj).mmap = some m_j →
     Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
-end LeanLoad.Exec
+end LeanLoad.Finalize

@@ -3,31 +3,30 @@ Discover examples — pure, in-memory `#guard` scenarios.
 
 The DFS traversal/finalization path is generic over the effect monad.
 This file substitutes an in-memory
-`ExampleStore` for the filesystem, builds an `DependencyFinder (Except String)`
+`ExampleStore` for the filesystem, builds an `ObjectFinder (Except String)`
 instance over it (re-simulating the C-side path search at the Lean
 level), and exercises shape-level behaviors via `#guard` at
 elaboration time:
 
   · Linear chain (4 objects in DFS pre-order).
   · Diamond (shared dep loaded once, two in-edges, DFS pre-order).
-  · Cycle (A → B → A terminates without diverging — back-edge
-    dedups against the in-progress ancestor's idx).
+  · Cycle (A → B → A is rejected — gabi 08 leaves cyclic init order undefined).
   · Missing dep (returns `Except.error`).
   · Search-order precedence (env > runpath).
 
 These are example-level checks. The integration path (real ELFs on disk
-via `Runtime.openByName`) is exercised by `./run.sh` over
+via `Runtime.FileOps.io`) is exercised by `./run.sh` over
 `examples/build/main`.
 
 Canonical name = `elf.soname` (required) for NEEDED deps; `basename
-mainPath` for the main entry. Matches production `DependencyFinder.io` /
+mainPath` for the main entry. Matches production `ObjectFinder.io` /
 `discover` exactly. `mockElf` defaults `soname := some "anon"` so the
 SONAME-required production policy is satisfied by default — examples
 that want to exercise the SONAME-missing error path pass
 `soname := none` explicitly.
 -/
 
-import LeanLoad.Discover.Build
+import LeanLoad.Discover.Finalize
 
 namespace LeanLoad.Discover
 
@@ -43,7 +42,7 @@ open LeanLoad.Parse (Elf)
 /-- Build a minimal `Elf` for Discover examples. `soname`, `runpath`,
     and `needed` are the only fields Discover observes; everything else is
     zeroed and the structural invariants discharge automatically.
-    `soname` defaults to `some "anon"` because production `DependencyFinder.io`
+    `soname` defaults to `some "anon"` because production `ObjectFinder.io`
     *requires* DT_SONAME on every NEEDED-loaded `.so`. Examples that want
     to exercise the SONAME-missing error path can pass `soname := none`
     explicitly. -/
@@ -85,8 +84,7 @@ private def mockElf (soname : Option String := some "anon")
   runpath
   segments := Parse.SegmentTable.empty
   relocs := { rela := #[], jmprel := #[] }
-  initArr  := #[]
-  finiArr  := #[] }
+  callTargets := Parse.CallTargets.empty Parse.SegmentTable.empty }
 
 -- ============================================================================
 -- ExampleStore — in-memory `path → Elf` map. Mirrors what the production
@@ -108,7 +106,7 @@ private def getElf? (store : ExampleStore) (path : String) : Option Elf :=
 end ExampleStore
 
 /-- Mirror the C runtime's path search at the Lean level. Example-only —
-    production goes through `Runtime.openByName`. -/
+    production goes through `Runtime.FileOps.io`. -/
 private def exampleSearchCandidates (soname : String)
     (runpath : Option String) (envPath : Option String) : Array String :=
   if soname.contains '/' then #[soname]
@@ -122,14 +120,18 @@ private def exampleSearchCandidates (soname : String)
       return acc
     dirs.map (fun d => s!"{d}/{soname}")
 
-/-- The example `DependencyFinder` instance: simulate `Runtime.openByName` over an
+/-- The example `ObjectFinder` instance: simulate `Runtime.FileOps.io` over an
     `ExampleStore`, with the same SONAME-required policy as production
-    `DependencyFinder.io` — `findSome?` skips entries whose elf has no DT_SONAME
+    `ObjectFinder.io` — `findSome?` skips entries whose elf has no DT_SONAME
     (treats them as "not found"; production throws). Closure captures
     both the store and a simulated `LD_LIBRARY_PATH`. -/
 private def exampleFinder (store : ExampleStore) (envPath : Option String := none) :
-    DependencyFinder (Except String) :=
-  { find := fun work => .ok <|
+    ObjectFinder (Except String) :=
+  { findMain := fun mainPath =>
+      match store.getElf? mainPath with
+      | some mainElf => .ok (LoadedObject.ofMain mainPath (default : Runtime.File) mainElf)
+      | none => .error s!"discoverExample: main {mainPath} not in store"
+    findDependency := fun work => .ok <|
       (exampleSearchCandidates work.needed work.runpath envPath).findSome? fun path =>
         (store.getElf? path).bind fun elf =>
           elf.soname.map fun name => { name, handle := (default : Runtime.File), elf }
@@ -141,16 +143,13 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
 -- envPath, and runs the DFS to completion in `Except String`.
 -- ============================================================================
 
-/-- Run the DFS to completion against an `ExampleStore`. The main object
-    is looked up directly by path (no soname search for it — same as
-    production `discover`). Main's canonical name is `basename
+/-- Run the fully monadic Discover entry against an `ExampleStore`. The main
+    object is looked up directly by path (no soname search for it — same as
+    production `ObjectFinder.io.findMain`). Main's canonical name is `basename
     mainPath` (via `LoadedObject.ofMain`, same as production). -/
 private def discoverExample (store : ExampleStore) (mainPath : String)
     (envPath : Option String := none) : Except String LoadGraph := do
-  let some mainElf := store.getElf? mainPath
-    | .error s!"discoverExample: main {mainPath} not in store"
-  discoverWith (exampleFinder store envPath) 64
-    (LoadedObject.ofMain mainPath (default : Runtime.File) mainElf)
+  discover (exampleFinder store envPath) 64 mainPath
 
 -- ============================================================================
 -- Behavior examples via `#guard`. Each scenario builds a small store, runs
@@ -214,9 +213,14 @@ private def diamondGraph : Except String LoadGraph := discoverExample diamondSto
   | .ok g => g.deps = #[#[1, 3], #[2], #[], #[2]]
   | _     => false
 
+-- DFS post-order init sequence: d before b/c, b/c before main.
+#guard match diamondGraph with
+  | .ok g => g.initOrder.map (fun ix => ix.val) = #[2, 1, 3, 0]
+  | _     => false
+
 -- ---- 3. Cycle -----------------------------------------------------------
--- /main → /b → /main. The dedup check via `findLoadedIdx` short-circuits
--- the second visit through the `.skip` branch — terminates cleanly.
+-- /main → /b → /main. The active-stack dedup check detects the back edge and
+-- rejects the graph because cyclic init order is undefined by gabi 08.
 
 private def cycleStore : ExampleStore := [
   ("/main", mockElf (soname := some "main") (needed := #["/b"])),
@@ -224,15 +228,7 @@ private def cycleStore : ExampleStore := [
 
 private def cycleGraph : Except String LoadGraph := discoverExample cycleStore "/main"
 
-#guard match cycleGraph with
-  | .ok g => g.objects.size = 2
-  | _     => false
-
--- main depends on b; b depends back on main (the .skip branch records
--- this edge without re-loading main).
-#guard match cycleGraph with
-  | .ok g => g.deps = #[#[1], #[0]]
-  | _     => false
+#guard cycleGraph.isOk = false
 
 -- ---- 4. SONAME-based dedup ---------------------------------------------
 -- main NEEDs both `/libfoo.so` and `/libfoo.so.1` — two different files
@@ -263,8 +259,8 @@ private def sonameGraph : Except String LoadGraph := discoverExample sonameStore
   | _     => false
 
 -- ---- 5. Missing dep -----------------------------------------------------
--- main NEEDs /missing which isn't in the store → `DependencyFinder.find` returns
--- none → traversal fires `finder.fail` → `.error` propagates out.
+-- main NEEDs /missing which isn't in the store → `ObjectFinder.findDependency`
+-- returns none → traversal fires `finder.fail` → `.error` propagates out.
 
 private def missingStore : ExampleStore := [
   ("/main", mockElf (soname := some "main") (needed := #["/missing"]))]
@@ -291,7 +287,7 @@ private def searchStore : ExampleStore := [
   | _     => false
 
 -- ---- 7. SONAME-required for NEEDED deps --------------------------------
--- A NEEDED dep without DT_SONAME is rejected: production DependencyFinder.io
+-- A NEEDED dep without DT_SONAME is rejected: production ObjectFinder.io
 -- throws; `exampleFinder` (matching policy) makes the entry invisible to
 -- the store lookup (findSome? skips SONAME-less elves), surfacing as
 -- the same "cannot find" diagnostic.

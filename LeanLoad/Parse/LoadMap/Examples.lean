@@ -56,7 +56,7 @@ private def mappedOff? (va : Eaddr) : Option FileOff :=
   match programHeaderLoadMap? with
   | .ok map =>
       let range : EaddrRange := { start := va, size := 1 }
-      match LoadMap.mapRange map 0x4000 range with
+      match LoadMap.mapRange map range with
       | .ok mapped => some mapped.fileOff
       | .error _   => none
   | .error _ => none

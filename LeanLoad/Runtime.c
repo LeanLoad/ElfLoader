@@ -1,5 +1,5 @@
 /* LeanLoad runtime shims — single trust seam between Lean and the
- * kernel. Counterpart to `LeanLoad/Runtime.lean`.
+ * kernel. Counterpart to `LeanLoad/Runtime/IO.lean`.
  *
  * Two topic groups:
  *   1. IO ops — file ops + memory ops. Lean's `Runtime.File` carries a

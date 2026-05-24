@@ -4,11 +4,10 @@ A verified ELF loader in Lean 4 for PIE Linux ELF binaries
 (static-PIE + dynamically-linked), targeting AArch64 + x86-64 with
 musl libc.
 
-Architecture: a **pure verified middle** — `Parse` → `Discover` →
-`Reloc` → `Layout` → `Exec` — bracketed by two **trusted IO
-bookends**: `Discover.discover` (file reads) at the front and
-`LoadOps.run` + `execAndJump` (mmap + writes + control transfer)
-at the back.
+Architecture: an **invariant-carrying Lean middle** — `Parse` → `Discover` →
+`Reloc` → `Layout` → `Finalize` — with trusted IO instantiations at the edges:
+`ObjectFinder.io` (open/path-search/read) at the front and `Runtime.Run` +
+`execAndJump` (mmap + writes + control transfer) at the back.
 
 https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c32116342/run.log#L1-L319
 
@@ -29,8 +28,8 @@ and example files (`Discover/Examples.lean`, `Examples.lean`, …) and elaborate
 The byte-level trust surface is [`LeanLoad/Parse/`](LeanLoad/Parse/)
 (gABI / psABI C-struct transcriptions and typed views with
 gABI-mandated invariants carried as `Segment` fields). The IO trust
-seam is `LoadOps.run` in [`LeanLoad/Exec/LoadOps.lean`](LeanLoad/Exec/LoadOps.lean):
-it only accepts an intrinsic-safe `LoadOps` tree, where `SegmentOps`,
+seam is [`LeanLoad/Runtime/Run.lean`](LeanLoad/Runtime/Run.lean):
+it only interprets an intrinsic-safe `LoadOps` tree, where `SegmentOps`,
 `ElfOps`, and `LoadOps` fields discharge in-bounds and pairwise-disjoint
 without ever materialising a flat predicate array.
 
@@ -61,7 +60,7 @@ edge cases instead of papering over them), it's called out below.
   ld.so still honours both with quirky precedence rules; we just
   refuse RPATH outright.
 
-**Layout & process startup** (`Parse/`, `Layout/`, `Exec/`, `Main.lean`)
+**Layout & process startup** (`Parse/`, `Layout/`, `Finalize/`, `Main.lean`)
 
 - **PT_LOAD segments pairwise disjoint.** gABI only mandates sorted
   `p_vaddr` order; non-overlap is de facto. We carry it as a
@@ -84,7 +83,7 @@ edge cases instead of papering over them), it's called out below.
   process exit; the loaded program inherits the fd table. Simplifies
   handle ownership; we never need to track refcounts.
 
-**Init / fini** (`Exec/Build.lean`)
+**Init / fini** (`Finalize/Build.lean`)
 
 - **Init order = DFS post-order over the dep DAG; fini = its
   reverse.** gABI 08 mandates a *partial* order ("deps before
@@ -93,7 +92,7 @@ edge cases instead of papering over them), it's called out below.
 - **Zero entries in `DT_INIT_ARRAY` / `DT_FINI_ARRAY` skipped as
   no-ops.** gABI leaves them unspecified; glibc / musl skip them.
 
-**Relocations** (`Parse/Dynamic/Reloc/`, `Reloc/`, `Exec/Reloc.lean`)
+**Relocations** (`Parse/Dynamic/Reloc/`, `Reloc/`, `Finalize/Reloc.lean`)
 
 - **RELA only, not REL.** Toolchains emit RELA for x86_64 + AArch64;
   REL is legacy.
@@ -269,26 +268,25 @@ never describes.
 LeanLoad.lean              package root (re-exports)
 Main.lean                  CLI executable entry — Lake-blessed top-level
 LeanLoad/
-  Parse.lean               public parse entry: checked `Elf`, `parseM`, `parse`
+  Parse.lean               public parse entry: checked `Elf`, `parseM`
   Parse/
     Decode/                byte decoder primitives + `Decodable` deriving support
     Address.lean           parse-stage address / offset / byte-size wrappers
-    Reader.lean            parse-time file reader + exact-range decode boundary
+    CallTargets.lean       checked e_entry + init/fini callable targets
     LoadMap/               checked header / PT_LOAD map used before dynamic reads
-    Dynamic/               .dynamic table, strtab/symtab, relocation, init/fini staging
+    Dynamic/               .dynamic table, strtab/symtab, relocation staging
     Examples.lean          checked parse fixture and cross-section #guards
   Discover.lean            public Discover interface: LoadedObject, LoadGraph,
-                           WorkItem, ResolvedObject, DependencyFinder
+                           WorkItem, ResolvedObject, monadic ObjectFinder
   Discover/
     Graph.lean             recordEdge / findLoadedIdx construction helpers
-    State.lean             State carrier + smart constructors (initial/pushObject/
+    Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
                            recordDep/markComplete) + characterisation theorems
-    DFS.lean               WorkResult / WorkListAcc + mutual `discoverWork` /
+    Traversal.lean         WorkResult / WorkListAcc + mutual `discoverWork` /
                            `discoverWorkList`
-    Build.lean             `discoverWith` top-level (promotes final state to LoadGraph)
-    Runtime.lean           DependencyFinder.io (Runtime.openByName → parseFromHandle) +
-                           `discover` (production entry; opens main, drives discovery)
-    Examples.lean          private in-memory DependencyFinder + #guard scenarios
+    Finalize.lean          monadic `discover` top-level (promotes final state to LoadGraph)
+    IO.lean                ObjectFinder.io (Runtime.FileOps.io → Parse.parseM)
+    Examples.lean          private in-memory ObjectFinder + #guard scenarios
                            (linear/diamond/cycle/SONAME/search-order)
   Reloc.lean               base-free relocation planning over the discovered graph
   Reloc/
@@ -298,16 +296,20 @@ LeanLoad/
     Align.lean             alignment / page-math helpers over UInt64
     Segment.lean           per-segment layout (file + bss + mprotect shape)
     Basic.lean             per-object layout tree + totalSpan
-  Exec.lean                public Exec interface: BoundPlan and intrinsic-safe LoadOps tree
-  Exec/                    base-aware stage — turn Reloc + Layout into witnessed ops
+  Finalize.lean            public Finalize interface: BoundPlan and intrinsic-safe LoadOps tree
+  Finalize/                    base-aware stage — turn Reloc + Layout into witnessed ops
     BoundPlan.lean         BoundPlan accessors and reservation-bound proofs
     Reloc.lean             relocation baking — apply ABI formulas at the bound base
-    LoadOps.lean           setupSegment, op lemmas, and `LoadOps.run` IO trust seam
+    LoadOps.lean           setupSegment, op lemmas, and diagnostic op collectors
     Build.lean             builder: `BoundPlan` → intrinsic-safe `LoadOps` tree;
                            DFS post-order ctor / fini address lists
-  Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
-                           mmapAnonAlloc, mprotect, write, zeroout, mmapStack,
-                           callCtor, execAndJump
+  Runtime.lean             public Runtime facade
+  Runtime/
+    Basic.lean             runtime-facing data types: File, Reserve, op records
+    FileOps.lean           object search/open, file size, and pread capability
+    MemoryOps.lean         reserve, mmapFile, zero, store, and mprotect capability
+    ExecOps.lean           constructor calls and final jump capability
+    Run.lean               capability-polymorphic interpreter for finalized LoadOps
   Runtime.c                C shims behind the @[extern] declarations
   Examples.lean            cross-stage `#guard` walkthrough (synthetic fixtures)
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)

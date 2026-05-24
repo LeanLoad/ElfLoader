@@ -1,37 +1,38 @@
 /-
 Discover finalization — seed DFS from main and build `LoadGraph`.
 
-`DFS.lean` owns the mutual DFS over explicit `WorkItem`s and
+`Traversal.lean` owns the mutual DFS over explicit `WorkItem`s and
 threads state-evolution invariants through recursive discovery. This file
 consumes that final `WorkListAcc`, marks the main object complete, and
-promotes the final `State` to the public `LoadGraph` by proving:
+promotes the final `Discovered` to the public `LoadGraph` by proving:
 
   · `closure` — every `deps[i]` row has one edge per `DT_NEEDED`.
   · `initOrderSize` — the DFS post-order covers every object.
   · `initOrderNodup` — post-order contains no duplicate indices.
 -/
 
-import LeanLoad.Discover.DFS
+import LeanLoad.Discover.Traversal
 
 namespace LeanLoad.Discover
 
 open LeanLoad
 
 -- ============================================================================
--- discoverWith — top-level finalizer. Seed with main, recurse into main's
+-- discoverFrom / discover — monadic top-level finalizers. Seed with main, recurse into main's
 -- work-item list via `discoverWorkList` with `newIdx = 0` (each iteration records
 -- an edge 0 → childIdx into main's row), then promote the final
--- `State` to a `LoadGraph` by discharging the closure invariant
+-- `Discovered` to a `LoadGraph` by discharging the closure invariant
 -- pointwise from `rowSum` + `pending = 0` everywhere.
 -- ============================================================================
 
-/-- Drive the DFS to completion against `finder`, then construct the
+/-- Drive the DFS to completion against `finder`, starting from an already-loaded
+    main object, then construct the
     `LoadGraph` output. The fuel cap is a Lean-termination concession
     (each new push strictly grows `objects.size`, so a true upper bound
     is "the total number of transitively-needed sonames"). -/
-def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fuel : Nat)
+def discoverFrom {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel : Nat)
     (mainObj : LoadedObject) : m LoadGraph := do
-  let s0 := State.initial mainObj
+  let s0 := Discovered.initial mainObj
   let initialWork := WorkItem.ofNeededArray mainObj.elf.runpath mainObj.elf.needed
   -- Drive DFS over main's NEEDED via `discoverWorkList` with `newIdx = 0`. Each
   -- iteration: discoverWork(work) → (sub, childIdx), then recordDep 0 childIdx.
@@ -47,12 +48,22 @@ def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fu
   have h_zero_not_in : (0 : Nat) ∉ s0.postOrder.toList := by
     show (0 : Nat) ∉ (#[] : Array Nat).toList
     simp
-  let init : WorkListAcc s0 0 initialWork.length :=
+  have h_done_active_s0 : s0.DoneOrActive [0] := by
+    intro i h_i
+    have h_i_zero : i = 0 := by
+      have h_lt : i < (#[mainObj] : Array LoadedObject).size := h_i
+      simp at h_lt
+      omega
+    right
+    simp [h_i_zero]
+  let init : WorkListAcc [0] s0 0 initialWork.length :=
     { state := s0
       sizeMono := Nat.le_refl _
       newIdxLt := s0.sizePos
+      doneOrActive := h_done_active_s0
       pendingNewIdxEq := h_pend_main
       pendingOldPreserved := by intro j h_j _h_ne; rfl
+      depsOldPreserved := by intro j h_j _h_ne; rfl
       newRowsComplete := by
         intro j h_lo _h_ne h_hi
         exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
@@ -62,13 +73,19 @@ def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fu
         intro j h_lo h_hi
         exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
       postOrderRange := by intro x h_mem; left; exact h_mem
-      newIdxNotInPostOrder := h_zero_not_in }
-  let final ← discoverWorkList finder fuel s0 0 initialWork init
+      newIdxNotInPostOrder := h_zero_not_in
+      newIdxDepsDone := by
+        intro t h_t
+        have h_get : s0.deps[0]'(by rw [s0.depsSize]; exact s0.sizePos)
+            = (#[] : Array Nat) := by rfl
+        rw [h_get] at h_t
+        exact absurd h_t (by simp) }
+  let final ← discoverWorkList finder fuel [0] s0 0 initialWork init
   -- After discoverWorkList, append main's idx (0) to postOrder via markComplete.
   -- markComplete needs 0 ∉ final.state.postOrder.toList, which is
   -- final.newIdxNotInPostOrder.
-  let s_final := final.state.markComplete 0 final.newIdxLt
-    final.newIdxNotInPostOrder
+  let s_final := Discovered.markComplete final.state 0 final.newIdxLt
+    final.newIdxNotInPostOrder final.newIdxDepsDone
   -- Promote to LoadGraph by discharging closure + initOrder invariants.
   -- s_final.postOrder has size = s0.postOrder.size + (s_final.size - s0.size).
   -- s0.postOrder.size = 0, s_final.size = final.state.size = objects.size.
@@ -97,6 +114,22 @@ def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fu
     show (s_final.postOrder.attach.map _).size = _
     rw [Array.size_map, Array.size_attach]
     exact h_initSize
+  have h_initOrderVals : initOrderArr.map (fun ix => ix.val) = s_final.postOrder := by
+    simp [initOrderArr, Array.map_map, Function.comp_def]
+  have h_allDone : ∀ i, i < s_final.objects.size → i ∈ s_final.postOrder.toList := by
+    intro i h_i
+    show i ∈ (final.state.postOrder.push 0).toList
+    have h_i_final : i < final.state.objects.size := h_i
+    rcases final.doneOrActive i h_i_final with h_done | h_active
+    · rw [Array.toList_push, List.mem_append]
+      left
+      exact h_done
+    · have h_i_zero : i = 0 := by
+        simpa using h_active
+      subst h_i_zero
+      rw [Array.toList_push, List.mem_append]
+      right
+      simp
   pure {
     objects := s_final.objects
     deps := s_final.deps
@@ -122,6 +155,10 @@ def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fu
       · have h_lo : s0.objects.size ≤ i := by show 1 ≤ i; omega
         exact final.newRowsComplete i h_lo h_eq h
     initOrderSize := h_initOrderArr_size
+    initOrderCovers := by
+      intro i h_i
+      rw [h_initOrderVals]
+      exact h_allDone i h_i
     initOrderNodup := by
       -- s_final.postOrderNodup says s_final.postOrder.toList.Nodup.
       -- attach.map followed by `.val` recovers the original list, so Nodup transfers.
@@ -130,6 +167,23 @@ def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fu
             ).toList.map (·.val)).Nodup
       simp [Array.toList_map, Array.toList_attach]
       exact s_final.postOrderNodup
+    initOrderRespectsDeps := by
+      intro i j h_edge
+      change LoadGraph.PostBefore (initOrderArr.map (fun ix => ix.val)) j i
+      rw [h_initOrderVals]
+      rcases h_edge with ⟨h_i, h_j⟩
+      have h_i_obj : i < s_final.objects.size := by
+        rw [← s_final.depsSize]
+        exact h_i
+      exact s_final.depsPostBefore i h_i j h_j (h_allDone i h_i_obj)
   }
+
+/-- Fully monadic Discover entry point. The finder owns both the effectful
+    `mainPath → LoadedObject` step and dependency lookup; traversal/finalization
+    are shared by production IO and pure examples. -/
+def discover {m : Type → Type} [Monad m] (finder : ObjectFinder m) (fuel : Nat)
+    (mainPath : String) : m LoadGraph := do
+  let mainObj ← finder.findMain mainPath
+  discoverFrom finder fuel mainObj
 
 end LeanLoad.Discover

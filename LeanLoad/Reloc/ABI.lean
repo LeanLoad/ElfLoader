@@ -58,7 +58,7 @@ namespace LeanLoad.Reloc.ABI
 
 /-- Width of a relocation write: ELF dynamic relocations write either
     a 32-bit or a 64-bit value at the target. Encoding the choice as
-    a 2-element type means `Exec.bakeReloc` dispatches
+    a 2-element type means `Finalize.bakeReloc` dispatches
     structurally — no `if size = 8 …` runtime check, no
     width-validity lookup. Converted to `UInt8` (4 or 8) at the
     `StoreOp` boundary. -/

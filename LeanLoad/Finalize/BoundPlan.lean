@@ -3,8 +3,8 @@ Base-aware plan: extends `Reloc.Result` with the layout-stage output and the
 IO-supplied `Reserve` plus coherence proof. Reads as the pure relocation and
 layout facts bound to a concrete reservation — hence "BoundPlan".
 
-`BoundPlan` is the canonical input to `Exec.build` and
-`Exec.ctorAddrs`. The exec-stage safety fields on `LoadOps`
+`BoundPlan` is the canonical input to `Finalize.build` and
+`Finalize.ctorAddrs`. The finalize-stage safety fields on `LoadOps`
 are provable structurally from plan invariants. The bounds chain —
 `pageEaddr + fileOverlayLen ≤ pageEndAddr ≤ advance` (existing
 lemmas in `Layout/Basic.lean`) plus `base + advance ≤ rsv.addr +
@@ -12,11 +12,11 @@ rsv.len` (the workhorse `base_plus_advance_le_rsv_end` below) —
 has every link as a named lemma.
 -/
 
-import LeanLoad.Exec
+import LeanLoad.Finalize
 import LeanLoad.Layout
 import LeanLoad.Reloc
 
-namespace LeanLoad.Exec
+namespace LeanLoad.Finalize
 
 open LeanLoad
 open LeanLoad.Parse (Eaddr)
@@ -102,7 +102,7 @@ theorem baseAt_toNat (bp : BoundPlan) (i : Fin bp.objCount) :
 
 /-- Workhorse: the i-th elf's `[base, base + advance)` fits inside
     `[rsv.addr, rsv.addr + rsv.len)` in `Nat`. Every per-op
-    containment proof in `Exec.LoadOps` chains through this. -/
+    containment proof in `Finalize.LoadOps` chains through this. -/
 theorem base_plus_advance_le_rsv_end (bp : BoundPlan) (i : Fin bp.objCount) :
     (bp.baseAt i).toNat + (bp.elfAt i).advance.toNat ≤
     bp.rsv.addr.toNat + bp.rsv.len.toNat := by
@@ -162,7 +162,7 @@ def mainBase (bp : BoundPlan) : UInt64 :=
 -- ============================================================================
 -- Per-segment op bounds. Each of these turns a `(bp, i, j)` index
 -- into a `Range.InRange` fact about the op `setupSegment` or `bakeReloc`
--- emits at that position. Consumed by `Exec.Build` to assemble `SegmentOps`
+-- emits at that position. Consumed by `Finalize.Build` to assemble `SegmentOps`
 -- proof fields in lock-step with the emitted operations.
 -- ============================================================================
 
@@ -382,4 +382,4 @@ theorem segment_storeRange_in_rsv (bp : BoundPlan) (i : Fin bp.objCount)
 
 end BoundPlan
 
-end LeanLoad.Exec
+end LeanLoad.Finalize

@@ -24,7 +24,7 @@ emit overlapping page ranges) but possible in principle.
 Once a `Layout` exists, `assignBases base lp` is total: it stacks
 each elf by `alignUp objectSpan 0x1000` from the IO-supplied base.
 The closed-form bound `assignBases_at_toNat` feeds
-`Exec.BoundPlan.bases_at_toNat`.
+`Finalize.BoundPlan.bases_at_toNat`.
 
 Spec: gabi 07 § Program Header (page-aligned mmap views, base
 assignment, span over loadable segments).
@@ -111,13 +111,13 @@ structure ElfLayout (objCount : Nat) where
       reserves exactly `advance` bytes per elf via `assignBases`. -/
   advance        : UInt64
   /-- Same length as the underlying elf's PT_LOAD array. Discharged at
-      `ofElf` from `Array.size_map`; lets consumers (`Exec`)
+      `ofElf` from `Array.size_map`; lets consumers (`Finalize`)
       re-index between the two arrays without recomputing. -/
   segmentsSizeEq : segments.size = elf.segments.items.size
   /-- Pointwise: each `SegmentLayout`'s underlying gabi segment is the
       corresponding entry in `elf.segments.items`. Discharged at `ofElf` from
       `Array.getElem_map` + `SegmentLayout.ofSegmentCore_segment`.
-      Lets `Exec` propagate init/fini entry witnesses across the
+      Lets `Finalize` propagate init/fini entry witnesses across the
       `Layout` ↔ checked-parse view boundary. -/
   segmentsSegmentEq : ∀ (k : Nat) (h : k < segments.size),
     (segments[k]'h).segment =
@@ -264,7 +264,7 @@ theorem cumOffset_mono (elfs : Array (ElfLayout m)) {a b : Nat} (h : a ≤ b) :
 -- ============================================================================
 
 /-- Top-level base-free plan. `totalSpan` is the `len` to pass to
-    `Reserve.run` at the IO boundary; `totalSpan_eq` says it equals
+    `Runtime.MemoryOps.reserve` at the IO boundary; `totalSpan_eq` says it equals
     the `cumOffset` Nat sum (no UInt64 wrap during construction).
     `elfs` is a length-indexed `Vector` so `lp.elfs[i]` is total for
     any `i : Fin objCount` — no separate `elfs_size` rewrite needed

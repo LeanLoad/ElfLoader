@@ -34,8 +34,7 @@ structure Entry where
   d_un  : UInt64
   deriving Repr, Inhabited, Decodable
 
-/-- Size of one `Elf64_Dyn` on disk: 8+8 = 16. -/
-def EntrySize : Nat := 16
+#guard Decodable.byteSize (α := Entry) = 16  -- gabi 08 § Dynamic Section: `Elf64_Dyn`
 
 end Dyntab
 
@@ -64,12 +63,13 @@ private def collect (fuel : Nat) (acc : Dyntab) : Decoder Dyntab := do
     program header. -/
 def decode (bytes : ByteSize) : Decoder Dyntab := do
   let n := bytes.toNat
+  let entrySize := Decodable.byteSize (α := Entry)
   if n == 0 then
     throw "dynamic table has zero byte size; expected at least one DT_NULL entry"
-  else if n % EntrySize != 0 then
-    throw s!"dynamic table byte size {n} is not a multiple of {EntrySize}"
+  else if n % entrySize != 0 then
+    throw s!"dynamic table byte size {n} is not a multiple of {entrySize}"
   else
-    let entries := n / EntrySize
+    let entries := n / entrySize
     collect entries (Array.mkEmpty entries)
 
 /-- All entries matching a tag (e.g. all `DT_NEEDED`). -/
@@ -134,7 +134,7 @@ def soname? (tab : Dyntab) : Except String (Option StrtabOff) :=
   (single? tab .soname).map (·.map StrtabOff.mk)
 
 /-- `DT_RUNPATH` strtab byte-offset, if present. `DT_RPATH` is intentionally not
-    consulted (deprecated by gabi 08; `Discover/Runtime.lean` refuses it too). -/
+    consulted (deprecated by gabi 08; `Discover/IO.lean` refuses it too). -/
 def runpath? (tab : Dyntab) : Except String (Option StrtabOff) :=
   (single? tab .runpath).map (·.map StrtabOff.mk)
 
@@ -147,7 +147,7 @@ def strtab? (tab : Dyntab) : Except String (Option EaddrRange) :=
 def symtab? (tab : Dyntab) : Except String (Option Eaddr) := do
   let symtabRaw ← single? tab .symtab
   let symentRaw ← single? tab .syment
-  requireEntrySize .symtab .syment RawSymSize symtabRaw.isSome symentRaw
+  requireEntrySize .symtab .syment (Decodable.byteSize (α := RawSym)) symtabRaw.isSome symentRaw
   return symtabRaw.map Eaddr.mk
 
 /-- `DT_HASH` ELF address, when present. Its `nchain` field gives the dynamic
@@ -159,7 +159,7 @@ def hash? (tab : Dyntab) : Except String (Option Eaddr) :=
 def rela? (tab : Dyntab) : Except String (Option EaddrRange) := do
   let loc ← rawRange? tab .rela .relasz
   let relaentRaw ← single? tab .relaent
-  requireEntrySize .rela .relaent RawRelaSize loc.isSome relaentRaw
+  requireEntrySize .rela .relaent (Decodable.byteSize (α := RawRela)) loc.isSome relaentRaw
   return loc
 
 /-- `DT_JMPREL/DT_PLTRELSZ` ELF-address range, when present. -/

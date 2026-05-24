@@ -24,14 +24,13 @@ structure RawRela where
   r_addend : UInt64
   deriving Repr, Inhabited, Decodable
 
-/-- Size of one `Elf64_Rela` on disk: 8+8+8 = 24. -/
-def RawRelaSize : Nat := 24
+#guard Decodable.byteSize (α := RawRela) = 24  -- gabi 06 § Relocation: `Elf64_Rela`
 
 namespace RawRela
 
 /-- Byte extent for `count` `Elf64_Rela` entries. -/
 def tableByteSize (count : Nat) : ByteSize :=
-  ByteSize.ofEntries count RawRelaSize
+  ByteSize.ofEntries count (Decodable.byteSize (α := RawRela))
 
 /-- Decode `count` consecutive `Elf64_Rela` entries. -/
 def decodeTable (count : Nat) : Decoder (Array RawRela) :=
@@ -40,11 +39,12 @@ def decodeTable (count : Nat) : Decoder (Array RawRela) :=
 /-- Convert a `DT_RELASZ`/`DT_PLTRELSZ` byte size into an entry count,
     rejecting sizes that are not a whole number of `Elf64_Rela` entries. -/
 def countFromByteSize (size : ByteSize) : Except String Nat :=
+  let entrySize := Decodable.byteSize (α := RawRela)
   let bytes := size.toNat
-  if bytes % RawRelaSize == 0 then
-    .ok (bytes / RawRelaSize)
+  if bytes % entrySize == 0 then
+    .ok (bytes / entrySize)
   else
-    .error s!"rela table byte size {bytes} is not a multiple of {RawRelaSize}"
+    .error s!"rela table byte size {bytes} is not a multiple of {entrySize}"
 
 end RawRela
 
@@ -61,7 +61,7 @@ def RawRela.fixtureBytes : ByteArray := ⟨#[
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00    -- r_addend = 0
 ]⟩
 
-#guard RawRela.fixtureBytes.size == RawRelaSize  -- = 24
+#guard RawRela.fixtureBytes.size == Decodable.byteSize (α := RawRela)  -- = 24
 
 section Example
 
@@ -76,8 +76,7 @@ private def parsedRelas : Option (Array RawRela) :=
 #guard (parsedRelas.bind (·[0]?)).map (·.r_addend) = some 0
 
 -- ── Error cases ──────────────────────────────────────────────────────
--- Truncated rela: 15 bytes when 24 (RawRelaSize) expected — EOF inside
--- the `r_info` u64 read.
+-- Truncated rela: 15 bytes when 24 expected — EOF inside the `r_info` u64 read.
 #guard
   (Decoder.run? (fixtureBytes.extract 0 15) (Decodable.decoder (α := RawRela))).isNone
 

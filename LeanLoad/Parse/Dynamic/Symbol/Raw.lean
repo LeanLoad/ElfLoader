@@ -21,8 +21,7 @@ structure RawSym where
   st_size  : UInt64
   deriving Repr, Inhabited, Decodable
 
-/-- Size of one `Elf64_Sym` on disk: 4+1+1+2+8+8 = 24. -/
-def RawSymSize : Nat := 24
+#guard Decodable.byteSize (α := RawSym) = 24  -- gabi 05 § Symbol Table: `Elf64_Sym`
 
 /-- Dynamic symbol table — the on-disk array of `RawSym` entries
     pointed at by `DT_SYMTAB`. Count comes from `DT_HASH.nchain`. -/
@@ -32,7 +31,7 @@ namespace RawSymtab
 
 /-- Byte extent for `count` `Elf64_Sym` entries. -/
 def tableByteSize (count : Nat) : ByteSize :=
-  ByteSize.ofEntries count RawSymSize
+  ByteSize.ofEntries count (Decodable.byteSize (α := RawSym))
 
 /-- Decode `count` consecutive dynamic-symbol entries. -/
 def decode (count : Nat) : Decoder RawSymtab :=
@@ -64,7 +63,7 @@ def RawSym.fixtureBytes : ByteArray := ⟨#[
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00    -- st_size  = 0
 ]⟩
 
-#guard RawSym.fixtureBytes.size == 2 * RawSymSize  -- = 48
+#guard RawSym.fixtureBytes.size == 2 * Decodable.byteSize (α := RawSym)  -- = 48
 
 section Example
 
@@ -84,8 +83,7 @@ private def parsedSymtab : Option (Array RawSym) :=
 #guard (parsedSymtab.bind (·[1]?)).map (·.st_shndx) = some 0  -- SHN_UNDEF
 
 -- ── Error cases ──────────────────────────────────────────────────────
--- Truncated sym: 10 bytes when 24 (RawSymSize) expected — EOF inside
--- the `st_value` u64 read.
+-- Truncated sym: 10 bytes when 24 expected — EOF inside the `st_value` u64 read.
 #guard
   (Decoder.run? (fixtureBytes.extract 0 10) (Decodable.decoder (α := RawSym))).isNone
 

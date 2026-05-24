@@ -3,11 +3,11 @@ Pure address-range predicates.
 
 These predicates describe half-open UInt64 address intervals after lifting
 endpoints to `Nat`, so containment/disjointness proofs do not depend on
-UInt64 wraparound semantics. They are used by the exec-stage safety witness;
-the runtime/FFI layer only consumes already-witnessed load ops.
+UInt64 wraparound semantics. They are used by the finalize-stage safety witness;
+the Runtime stage only consumes already-witnessed load ops.
 -/
 
-namespace LeanLoad.Exec.Range
+namespace LeanLoad.Finalize.Range
 
 /-- Two address ranges do not overlap. -/
 def Disjoint (a₁ l₁ a₂ l₂ : UInt64) : Prop :=
@@ -26,4 +26,4 @@ instance (innerA innerL outerA outerL : UInt64) :
     Decidable (InRange innerA innerL outerA outerL) :=
   inferInstanceAs (Decidable (_ ∧ _))
 
-end LeanLoad.Exec.Range
+end LeanLoad.Finalize.Range

@@ -28,7 +28,7 @@ instance : Repr Strtab where
 namespace Strtab
 
 /-- Empty string table when `DT_STRTAB`/`DT_STRSZ` is absent. Any nonzero
-    string reference will fail later through `StrtabEntry.ofOff`. -/
+    string reference will fail later through `Strtab.entry`. -/
 def empty : Strtab := ByteArray.mk #[]
 
 /-- Decode a string table: preserve bytes exactly. gabi 04 string tables have
@@ -59,16 +59,28 @@ structure StrtabEntry (tab : Strtab) where
   value     : String
   lookup_eq : Strtab.lookup tab off = some value
 
-namespace StrtabEntry
-
 /-- Resolve an offset into a witnessed string-table entry. -/
-def ofOff (tab : Strtab) (off : StrtabOff) : Except String (StrtabEntry tab) :=
+def Strtab.entry (tab : Strtab) (off : StrtabOff) : Except String (StrtabEntry tab) :=
   match h : Strtab.lookup tab off with
   | some value => .ok { off, value, lookup_eq := h }
   | none       =>
       .error s!"invalid strtab offset 0x{off.toNat} (strtab size {tab.size})"
 
-end StrtabEntry
+/-- Resolve an offset to its string value, preserving dynamic-tag context in
+    diagnostics. -/
+def Strtab.resolve (tab : Strtab) (label : String) (off : StrtabOff) : Except String String :=
+  match tab.entry off with
+  | .ok entry => .ok entry.value
+  | .error e  => .error s!"parse: {label}: {e}"
+
+/-- Resolve an optional dynamic string-table offset. Missing tags stay missing;
+    present malformed offsets are reported with the tag label. -/
+def Strtab.resolve? (tab : Strtab) (label : String) :
+    Option StrtabOff → Except String (Option String)
+  | none     => .ok none
+  | some off => do
+      let s ← tab.resolve label off
+      pure (some s)
 
 /-- 32-byte string-table fixture holding four NUL-terminated names.
     Coordinated with the consolidated `Parse.Examples.fixtureBytes`: the
@@ -109,9 +121,19 @@ open Strtab
 #guard lookup fixtureBytes (0x1b : StrtabOff) = some "lib"
 
 #guard
-  match StrtabEntry.ofOff fixtureBytes (0x0b : StrtabOff) with
+  match fixtureBytes.entry (0x0b : StrtabOff) with
   | .ok e    => e.value == "printf"
   | .error _ => false
+
+#guard
+  match fixtureBytes.resolve "DT_NEEDED" (0x01 : StrtabOff) with
+  | .ok s    => s == "libc.so.6"
+  | .error _ => false
+
+#guard
+  match fixtureBytes.resolve? "DT_SONAME" (some (0x12 : StrtabOff)) with
+  | .ok (some s) => s == "mylib.so"
+  | _            => false
 
 -- Mid-string offsets: gabi allows them (the trailing suffix is a valid
 -- entry too — the NUL ends *any* lookup starting before it).
@@ -122,7 +144,7 @@ open Strtab
 #guard lookup fixtureBytes (99 : StrtabOff) = none   -- way past
 
 #guard
-  match StrtabEntry.ofOff fixtureBytes (32 : StrtabOff) with
+  match fixtureBytes.entry (32 : StrtabOff) with
   | .ok _    => false
   | .error _ => true
 

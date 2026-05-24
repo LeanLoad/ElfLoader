@@ -1,22 +1,24 @@
 # LeanLoad Design
 
-Verified ELF loader in Lean 4. Verified core is pure Lean; the
-syscall layer sits behind one `@[extern]` module
-(`LeanLoad/Runtime.lean`) plus C shims under `runtime/`.
+Verified ELF loader in Lean 4. The invariant-carrying core is Lean; syscall
+effects sit behind `LeanLoad/Runtime/{FileOps,MemoryOps,ExecOps}.lean` plus C
+shims in `LeanLoad/Runtime.c`.
 
 See `AGENTS.md` for working-style guidance.
 
 ## Pipeline
 
-| Stage           | Type | Input → Output                                                                       |
-| --------------- | ---- | ------------------------------------------------------------------------------------ |
-| **Parse**       | IO   | `FileReader → ExceptT String m Elf` — bytes plus gabi-07 invariants on `Segment` / `Elf` |
-| **Discover**    | IO   | `path → LoadGraph` — DFS over `DT_NEEDED`; deps + init order recorded inline          |
-| **Reloc**       | pure | `LoadGraph → Reloc.Result` — relocation-driven symbol resolution                       |
-| **Layout**      | pure | `Reloc.Result → Layout` — per-elf placement + cumulative span                         |
-| **Exec**        | pure | `BoundPlan → LoadOps rsv.addr rsv.len n` — intrinsic-safe ops                         |
-| **Runtime**     | IO   | intrinsic-safe `LoadOps → IO Unit` — mmap + zeroout + mprotect + reloc + ctor + jump; no return |
+| Stage           | Type     | Input → Output                                                                       |
+| --------------- | -------- | ------------------------------------------------------------------------------------ |
+| **Parse**       | monadic  | `Runtime.FileOps m h → h → ExceptT String m Elf` — bytes plus gabi-07 invariants on `Segment` / `Elf` |
+| **Discover**    | monadic  | `ObjectFinder m → Nat → String → m LoadGraph` — DFS over `DT_NEEDED`; deps + init order recorded inline |
+| **Reloc**       | pure     | `LoadGraph → Reloc.Result` — relocation-driven symbol resolution                       |
+| **Layout**      | pure     | `Reloc.Result → Layout` — per-elf placement + cumulative span                         |
+| **Finalize**    | pure     | `BoundPlan → LoadOps rsv.addr rsv.len n` — intrinsic-safe ops                         |
+| **Runtime**     | IO       | intrinsic-safe `LoadOps → IO Unit` — mmap + zero + reloc stores + mprotect + ctor + jump; no return |
 
+Production passes `ObjectFinder.io` to the monadic `Discover.discover`: open/parse
+the main object and use the same finder for path search + dependency parsing.
 Reloc runs relocation-driven BFS lookup (strong referenced undef rejected), then
 Layout computes per-segment, per-elf, and cumulative placement. Init order is
 computed during Discover's DFS and lives on `LoadGraph.initOrder`.
@@ -27,27 +29,31 @@ Each stage adds either data or a Prop witness; no downstream stage
 re-checks.
 
 - **Parse**: per-`Segment` gabi-07 invariants + per-`Elf` (sorted,
-  non-overlap, phdr-covered, ctors-in-exec-seg).
+  non-overlap, phdr-covered, callable-targets-in-exec-seg).
 - **Discover**: `LoadGraph` carries `sizePos`, `namesNodup`,
-  `depsSize`, `depsBounds`, `closure`.
+  `depsSize`, `depsBounds`, `closure`, `initOrderSize`, `initOrderCovers`,
+  and `initOrderNodup`; `LoadGraph.InitOrderRespectsDeps` witnesses every
+  recorded `DT_NEEDED` edge as dependency-before-dependent in `g.initOrder`.
+  Cycles are rejected during discovery because gabi 08 leaves cyclic init
+  ordering undefined.
 - **Reloc**: relocation-driven symbol resolution; discharges referenced
   unresolved strong symbols.
 - **Layout**: per-`SegmentLayout` page-math invariants; `ElfLayout`
   segment-sorting + advance; `Layout` cumulative span.
-- **Exec**: intrinsic-safe `LoadOps` — every op in-range, mmaps pairwise
+- **Finalize**: intrinsic-safe `LoadOps` — every op in-range, mmaps pairwise
   disjoint.
-- **Runtime**: FFI dispatch on the intrinsic-safe tree; no further
-  checks.
+- **Runtime**: capability dispatch on the intrinsic-safe tree; no further
+  pure-stage checks.
 
 ## Trust boundary
 
-- **Verified** (pure Lean, no IO, no `@[extern]`): `Parse/`,
-  `Reloc/`, `Layout/`, `Exec/` (excluding the IO interpreter
-  at the bottom of `Exec/LoadOps.lean`).
-- **Trusted**: `runtime/*.c` (~150 lines of audited C shims),
-  `LeanLoad/Runtime.lean` (FFI declarations + `run` methods +
-  `Reserve.run`), and the IO bookends (`Discover/Runtime.lean`,
-  `Main.lean`, `LoadOps.run`).
+- **Verified** (Lean, no direct `@[extern]`): `Parse/`, `Discover/`
+  (excluding `Discover/IO.lean`), `Reloc/`, `Layout/`, `Finalize/`
+  and `Runtime/Basic.lean`.
+- **Trusted**: `LeanLoad/Runtime.c` (~150 lines of audited C shims),
+  `LeanLoad/Runtime/{FileOps,MemoryOps,ExecOps}.lean` (FFI declarations +
+  concrete IO capability values), `LeanLoad/Runtime/Run.lean`, and the IO
+  bookends (`Discover/IO.lean`, `Main.lean`).
 
 ## Scope
 
@@ -72,13 +78,14 @@ order, and planned ops.
 ## In-process loading
 
 LeanLoad loads in-process: the binary's segments are `mmap`'d into
-leanload's own address space, and the trampoline (`Runtime.execAndJump`
-→ `runtime/exec.c`) hands off without replacing the process image.
+leanload's own address space, and the trampoline (`Runtime.ExecOps.execAndJump`
+→ `leanload_exec_and_jump` in `LeanLoad/Runtime.c`) hands off without
+replacing the process image.
 The IO load path is conditioned on:
 
 1. **Address-space disjointness** — `mmapAnon`'s reservation doesn't
    intersect existing leanload mappings (kernel anon-mmap guarantees).
-2. **No concurrent address-space mutation** during materialize→exec.
+2. **No concurrent address-space mutation** between reservation and jump.
 3. **No libc locks held across the trampoline.**
 4. **Loaded binary uses `__NR_exit_group`** — thread-scoped `_exit`
    would leave Lean's runtime threads alive.
@@ -95,20 +102,13 @@ forwarded from the host process via `getauxval`; musl's
 
 ## Memory ownership
 
-- **ELF files**: held open as `Runtime.FileHandle` for the loader's
+- **ELF files**: held open as `Runtime.File` for the loader's
   lifetime. Per-section `pread`s — no whole-file `ByteArray`.
-- **Reservation**: one `Reserve.run` per loaded binary returns a
-  kernel-picked anon block of size `lp.totalSpan`. Every per-elf
-  base sits inside it; every safety predicate is bounded by it.
+- **Reservation**: one `Runtime.MemoryOps.reserve` per loaded binary returns a
+  kernel-picked anon block of size `layout.totalSpan`. Every per-elf base sits
+  inside it; every emitted op carries an in-reservation proof.
 - **Loaded image**: file overlays mmap'd on top of the reservation;
   partial-page BSS zeroed in place; `mprotect`'d to final perms.
-
-## Open work
-
-- **Init-order invariants**: `g.initOrder` indices in bounds and
-  duplicate-free.
-- **Init topological order**: `DT_NEEDED` edges respected; cycles
-  undefined per gabi 08.
 
 ## Out of scope
 

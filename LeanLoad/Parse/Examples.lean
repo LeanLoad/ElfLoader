@@ -7,8 +7,8 @@ The fixture here demonstrates cross-section coordination: PT_DYNAMIC's
 symtab's entry count, and so on.
 
 Crucially, `fixture` exercises the same checked `parseM` that
-production uses. Only the `FileReader` instance changes (`pureReader`
-vs `Runtime.fileReader`); section offsets are discovered via
+production uses. Only the `FileOps` instance changes (`Runtime.FileOps.byteArray`
+vs `Runtime.FileOps.io`); section offsets are discovered via
 the checked `LoadMap` over the parsed program headers.
 
 The fixture is also engineered to satisfy checked-parse gabi-07 checks:
@@ -41,7 +41,7 @@ private def hashBytes : ByteArray := ⟨#[
 ]⟩
 
 /-- Init array (8 bytes): one ctor pointer at 0x100 (inside PT_LOAD's
-    executable memsz, so it becomes an `InitFiniEntry`). -/
+    executable memsz, so it becomes a checked `CallTarget`). -/
 private def initArrBytes : ByteArray := ⟨#[
   0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ]⟩
@@ -62,12 +62,12 @@ def fixtureBytes : ByteArray :=
 -- Total size: sum of each section's fixture bytes.
 #guard fixtureBytes.size = 0x208                  -- 520 bytes total
 
-/-- Pure counterpart to `Parse.parse`: built by running the same
-    checked `parseM` over a `pureReader` of `fixtureBytes`. Returns
+/-- Pure counterpart to production parsing: built by running the same
+    checked `parseM` over in-memory `fixtureBytes`. Returns
     `Except String Elf` — the same error channel production surfaces,
     just without IO wrapping. -/
 def fixture : Except String Elf :=
-  (parseM (pureReader fixtureBytes)).run
+  (parseM Runtime.FileOps.byteArray fixtureBytes).run
 
 -- ---- Cross-section coordination `#guard`s ────────────────────────────
 -- Per-struct field decoding is checked standalone in each Raw*.lean.
@@ -84,7 +84,8 @@ def fixture : Except String Elf :=
     && r.runpath == some "lib"                                      -- DT_RUNPATH → strtab[0x1b]
     && r.segments.items.size == 1
     && (if h : 0 < r.segments.items.size then (r.relocs.relaFor ⟨0, h⟩).size == 1 else false)
-    && r.initArr.size == 1
+    && r.callTargets.entry.val == 0x100
+    && r.callTargets.init.size == 1
   | .error _ => false
 
 -- The checked segment view preserves the PT_LOAD identity layout.

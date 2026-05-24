@@ -3,7 +3,7 @@ Graph construction helpers for Discover.
 
 The public graph shape (`LoadedObject`, `LoadGraph`, reachability) lives in
 `LeanLoad/Discover.lean`. This file keeps the lower-level array primitives and
-lookup lemmas used by the internal `State` construction state.
+lookup lemmas used by the internal `Discovered` construction state.
 -/
 
 import LeanLoad.Discover
@@ -13,7 +13,7 @@ namespace LeanLoad.Discover
 open LeanLoad
 
 -- ============================================================================
--- recordEdge — push a target onto deps[src]. Used by `State.recordDep`.
+-- recordEdge — push a target onto deps[src]. Used by `Discovered.recordDep`.
 -- ============================================================================
 
 /-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
@@ -72,7 +72,7 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
 
 -- ============================================================================
 -- findLoadedIdx — name lookup over Array LoadedObject. Free function so
--- both `LoadGraph` (final output) and `State` (State/DFS
+-- both `LoadGraph` (final output) and `Discovered` (Discovered/Traversal
 -- construction state) can use it.
 -- ============================================================================
 
@@ -104,7 +104,7 @@ theorem findLoadedIdx_none_iff (objects : Array LoadedObject) (name : String) :
   simp
 
 /-- Pushing a freshly-resolved object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `State.pushObject`
+    The precondition `findLoadedIdx = none` is what `Discovered.pushObject`
     discharges from `nameIx[obj.name]? = none` via `nameIxValid`. -/
 theorem nodup_names_push_of_findLoadedIdx_none
     {objects : Array LoadedObject} {obj : LoadedObject}

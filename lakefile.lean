@@ -4,8 +4,8 @@ open Lake DSL System
 package leanload
 
 -- ============================================================================
--- Native runtime (FFI shim — `LeanLoad/Runtime.c`, sibling of
--- `LeanLoad/Runtime.lean`). Single C file → object file → static lib
+-- Native runtime (FFI shim — `LeanLoad/Runtime.c`, counterpart to the runtime
+-- capability modules). Single C file → object file → static lib
 -- linked into the AOT `leanload` binary. No shared library: nothing
 -- in this project calls FFI from the Lean interpreter (`#eval` / LSP),
 -- so the `.so` would be unused.

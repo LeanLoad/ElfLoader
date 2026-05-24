@@ -1,18 +1,18 @@
 /-
-State-set construction carrier.
+Discovered-set construction carrier.
 
-`State` holds everything resolved so far (objects + deps + a
+`Discovered` holds everything resolved so far (objects + deps + a
 name→idx HashMap accelerator) plus the invariants we maintain as
 we traverse pending `WorkItem`s. Its field naming intentionally mirrors
-`LoadGraph` so the final promotion (`Build.discoverWith`'s `LoadGraph`
+`LoadGraph` so the final promotion (`Finalize.discoverFrom`'s `LoadGraph`
 mk) is mostly structural.
 
 Carries the first four `LoadGraph` invariants plus `nameIxValid`
 (the HashMap accelerator's bridge to the spec-level `findLoadedIdx`)
-plus the `rowSum` / `postOrder*` invariants that `DFS` consumes.
+plus the `rowSum` / `postOrder*` invariants that `Traversal` consumes.
 The fifth `LoadGraph` invariant — `closure` — is *not* carried
 here; individual push/recordDep steps break it. `closure` is
-established at the very end of `Build.discoverWith`, when every
+established at the very end of `Finalize.discoverFrom`, when every
 object's `deps` row has been fully populated.
 
 Four smart constructors maintain the invariants:
@@ -23,7 +23,7 @@ Four smart constructors maintain the invariants:
   · `markComplete`  — appends `idx` to `postOrder` (DFS-return time).
 
 Plus characterisation theorems (`*_size`, `*_postOrder`, `*_pending_*`)
-used by `DFS.discoverWork` / `discoverWorkList` to discharge the
+used by `Traversal.discoverWork` / `discoverWorkList` to discharge the
 `WorkResult` / `WorkListAcc` invariants they thread through the recursion.
 -/
 
@@ -35,14 +35,14 @@ namespace LeanLoad.Discover
 open LeanLoad
 
 -- ============================================================================
--- State — all loaded objects and partially recorded dependency edges.
+-- Discovered — all loaded objects and partially recorded dependency edges.
 -- ============================================================================
 
-/-- State-set state. Field naming intentionally mirrors `LoadGraph`
-    so the final promotion (`discoverWith`'s `LoadGraph` mk) is mostly
+/-- Discovered-set state. Field naming intentionally mirrors `LoadGraph`
+    so the final promotion (`discoverFrom`'s `LoadGraph` mk) is mostly
     structural — only `closure` is new (and falls out of `rowSum` once
     every `pending[i]` is `0`). -/
-structure State where
+structure Discovered where
   /-- Loaded objects discovered so far, in DFS pre-order. -/
   objects     : Array LoadedObject
   /-- Per-object dep edges. May be partial during DFS: row `i` is fully
@@ -56,11 +56,11 @@ structure State where
       `deps[i]`. Starts at `obj.elf.needed.size` when an object is
       pushed; decremented by `recordDep`. Tied to `deps[i].size` by
       `rowSum`. When `pending[i] = 0`, the row is complete — which is
-      how `discoverWith` discharges `LoadGraph.closure`. -/
+      how `discoverFrom` discharges `LoadGraph.closure`. -/
   pending     : Array Nat
   /-- DFS post-order: indices in the order each object's `discoverWork` returned
       (i.e. each object's `markComplete`). Built up by `markComplete`.
-      At end of `discoverWith`, this is the full init order — used to
+      At end of `discoverFrom`, this is the full init order — used to
       construct `LoadGraph.initOrder`. -/
   postOrder   : Array Nat
   /-- Non-emptiness — `initial` seeds with main. -/
@@ -90,8 +90,33 @@ structure State where
       `postOrder.size = objects.size` (at end of DFS), this makes
       `postOrder` a permutation of `[0, objects.size)`. -/
   postOrderNodup : postOrder.toList.Nodup
+  /-- Completed rows already respect DFS post-order: every recorded edge out of
+      an object in `postOrder` points to an object that appears earlier in
+      `postOrder`. Rows for active objects may still be partial and are completed
+      just before `markComplete`. -/
+  depsPostBefore : ∀ (i : Nat) (h_i : i < deps.size) (t : Nat),
+    t ∈ deps[i]'h_i → i ∈ postOrder.toList → LoadGraph.PostBefore postOrder t i
 
-namespace State
+namespace Discovered
+
+/-- Active recursion stack of object indices. The head is the current object;
+    ancestors follow. A hit in this stack is a dependency cycle/back-edge; the
+    traversal rejects it because gabi 08 leaves cyclic init ordering undefined. -/
+abbrev ActiveStack := List Nat
+
+/-- Every discovered object is either already complete (`postOrder`) or is on
+    the active recursion stack. This is the key state invariant needed to
+    distinguish completed dedup hits from cycle/back-edge policy failures. -/
+def DoneOrActive (s : Discovered) (active : ActiveStack) : Prop :=
+  ∀ i, i < s.objects.size → i ∈ s.postOrder.toList ∨ i ∈ active
+
+/-- Every recorded edge target is either completed or active, as an immediate
+    consequence of `depsBounds` and `DoneOrActive`. -/
+theorem edgeTarget_done_or_active (s : Discovered) {active : ActiveStack}
+    (h_active : s.DoneOrActive active)
+    (i : Nat) (h_i : i < s.deps.size) (t : Nat) (h_t : t ∈ s.deps[i]) :
+    t ∈ s.postOrder.toList ∨ t ∈ active :=
+  h_active t (s.depsBounds i h_i t h_t)
 
 -- ============================================================================
 -- Smart constructors.
@@ -99,7 +124,7 @@ namespace State
 
 /-- Initial state: main pushed at idx 0 with an empty deps row and
     `pending[0] = mainObj.elf.needed.size`. -/
-def initial (mainObj : LoadedObject) : State :=
+def initial (mainObj : LoadedObject) : Discovered :=
   { objects := #[mainObj]
     deps := #[#[]]
     nameIx := (∅ : Std.HashMap String Nat).insert mainObj.name 0
@@ -138,7 +163,10 @@ def initial (mainObj : LoadedObject) : State :=
       simp
     postOrder := #[]
     postOrderBounds := by intro x h_mem; simp at h_mem
-    postOrderNodup := by simp }
+    postOrderNodup := by simp
+    depsPostBefore := by
+      intro i h_i t h_t h_done
+      simp at h_done }
 
 /-- Push a freshly-resolved object at the next free index. The pushed
     `deps` row starts empty; subsequent `recordDep newIdx _` calls fill
@@ -147,8 +175,8 @@ def initial (mainObj : LoadedObject) : State :=
     caller's `discoverWorkList` over `elf.needed.toList` decrements it. The
     `h_fresh` precondition is the `nameIx[obj.name]? = none` check
     that `discoverWork` has already done. -/
-def pushObject (s : State) (obj : LoadedObject)
-    (h_fresh : s.nameIx[obj.name]? = none) : State :=
+def pushObject (s : Discovered) (obj : LoadedObject)
+    (h_fresh : s.nameIx[obj.name]? = none) : Discovered :=
   have h_find_fresh : findLoadedIdx s.objects obj.name = none :=
     (s.nameIxValid obj.name).symm.trans h_fresh
   { objects := s.objects.push obj
@@ -245,17 +273,34 @@ def pushObject (s : State) (obj : LoadedObject)
       have h_x := s.postOrderBounds x h_mem
       show x < (s.objects.push obj).size
       rw [Array.size_push]; omega
-    postOrderNodup := s.postOrderNodup }
+    postOrderNodup := s.postOrderNodup
+    depsPostBefore := by
+      intro i h_i t h_t h_done
+      by_cases h_old : i < s.deps.size
+      · have h_get : (s.deps.push #[])[i]'h_i = s.deps[i]'h_old := by
+          rw [Array.getElem_push, dif_pos h_old]
+        rw [h_get] at h_t
+        exact s.depsPostBefore i h_old t h_t h_done
+      · have h_i_eq : i = s.deps.size := by
+          have h_lt' : i < (s.deps.push #[]).size := h_i
+          rw [Array.size_push] at h_lt'
+          omega
+        subst h_i_eq
+        have h_get : (s.deps.push #[])[s.deps.size]'h_i = (#[] : Array Nat) := by
+          rw [Array.getElem_push, dif_neg (Nat.lt_irrefl _)]
+        rw [h_get] at h_t
+        exact absurd h_t (by simp) }
 
 /-- Record one dep edge `src → tgt`. Beyond the target bound, the caller
     must also discharge `src < s.objects.size` and `pending[src] > 0`
     so that `recordEdge_row_size` (which adds 1 to `deps[src].size`) and
     the decrement of `pending[src]` keep `rowSum` balanced. -/
-def recordDep (s : State) (src tgt : Nat)
+def recordDep (s : Discovered) (src tgt : Nat)
     (h_src : src < s.objects.size)
     (h_tgt : tgt < s.objects.size)
-    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0) :
-    State :=
+    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0)
+    (h_src_not_done : src ∉ s.postOrder.toList) :
+    Discovered :=
   { s with
     deps := recordEdge s.deps src tgt
     pending := s.pending.modify src (· - 1)
@@ -296,14 +341,31 @@ def recordDep (s : State) (src tgt : Nat)
         exact h_old
     postOrder := s.postOrder
     postOrderBounds := s.postOrderBounds
-    postOrderNodup := s.postOrderNodup }
+    postOrderNodup := s.postOrderNodup
+    depsPostBefore := by
+      intro i h_i t h_t h_done
+      have h_i_old : i < s.deps.size := by
+        rw [recordEdge_size] at h_i
+        exact h_i
+      have h_get :
+          (recordEdge s.deps src tgt)[i]'h_i =
+            if src = i then s.deps[i].push tgt else s.deps[i] := by
+        unfold recordEdge
+        exact Array.getElem_modify h_i
+      rw [h_get] at h_t
+      by_cases h_eq : src = i
+      · exact absurd (h_eq ▸ h_done) h_src_not_done
+      · rw [if_neg h_eq] at h_t
+        exact s.depsPostBefore i h_i_old t h_t h_done }
 
 /-- Append `idx` to the DFS post-order. Called when an object's `discoverWork`
     is about to return — `idx` is the index of the just-finished object.
     Preconditions: idx is a valid object index, and it's not already in
     `postOrder` (so Nodup is preserved). -/
-def markComplete (s : State) (idx : Nat) (h_lt : idx < s.objects.size)
-    (h_fresh : idx ∉ s.postOrder.toList) : State :=
+def markComplete (s : Discovered) (idx : Nat) (h_lt : idx < s.objects.size)
+    (h_fresh : idx ∉ s.postOrder.toList)
+    (h_deps_done : ∀ t, t ∈ s.deps[idx]'(by rw [s.depsSize]; exact h_lt) →
+     t ∈ s.postOrder.toList) : Discovered :=
   { s with
     postOrder := s.postOrder.push idx
     postOrderBounds := by
@@ -317,53 +379,90 @@ def markComplete (s : State) (idx : Nat) (h_lt : idx < s.objects.size)
       intro a h_a b h_b h_eq_ab
       rw [List.mem_singleton] at h_b
       subst h_b
-      exact h_fresh (h_eq_ab ▸ h_a) }
+      exact h_fresh (h_eq_ab ▸ h_a)
+    depsPostBefore := by
+      intro i h_i t h_t h_done
+      show LoadGraph.PostBefore (s.postOrder.push idx) t i
+      rw [Array.toList_push, List.mem_append] at h_done
+      rcases h_done with h_done_old | h_done_new
+      · exact LoadGraph.PostBefore.push_preserved
+          (s.depsPostBefore i h_i t h_t h_done_old)
+      · rw [List.mem_singleton] at h_done_new
+        subst i
+        have h_idx_deps : idx < s.deps.size := by rw [s.depsSize]; exact h_lt
+        have h_t' : t ∈ s.deps[idx]'h_idx_deps := by
+          simpa using h_t
+        exact LoadGraph.PostBefore.push_right (h_deps_done t h_t') }
+
+/-- Local topological step: if every recorded edge target of `idx` is already
+    complete, then appending `idx` to postorder places each target before
+    `idx`. -/
+theorem edgeTarget_before_markComplete (s : Discovered)
+    (idx : Nat) (h_idx_deps : idx < s.deps.size) (h_idx_obj : idx < s.objects.size)
+    (h_fresh : idx ∉ s.postOrder.toList)
+    (h_deps_done : ∀ t, t ∈ s.deps[idx]'(by rw [s.depsSize]; exact h_idx_obj) →
+      t ∈ s.postOrder.toList)
+    (t : Nat) (h_t : t ∈ s.deps[idx]) :
+    LoadGraph.PostBefore
+      (markComplete s idx h_idx_obj h_fresh h_deps_done).postOrder t idx := by
+  have h_idx_deps' : idx < s.deps.size := by rw [s.depsSize]; exact h_idx_obj
+  have h_t' : t ∈ s.deps[idx]'h_idx_deps' := by
+    simpa using h_t
+  show LoadGraph.PostBefore (s.postOrder.push idx) t idx
+  exact LoadGraph.PostBefore.push_right (h_deps_done t h_t')
 
 -- ============================================================================
--- Characterisation theorems — used by `DFS.discoverWork` / `discoverWorkList` to
+-- Characterisation theorems — used by `Traversal.discoverWork` / `discoverWorkList` to
 -- discharge the per-iteration `WorkResult` / `WorkListAcc` invariants.
 -- ============================================================================
 
 /-- `markComplete` doesn't touch `objects`. -/
-@[simp] theorem markComplete_objects_size (s : State) (idx : Nat)
-    (h_lt : idx < s.objects.size) (h_fresh : idx ∉ s.postOrder.toList) :
-    (s.markComplete idx h_lt h_fresh).objects.size = s.objects.size := rfl
+@[simp] theorem markComplete_objects_size (s : Discovered) (idx : Nat)
+    (h_lt : idx < s.objects.size) (h_fresh : idx ∉ s.postOrder.toList)
+    (h_deps_done : ∀ t, t ∈ s.deps[idx]'(by rw [s.depsSize]; exact h_lt) →
+      t ∈ s.postOrder.toList) :
+    (markComplete s idx h_lt h_fresh h_deps_done).objects.size = s.objects.size := rfl
 
 /-- `markComplete` appends `idx` to `postOrder`. -/
-@[simp] theorem markComplete_postOrder (s : State) (idx : Nat)
-    (h_lt : idx < s.objects.size) (h_fresh : idx ∉ s.postOrder.toList) :
-    (s.markComplete idx h_lt h_fresh).postOrder = s.postOrder.push idx := rfl
+@[simp] theorem markComplete_postOrder (s : Discovered) (idx : Nat)
+    (h_lt : idx < s.objects.size) (h_fresh : idx ∉ s.postOrder.toList)
+    (h_deps_done : ∀ t, t ∈ s.deps[idx]'(by rw [s.depsSize]; exact h_lt) →
+      t ∈ s.postOrder.toList) :
+    (markComplete s idx h_lt h_fresh h_deps_done).postOrder = s.postOrder.push idx := rfl
 
 /-- `pushObject` grows `objects` by one. -/
-@[simp] theorem pushObject_size (s : State) (obj : LoadedObject)
+@[simp] theorem pushObject_size (s : Discovered) (obj : LoadedObject)
     (h_fresh : s.nameIx[obj.name]? = none) :
-    (s.pushObject obj h_fresh).objects.size = s.objects.size + 1 := by
+    (pushObject s obj h_fresh).objects.size = s.objects.size + 1 := by
   show (s.objects.push obj).size = _
   rw [Array.size_push]
 
 /-- `pushObject` doesn't touch `postOrder`. -/
-@[simp] theorem pushObject_postOrder (s : State) (obj : LoadedObject)
+@[simp] theorem pushObject_postOrder (s : Discovered) (obj : LoadedObject)
     (h_fresh : s.nameIx[obj.name]? = none) :
-    (s.pushObject obj h_fresh).postOrder = s.postOrder := rfl
+    (pushObject s obj h_fresh).postOrder = s.postOrder := rfl
 
 /-- `recordDep` doesn't touch `postOrder`. -/
-@[simp] theorem recordDep_postOrder (s : State) (src tgt : Nat)
-    (h_src : src < s.objects.size) (h_tgt : tgt < s.objects.size)
-    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0) :
-    (s.recordDep src tgt h_src h_tgt h_pending).postOrder = s.postOrder := rfl
-
-/-- `recordDep` doesn't touch `objects`. -/
-@[simp] theorem recordDep_objects_size (s : State) (src tgt : Nat)
-    (h_src : src < s.objects.size) (h_tgt : tgt < s.objects.size)
-    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0) :
-    (s.recordDep src tgt h_src h_tgt h_pending).objects.size = s.objects.size := rfl
-
-/-- `recordDep` doesn't touch `pending[j]` for `j ≠ src`. -/
-theorem recordDep_pending_other (s : State) (src tgt : Nat)
+@[simp] theorem recordDep_postOrder (s : Discovered) (src tgt : Nat)
     (h_src : src < s.objects.size) (h_tgt : tgt < s.objects.size)
     (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0)
+    (h_src_not_done : src ∉ s.postOrder.toList) :
+    (recordDep s src tgt h_src h_tgt h_pending h_src_not_done).postOrder = s.postOrder := rfl
+
+/-- `recordDep` doesn't touch `objects`. -/
+@[simp] theorem recordDep_objects_size (s : Discovered) (src tgt : Nat)
+    (h_src : src < s.objects.size) (h_tgt : tgt < s.objects.size)
+    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0)
+    (h_src_not_done : src ∉ s.postOrder.toList) :
+    (recordDep s src tgt h_src h_tgt h_pending h_src_not_done).objects.size = s.objects.size := rfl
+
+/-- `recordDep` doesn't touch `pending[j]` for `j ≠ src`. -/
+theorem recordDep_pending_other (s : Discovered) (src tgt : Nat)
+    (h_src : src < s.objects.size) (h_tgt : tgt < s.objects.size)
+    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0)
+    (h_src_not_done : src ∉ s.postOrder.toList)
     (j : Nat) (h_j : j < s.objects.size) (h_ne : src ≠ j) :
-    ((s.recordDep src tgt h_src h_tgt h_pending).pending[j]'(by
+    ((recordDep s src tgt h_src h_tgt h_pending h_src_not_done).pending[j]'(by
         show j < (s.pending.modify src (· - 1)).size
         rw [Array.size_modify, s.pendingSize]; exact h_j))
       = s.pending[j]'(by rw [s.pendingSize]; exact h_j) := by
@@ -371,10 +470,41 @@ theorem recordDep_pending_other (s : State) (src tgt : Nat)
   rw [Array.getElem_modify _]
   exact if_neg h_ne
 
+/-- `recordDep` doesn't touch dep rows other than `src`. -/
+theorem recordDep_deps_other (s : Discovered) (src tgt : Nat)
+    (h_src : src < s.objects.size) (h_tgt : tgt < s.objects.size)
+    (h_pending : (s.pending[src]'(by rw [s.pendingSize]; exact h_src)) > 0)
+    (h_src_not_done : src ∉ s.postOrder.toList)
+    (j : Nat) (h_j : j < s.objects.size) (h_ne : src ≠ j) :
+    ((recordDep s src tgt h_src h_tgt h_pending h_src_not_done).deps[j]'(by
+        rw [(recordDep s src tgt h_src h_tgt h_pending h_src_not_done).depsSize]
+        exact h_j))
+      = s.deps[j]'(by rw [s.depsSize]; exact h_j) := by
+  show (recordEdge s.deps src tgt)[j]'_ = _
+  have h_j_deps : j < s.deps.size := by rw [s.depsSize]; exact h_j
+  have h_get :
+      (recordEdge s.deps src tgt)[j]'(by rw [recordEdge_size]; exact h_j_deps) =
+        if src = j then s.deps[j].push tgt else s.deps[j] := by
+    unfold recordEdge
+    exact Array.getElem_modify _
+  simpa [h_ne] using h_get
+
+/-- `pushObject` doesn't touch existing dep rows. -/
+theorem pushObject_deps_old (s : Discovered) (obj : LoadedObject)
+    (h_fresh : s.nameIx[obj.name]? = none) (j : Nat) (h_j : j < s.objects.size) :
+    ((pushObject s obj h_fresh).deps[j]'(by
+        rw [(pushObject s obj h_fresh).depsSize]
+        show j < (s.objects.push obj).size
+        rw [Array.size_push]
+        omega))
+      = s.deps[j]'(by rw [s.depsSize]; exact h_j) := by
+  show (s.deps.push #[])[j]'_ = _
+  rw [Array.getElem_push, dif_pos (by rw [s.depsSize]; exact h_j)]
+
 /-- At the new index, `pushObject`'s pending entry is `obj.elf.needed.size`. -/
-theorem pushObject_pending_new (s : State) (obj : LoadedObject)
+theorem pushObject_pending_new (s : Discovered) (obj : LoadedObject)
     (h_fresh : s.nameIx[obj.name]? = none) :
-    ((s.pushObject obj h_fresh).pending[s.objects.size]'(by
+    ((pushObject s obj h_fresh).pending[s.objects.size]'(by
         show s.objects.size < (s.pending.push obj.elf.needed.size).size
         rw [Array.size_push, s.pendingSize]; omega))
       = obj.elf.needed.size := by
@@ -383,9 +513,9 @@ theorem pushObject_pending_new (s : State) (obj : LoadedObject)
   rw [s.pendingSize]; exact Nat.lt_irrefl _
 
 /-- At old indices, `pushObject` doesn't change `pending`. -/
-theorem pushObject_pending_old (s : State) (obj : LoadedObject)
+theorem pushObject_pending_old (s : Discovered) (obj : LoadedObject)
     (h_fresh : s.nameIx[obj.name]? = none) (j : Nat) (h_j : j < s.objects.size) :
-    ((s.pushObject obj h_fresh).pending[j]'(by
+    ((pushObject s obj h_fresh).pending[j]'(by
         show j < (s.pending.push obj.elf.needed.size).size
         rw [Array.size_push, s.pendingSize]
         exact Nat.lt_succ_of_lt h_j))
@@ -393,6 +523,6 @@ theorem pushObject_pending_old (s : State) (obj : LoadedObject)
   show (s.pending.push obj.elf.needed.size)[j]'_ = _
   rw [Array.getElem_push, dif_pos (by rw [s.pendingSize]; exact h_j)]
 
-end State
+end Discovered
 
 end LeanLoad.Discover
