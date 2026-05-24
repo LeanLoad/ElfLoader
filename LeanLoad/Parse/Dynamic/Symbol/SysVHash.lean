@@ -12,8 +12,8 @@ alongside `DT_GNU_HASH` (the modern default); a GNU-only binary
 would force chain walking.
 -/
 
-import LeanLoad.Parse.Decode
-import LeanLoad.Parse.Deriving
+import LeanLoad.Parse.Decode.Decodable
+import LeanLoad.Parse.Decode.Deriving
 import LeanLoad.Parse.Address
 
 namespace LeanLoad.Parse
@@ -24,7 +24,7 @@ namespace LeanLoad.Parse
 structure RawSysVHash where
   nbucket : UInt32
   nchain  : UInt32
-  deriving Repr, Inhabited, BytesDecode
+  deriving Repr, Inhabited, Decodable
 
 /-- Size of the header read: 4 + 4 = 8 bytes. Bucket / chain arrays
     that follow are not parsed. -/
@@ -34,10 +34,6 @@ namespace RawSysVHash
 
 /-- Byte extent of the SysV hash header LeanLoad reads. -/
 def byteSize : ByteSize := ByteSize.ofNat RawSysVHashSize
-
-/-- Parse the SysV hash header. Bucket/chain arrays follow, but LeanLoad only
-    needs `nchain` to size `.dynsym`. -/
-def parse : Decoder RawSysVHash := BytesDecode.decode
 
 /-- Dynamic-symbol count recorded in the SysV hash header. -/
 def symCount (h : RawSysVHash) : Nat := h.nchain.toNat

@@ -1,4 +1,4 @@
-import LeanLoad.Parse.Decode
+import LeanLoad.Parse.Decode.Decodable
 
 /-!
 Parse-stage address, offset, and extent types.
@@ -41,7 +41,7 @@ def ByteSize.toNat (s : ByteSize) : Nat := s.val.toNat
 
 /-- ELF-address range `[start, start + size)` after dynamic-table semantics have
     interpreted the raw address payload as an ELF virtual-address coordinate.
-    File-backed containment is added later by `FileView`. -/
+    File-backed containment is added later by `LoadMap`. -/
 structure EaddrRange where
   start : Eaddr
   size  : ByteSize
@@ -63,11 +63,12 @@ def segmentLayoutAlign (align : UInt64) : UInt64 :=
     observed byte size `fileSize`. This strengthens `(FileOff, ByteSize)`
     without making raw `FileOff` depend on a particular file. -/
 structure FileRange (fileSize : UInt64) (off : FileOff) (len : ByteSize) where
+  marker : Unit := ()
   inFile : off.toNat + len.toNat ≤ fileSize.toNat
 
-instance : RawDecode Eaddr UInt64 where ofRaw v := .ok ⟨v⟩
-instance : RawDecode FileOff UInt64 where ofRaw v := .ok ⟨v⟩
-instance : RawDecode ByteSize UInt64 where ofRaw v := .ok ⟨v⟩
+instance : DecodableFromScalar Eaddr UInt64 where fromScalar v := .ok ⟨v⟩
+instance : DecodableFromScalar FileOff UInt64 where fromScalar v := .ok ⟨v⟩
+instance : DecodableFromScalar ByteSize UInt64 where fromScalar v := .ok ⟨v⟩
 
 /-- Byte offset into the dynamic string table (`.dynstr`). Consumed by
     `Strtab.lookup` to recover the NUL-terminated name at that

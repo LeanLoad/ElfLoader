@@ -2,12 +2,12 @@
 LeanLoad CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is
-glue that ties the pure core (`Parse` + `Plan`) and the materialize
-stage (`Materialize`) to the IO layer (`Runtime`, `Discover.IO`).
+glue that ties the pure core (`Parse` + `Resolve` + `Layout`) and the exec
+stage (`Exec`) to the IO layer (`Runtime`, `Discover.IO`).
 
 The IO bookend `realize` (below) is a thin wrapper:
-`Materialize.safe` runs the decidable safety check over the
-structured `LoadOps` tree, `LoadOps.runSafe` dispatches to externs,
+`Exec.build` produces a safety-witnessed `LoadOps`,
+`LoadOps.runSafe` dispatches it to externs,
 then the one-shot finalizers (`mmapAnon` for the stack +
 `execAndJump`) transfer control. Doesn't return.
 -/
@@ -21,12 +21,12 @@ open LeanLoad
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
 private def stackBytes : UInt64 := 8 * 1024 * 1024
 
-/-- Run all planned slots inside the kernel-picked reservation,
+/-- Run all planned ops inside the kernel-picked reservation,
     allocate the kernel-style stack, and `execAndJump` to entry.
     **Does not return.** -/
-private def realize (bp : Materialize.BoundPlan)
-    (witnessed : { lo : Materialize.LoadOps bp.objCount //
-      Materialize.LoadSafe bp.rsv.addr bp.rsv.len lo })
+private def realize (bp : Exec.BoundPlan)
+    (witnessed : { lo : Exec.LoadOps bp.objCount //
+      Exec.LoadSafe bp.rsv.addr bp.rsv.len lo })
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
@@ -35,9 +35,9 @@ private def realize (bp : Materialize.BoundPlan)
     Parse.ProgramHeaderMap.ofSegments mainElf.segments mainElf.header.e_phoff programHeaderNbytes
   let entry  := mainBase + mainElf.header.e_entry.val
   let programHeaderVa := mainBase + programHeaderMap.eaddr.val
-  Materialize.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
+  Exec.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
   -- Ctors run after the address space is fully realized — they're
-  -- user code, not kernel ops.
+  -- user code, not load ops.
   ctorAddrs.forM Runtime.callCtor
   let stack ← Reserve.run stackBytes
   let phnum  := mainElf.header.e_phnum.toUInt64
@@ -69,17 +69,18 @@ private def Nat.hex12 (objCount : Nat) : String :=
 #guard padR "abc" 6 '.' = "abc..."
 #guard padL "abc" 6 '.' = "...abc"
 
-/-- Discover (IO) → pure-pipeline `Plan` aggregate (resolve + layout
-    + relocs + init order) → kernel-picked reservation → Materialize
+/-- Discover (IO) → Reloc (resolve referenced relocation symbols)
+    → Layout → kernel-picked reservation → Exec
     → realize. **Does not return.** -/
 def load (path : String) : IO Unit := do
   let g ← Discover.discover path
-  let plan ← IO.ofExcept (Plan.Aggregate.ofGraph g)
-  let rsvW ← Reserve.run plan.layout.totalSpan
-  let bp : Materialize.BoundPlan :=
-    { plan with rsv := rsvW.val, h_total := rsvW.property }
-  let witnessed ← IO.ofExcept (Materialize.build bp)
-  let ctorAddrs := Materialize.ctorAddrs bp
+  let relocPlan ← IO.ofExcept (Reloc.Result.ofGraph g)
+  let layout ← IO.ofExcept (Layout.Layout.ofRelocResult relocPlan)
+  let rsvW ← Reserve.run layout.totalSpan
+  let bp : Exec.BoundPlan :=
+    { relocPlan with layout, rsv := rsvW.val, h_total := rsvW.property }
+  let witnessed ← IO.ofExcept (Exec.build bp)
+  let ctorAddrs := Exec.ctorAddrs bp
   realize bp witnessed ctorAddrs path
 
 /-- `--debug`: same as `load` but with a stage-by-stage summary on
@@ -109,68 +110,70 @@ def debug (path : String) : IO Unit := do
     IO.eprintln s!"  segments   ({elf.segments.items.size}):"
     for h2 : segI in [:elf.segments.items.size] do
       let seg := elf.segments.items[segI]
-      let relocs := elf.relocs ⟨segI, h2.upper⟩
+      let segIdx : Fin elf.segments.items.size := ⟨segI, h2.upper⟩
+      let relocs := elf.relocs.relaFor segIdx
+      let jmprel := elf.relocs.jmprelFor segIdx
       let prot := reprStr seg.perm
       IO.eprintln s!"    [{segI}] eaddr=0x{Nat.hex12 seg.eaddr.toNat} \
         offset=0x{Nat.hex seg.offset.toNat} \
         filesz=0x{Nat.hex seg.filesz.toNat} \
         memsz=0x{Nat.hex seg.memsz.toNat} \
-        prot={prot}  rela={relocs.rela.size}  jmprel={relocs.jmprel.size}"
+        prot={prot}  rela={relocs.size}  jmprel={jmprel.size}"
 
-  -- One-shot pure-pipeline build. Every later stage reads from `plan`.
-  let plan ← IO.ofExcept (Plan.Aggregate.ofGraph g)
+  -- One-shot pure-pipeline build. Reloc resolves only symbols referenced by
+  -- relocation records; Layout then consumes those planned entries.
+  let relocPlan ← IO.ofExcept (Reloc.Result.ofGraph g)
 
-  IO.eprintln "\n== 3. Resolve (BFS symbol resolution across all elfs) =="
-  let providerName (r : Plan.Resolve.SymRef plan.graph.objects.size) : String :=
-    plan.graph.objects[r.objectIdx.val] |>.name
-  let nameW := plan.resolve.entries.foldl (init := 0) (fun w (u, _) => max w u.name.length)
-  let providerW := plan.resolve.entries.foldl (init := "<unresolved>".length) fun w (_, res) =>
-    match res with
-    | .found r => max w (providerName r).length
-    | _        => w
-  let mut currentObj : Option Nat := none
-  for (u, res) in plan.resolve.entries do
-    if currentObj != some u.objectIdx then
-      if let some obj := plan.graph.objects[u.objectIdx]? then
-        IO.eprintln s!"{obj.name}:"
-      currentObj := some u.objectIdx
-    let suffix : String := match res with
-      | .weakUndef   => s!"{padR "<unresolved>" providerW}  (weak)"
-      | .strongUndef => s!"{padR "<unresolved>" providerW}"
-      | .found r =>
-        let p := padR (providerName r) providerW
-        match plan.graph.objects[r.objectIdx]?.bind
-            (fun obj => obj.elf.symtab[r.symIdx]?) with
-        | some entry => s!"{p} [sym {r.symIdx} @0x{Nat.hex entry.value.toNat}]"
-        | none       => s!"{p} [sym {r.symIdx}]"
-    IO.eprintln s!"  {padR u.name nameW}  ←  {suffix}"
-  IO.eprintln s!"strong missing: {plan.resolve.missing.size}, \
-    weak missing: {plan.resolve.weakMissing.size}"
+  IO.eprintln "\n== 3. Reloc (resolve symbols referenced by dynamic relocations) =="
+  let providerName (r : Reloc.Symbol.SymRef relocPlan.graph.objects.size) : String :=
+    relocPlan.graph.objects[r.objectIdx.val] |>.name
+  let mut relocsTotal := 0
+  let mut resolvedTotal := 0
+  let mut weakTotal := 0
+  let mut noSymbolTotal := 0
+  for h : i in [:relocPlan.graph.objects.size] do
+    let objectIdx : Fin relocPlan.graph.objects.size := ⟨i, h.upper⟩
+    let elf := relocPlan.graph.objects[objectIdx].elf
+    for h_seg : segI in [:elf.segments.items.size] do
+      let segIdx : Fin elf.segments.items.size := ⟨segI, h_seg.upper⟩
+      let entries ← IO.ofExcept (relocPlan.segment objectIdx segIdx)
+      for entry in entries do
+        relocsTotal := relocsTotal + 1
+        match entry.target with
+        | .noSymbol => noSymbolTotal := noSymbolTotal + 1
+        | .weakUnresolved => weakTotal := weakTotal + 1
+        | .resolved ref =>
+            resolvedTotal := resolvedTotal + 1
+            IO.eprintln s!"  [{i}:{segI}] sym[{ref.symIdx}] → {providerName ref}"
+  IO.eprintln s!"relocs: {relocsTotal}, resolved: {resolvedTotal}, \
+    weak unresolved: {weakTotal}, no-symbol: {noSymbolTotal}"
+
+  let layout ← IO.ofExcept (Layout.Layout.ofRelocResult relocPlan)
 
   IO.eprintln "\n== 4. Layout (kernel-picked reservation + per-object bases) =="
-  let lp := plan.layout
+  let lp := layout
   let rsvW ← Reserve.run lp.totalSpan
-  let bp : Materialize.BoundPlan :=
-    { plan with rsv := rsvW.val, h_total := rsvW.property }
+  let bp : Exec.BoundPlan :=
+    { relocPlan with layout := lp, rsv := rsvW.val, h_total := rsvW.property }
   IO.eprintln s!"  reservation = [0x{Nat.hex bp.rsv.addr.toNat}, +0x{Nat.hex lp.totalSpan.toNat})"
   let bases := bp.bases
   for h : i in [:bp.objCount] do
     let base := bases[i]'h.upper
-    let obj := plan.graph.objects[i]
+    let obj := relocPlan.graph.objects[i]
     IO.eprintln s!"[{i}] {obj.name} (base=0x{Nat.hex base.toNat}, {obj.elf.segments.items.size} segments)"
     let ep := lp.elfs[i]'h.upper
     for sp in ep.segments do
       let absVa := base + sp.pageEaddr
       IO.eprintln s!"  eaddr=0x{Nat.hex absVa.toNat} len=0x{Nat.hex sp.pageLength.toNat} prot={sp.prot}"
-  IO.eprintln s!"init order: {plan.initOrder.map (·.val)}"
-  IO.eprintln s!"fini order: {(plan.initOrder.map (·.val)).reverse}"
+  IO.eprintln s!"init order: {relocPlan.graph.initOrder.map (·.val)}"
+  IO.eprintln s!"fini order: {(relocPlan.graph.initOrder.map (·.val)).reverse}"
 
   IO.eprintln "\n== 5. Reloc (planned 4/8-byte stores, per-arch formula) =="
-  let formula := plan.formula
-  let elfs := plan.objectElfs
+  let formula := relocPlan.formula
+  let elfs := relocPlan.objectElfs
   let labelW := 16
   for h : i in [:bp.objCount] do
-    let obj  := plan.graph.objects[i]
+    let obj  := relocPlan.graph.objects[i]
     let base := bases[i]'h.upper
     let label := padR s!"[{i}] {obj.name}" labelW
     let ep := lp.elfs[i]'h.upper
@@ -185,7 +188,7 @@ def debug (path : String) : IO Unit := do
             match elfs[ref.objectIdx]?.bind (·.symtab[ref.symIdx]?) with
             | none     => 0
             | some sym => provBase + sym.value
-        let inputs : ABI.FormulaInputs :=
+        let inputs : Reloc.ABI.FormulaInputs :=
           { symValue, addend := entry.addend, base, place := base + (entry.r_offset.val) }
         match formula entry.type inputs with
         | none     => pure ()
@@ -199,16 +202,16 @@ def debug (path : String) : IO Unit := do
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + (entry.r_offset.val)).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let witnessed ← IO.ofExcept (Materialize.build bp)
+  let witnessed ← IO.ofExcept (Exec.build bp)
   let lo := witnessed.val
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
     {lo.stores.size} stores, \
-    {lo.mprotects.size} mprotects across {lo.size} elfs"
+    {lo.mprotects.size} mprotects across {lo.elfs.size} elfs"
 
   IO.eprintln "\n== 6. Init (DFS post-order over dep DAG) =="
-  let ctorAddrs := Materialize.ctorAddrs bp
-  let dtorAddrs := Materialize.dtorAddrs bp
+  let ctorAddrs := Exec.ctorAddrs bp
+  let dtorAddrs := Exec.dtorAddrs bp
   IO.eprintln s!"planned {ctorAddrs.size} constructor address(es), \
     {dtorAddrs.size} destructor address(es)"
 

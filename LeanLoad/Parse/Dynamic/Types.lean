@@ -2,14 +2,14 @@
 Transient dynamic staging image.
 
 `Dynamic` is the parse-stage image after `.dynamic` pointers have been followed
-through `FileView`, but before whole-ELF checks build the final `Elf`.
+through `LoadMap`, but before whole-ELF checks build the final `Elf`.
 -/
 
 import LeanLoad.Parse.Dynamic.Reloc.Raw
 import LeanLoad.Parse.Dynamic.Strtab
 import LeanLoad.Parse.Dynamic.Symbol.Raw
-import LeanLoad.Parse.FileView.ElfHeader.Basic
-import LeanLoad.Parse.FileView.SegmentTable.Basic
+import LeanLoad.Parse.LoadMap.ElfHeader.Basic
+import LeanLoad.Parse.LoadMap.SegmentTable.Basic
 
 namespace LeanLoad.Parse
 

@@ -2,16 +2,15 @@
 Trust seam: every `@[extern]` declaration that crosses into the C
 shims under `runtime/`, the five typed records (`MmapOp` / `ZeroOp` /
 `StoreOp` / `MprotectOp` / `Reserve`) that wrap each FFI signature,
-the per-record `run` dispatchers, and the `Disjoint` / `InRange`
-range predicates the safety witness consumes.
+and the per-record `run` dispatchers.
 
 The five kernel operations (`mmapFile`, `mprotect`, `store`, `zero`,
 `mmapAnon`) are *private* externs — callers must go through the
 typed records' `run` methods. That keeps the address-arithmetic
-preconditions (the safety witnesses) in front of every FFI call.
+preconditions (the exec safety witnesses) in front of every FFI call.
 
-`Materialize/LoadOps.lean` orchestrates the structured op tree
-(`SegmentOps` / `ElfOps` / `LoadOps`) on top of these slot records
+`Exec/LoadOps.lean` orchestrates the structured load ops
+(`SegmentOps` / `ElfOps` / `LoadOps`) on top of these op records
 and exposes the witnessed entry point `LoadOps.runSafe`.
 
 Reserve-then-overlay design:
@@ -19,9 +18,9 @@ Reserve-then-overlay design:
     anon block large enough to hold every loaded object. The
     returned reservation carries the address + length + the no-wrap
     proof every safety predicate consumes.
-  • Structured slots in `LoadOps` only operate INSIDE that
+  • Structured ops in `LoadOps` only operate INSIDE that
     reservation. The reservation itself is not in the tree — it's a
-    one-shot IO call before any planned slot runs.
+    one-shot IO call before any planned op runs.
 
 The semantics of each extern match Linux `mmap(2)` / `mprotect(2)`.
 Mappings live for the process lifetime; the kernel reclaims at exit.
@@ -67,7 +66,7 @@ end File
 
     Returns just the open file (no resolved path back) — the
     canonical dedup key is `DT_SONAME` with the requested name as
-    fallback (see `Discover.Effects.io`), neither of which needs the
+    fallback (see `Discover.Resolver.io`), neither of which needs the
     resolved path. Implementation lives in `Runtime.c` — keeps the
     path splitting and `getenv` call out of Lean. -/
 @[extern "leanload_open_by_name"]
@@ -99,7 +98,7 @@ def pread (f : File) (offset : UInt64) (len : UInt64) : IO ByteArray := do
 
 -- ============================================================================
 -- FFI primitives — one Lean signature per C shim. *Private*: the
--- public path is via the typed slot records below (`MmapOp.run` /
+-- public path is via the typed op records below (`MmapOp.run` /
 -- `Zero.run` / `Store.run` / `MprotectOp.run` / `Reserve.run`).
 -- ============================================================================
 
@@ -160,10 +159,10 @@ def PROT_WRITE : UInt32 := 2
 end Runtime
 
 -- ============================================================================
--- Typed slot records — each wraps the FFI signature of one of the
--- five kernel operations. `Materialize/LoadOps.lean` assembles the
--- four slot kinds into the per-segment tree; `Reserve` is the
--- one-shot anon allocation that bounds every slot.
+-- Typed op records — each wraps the FFI signature of one of the
+-- five kernel operations. `Exec/LoadOps.lean` assembles the
+-- four op kinds into the per-segment tree; `Reserve` is the
+-- one-shot anon allocation that bounds every op.
 -- ============================================================================
 
 /-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap. -/
@@ -210,7 +209,7 @@ structure Reserve where
 -- ============================================================================
 -- Per-record `run` dispatchers — bridge a typed record to its FFI
 -- primitive. The only path from Lean to the FFI: every external
--- call goes through one of these. The four slot `run`s execute
+-- call goes through one of these. The four op `run`s execute
 -- pre-planned data; `Reserve.run` requests a fresh allocation.
 -- ============================================================================
 
@@ -238,7 +237,7 @@ namespace Reserve
 /-- Allocate a reservation of exactly `len` bytes. Calls the private
     `Runtime.mmapAnon` extern and validates the no-wrap property at
     runtime. The returned subtype carries the proof `r.len = len`, so
-    callers (e.g. `Materialize.build`) can connect the reservation
+    callers (e.g. `Exec.build`) can connect the reservation
     size to a `Layout`'s `totalSpan` without recourse to an IO-side
     coherence lemma.
 
@@ -254,32 +253,5 @@ def run (len : UInt64) : IO { r : Reserve // r.len = len } := do
     throw (IO.userError s!"Runtime.mmapAnon returned wrapping reservation \
       (addr=0x{addr.toNat}, len=0x{len.toNat})")
 end Reserve
-
--- ============================================================================
--- Range arithmetic — predicates over `[addr, addr + len)` in `Nat`
--- to dodge UInt64 wrap. Consumed by the safety predicates in
--- `Materialize/LoadOps.lean`.
--- ============================================================================
-
-namespace Runtime
-
-/-- Two memory ranges don't overlap. -/
-def Disjoint (a₁ l₁ a₂ l₂ : UInt64) : Prop :=
-  a₁.toNat + l₁.toNat ≤ a₂.toNat ∨ a₂.toNat + l₂.toNat ≤ a₁.toNat
-
-/-- An address range `[innerA, innerA+innerL)` is fully contained
-    in `[outerA, outerA+outerL)`. -/
-def InRange (innerA innerL outerA outerL : UInt64) : Prop :=
-  outerA.toNat ≤ innerA.toNat ∧
-  innerA.toNat + innerL.toNat ≤ outerA.toNat + outerL.toNat
-
-instance (a₁ l₁ a₂ l₂ : UInt64) : Decidable (Disjoint a₁ l₁ a₂ l₂) :=
-  inferInstanceAs (Decidable (_ ∨ _))
-
-instance (innerA innerL outerA outerL : UInt64) :
-    Decidable (InRange innerA innerL outerA outerL) :=
-  inferInstanceAs (Decidable (_ ∧ _))
-
-end Runtime
 
 end LeanLoad

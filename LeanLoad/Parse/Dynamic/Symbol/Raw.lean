@@ -5,8 +5,8 @@ gabi 05 § Symbol Table — `Elf64_Sym` entry.
 single byte; bit-field accessors live in `Parse/Dynamic/Symbol/Checked.lean`.
 -/
 
-import LeanLoad.Parse.Decode
-import LeanLoad.Parse.Deriving
+import LeanLoad.Parse.Decode.Decodable
+import LeanLoad.Parse.Decode.Deriving
 import LeanLoad.Parse.Address
 
 namespace LeanLoad.Parse
@@ -19,7 +19,7 @@ structure RawSym where
   st_shndx : UInt16   -- section index (or `SHN_*` reserved value)
   st_value : UInt64
   st_size  : UInt64
-  deriving Repr, Inhabited, BytesDecode
+  deriving Repr, Inhabited, Decodable
 
 /-- Size of one `Elf64_Sym` on disk: 4+1+1+2+8+8 = 24. -/
 def RawSymSize : Nat := 24
@@ -34,9 +34,9 @@ namespace RawSymtab
 def tableByteSize (count : Nat) : ByteSize :=
   ByteSize.ofEntries count RawSymSize
 
-/-- Parse `count` consecutive dynamic-symbol entries. -/
-def parse (count : Nat) : Decoder RawSymtab :=
-  decodeArray (α := RawSym) count
+/-- Decode `count` consecutive dynamic-symbol entries. -/
+def decode (count : Nat) : Decoder RawSymtab :=
+  Decoder.array count (Decodable.decoder (α := RawSym))
 
 end RawSymtab
 
@@ -71,7 +71,7 @@ section Example
 open RawSym
 
 private def parsedSymtab : Option (Array RawSym) :=
-  decodeArrayBytes? fixtureBytes 2
+  Decoder.run? fixtureBytes (Decoder.array 2 (Decodable.decoder (α := RawSym)))
 
 #guard parsedSymtab.map (·.size) = some 2
 -- NULL symbol — every field is zero.
@@ -87,12 +87,12 @@ private def parsedSymtab : Option (Array RawSym) :=
 -- Truncated sym: 10 bytes when 24 (RawSymSize) expected — EOF inside
 -- the `st_value` u64 read.
 #guard
-  (decodeBytes? (α := RawSym) (fixtureBytes.extract 0 10)).isNone
+  (Decoder.run? (fixtureBytes.extract 0 10) (Decodable.decoder (α := RawSym))).isNone
 
--- `decodeArray` asking for 3 entries from a 2-entry (48-byte) buffer —
+-- `Decoder.array` asking for 3 entries from a 2-entry (48-byte) buffer —
 -- third entry hits EOF.
 #guard
-  (decodeArrayBytes? (α := RawSym) fixtureBytes 3).isNone
+  (Decoder.run? fixtureBytes (Decoder.array 3 (Decodable.decoder (α := RawSym)))).isNone
 
 end Example
 

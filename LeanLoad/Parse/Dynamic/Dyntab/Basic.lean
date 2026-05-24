@@ -8,15 +8,15 @@ Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`).
 shape and the `DT_NULL`-terminated table decoder.
 
 The `.dynamic` array is `DT_NULL`-terminated, so it can't use the
-generic `decodeArray` (fixed-count) — `Dyntab.parse` below is
+generic `Decoder.array` (fixed-count) — `Dyntab.decode` below is
 the dedicated decoder. It rejects unterminated or non-entry-sized tables
 instead of silently treating malformed tails as absent dynamic state.
 `Dyntab.findAll / val?` are post-parse lookups over the resulting table;
 small accessors project the dynamic-content ranges that drive later reads.
 -/
 
-import LeanLoad.Parse.Decode
-import LeanLoad.Parse.Deriving
+import LeanLoad.Parse.Decode.Decodable
+import LeanLoad.Parse.Decode.Deriving
 import LeanLoad.Parse.Address
 import LeanLoad.Parse.Dynamic.Dyntab.Fields
 import LeanLoad.Parse.Dynamic.Symbol.Raw
@@ -32,7 +32,7 @@ namespace Dyntab
 structure Entry where
   d_tag : DynTag
   d_un  : UInt64
-  deriving Repr, Inhabited, BytesDecode
+  deriving Repr, Inhabited, Decodable
 
 /-- Size of one `Elf64_Dyn` on disk: 8+8 = 16. -/
 def EntrySize : Nat := 16
@@ -53,16 +53,16 @@ private def collect (fuel : Nat) (acc : Dyntab) : Decoder Dyntab := do
   match fuel with
   | 0 => throw "dynamic table missing DT_NULL terminator (gabi 08 § Dynamic Section)"
   | fuel + 1 =>
-    let e : Entry ← BytesDecode.decode
+    let e : Entry ← Decodable.decoder
     let acc := acc.push e
     if e.d_tag == .null then
      return acc
     collect fuel acc
 
-/-- Parse the `.dynamic` array from the current cursor. `bytes` is the
+/-- Decode the `.dynamic` array from the current cursor. `bytes` is the
     section byte length, typically the `p_filesz` of the `PT_DYNAMIC`
     program header. -/
-def parse (bytes : ByteSize) : Decoder Dyntab := do
+def decode (bytes : ByteSize) : Decoder Dyntab := do
   let n := bytes.toNat
   if n == 0 then
     throw "dynamic table has zero byte size; expected at least one DT_NULL entry"

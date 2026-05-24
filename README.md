@@ -20,7 +20,7 @@ https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c3211
 ```
 
 Unit-level invariants live as `#guard` blocks in implementation
-files (`Discover/Test.lean`, `Example.lean`, …) and elaborate during
+and example files (`Discover/Examples.lean`, `Examples.lean`, …) and elaborate during
 `lake build`. The integration test is `./run.sh` end-to-end against
 `build/main`.
 
@@ -276,79 +276,51 @@ never describes.
 LeanLoad.lean              package root (re-exports)
 Main.lean                  CLI executable entry — Lake-blessed top-level
 LeanLoad/
-  Parse/                   byte decoders — Elf64_* C-struct transcriptions
-    Decode.lean            parser monad (cursor + Except, u32le / u64le primitives)
-    Deriving.lean          `deriving BytesDecode` handler — auto field-by-field decode
-    RawEhdr.lean           Elf64_Ehdr + e_ident prefix (gabi 02)
-    RawPhdr.lean           Elf64_Phdr (gabi 07) + PT_LOAD / PT_DYNAMIC constants
-    RawDyn.lean            Elf64_Dyn + .dynamic array + DT_* tag-keyed lookups (gabi 08)
-    RawSym.lean            Elf64_Sym (gabi 05)
-    RawRela.lean           Elf64_Rela with explicit addend (gabi 06)
-    RawStrtab.lean         byte-buffer NUL-terminated C strings (gabi 04)
-    RawElf.lean            top-level `parse` (header → phdrs → .dynamic → strtab → …)
-  Elaborate/               typed semantic views over Parse — validates and enriches
-    Header.lean            ElfType / Machine enums; ELFCLASS64 / ELFDATA2LSB constants
-    Strtab.lean            NUL-terminated UTF-8 lookup by offset
-    Symbol.lean            SymBind / ShnIdx enums + `Symbol` (name pre-resolved)
-    Reloc.lean             PatchSize (b4/b8); per-arch formula tables; `formulaFor` dispatch
-    Segment.lean           gabi-07 segment with per-segment invariants
-                           (fileszLeMemsz / alignPow2 / alignCong / addrBound) +
-                           page-aligned views + per-segment rela arrays
-    Elf.lean               `Elf` aggregate (with Sorted/NonOverlap PT_LOAD witnesses);
-                           `elaborate : RawElf → Except String Elf` (rejects ET_EXEC)
+  Parse.lean               public parse entry: checked `Elf`, `parseM`, `parse`
+  Parse/
+    Decode/                byte decoder primitives + `Decodable` deriving support
+    Address.lean           parse-stage address / offset / byte-size wrappers
+    Reader.lean            parse-time file reader + exact-range decode boundary
+    LoadMap/               checked header / PT_LOAD map used before dynamic reads
+    Dynamic/               .dynamic table, strtab/symtab, relocation, init/fini staging
+    Examples.lean          checked parse fixture and cross-section #guards
   Discover/
     Graph.lean             LoadedObject + LoadGraph with non-emptiness / names-Nodup /
                            deps-shape / deps-bounds witnesses + smart constructors
-    Effects.lean           abstract IO leaf (resolveDep + fail), monad-polymorphic;
-                           instantiated by IO.lean (production) and Test.lean (pure)
-    State.lean             DfsState carrier + smart constructors (initial/pushObject/
+    Work.lean               WorkItem / ResolvedObject dependency-discovery boundary types
+    Resolver.lean           resolver leaf (resolve + fail), monad-polymorphic;
+                           instantiated by IO.lean (production) and examples (pure)
+    Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
                            recordDep/markComplete) + characterisation theorems
-    Driver.lean            DfsResult / NeededAcc + mutual `dfs` / `dfsList` +
-                           `discoverWith` top-level (promotes final state to LoadGraph)
-    IO.lean                Effects.io (Runtime.openByName → parseFromHandle) +
-                           `discover` (production entry; opens main, drives DFS)
-    Test.lean              Effects.test (over in-memory TestStore) + discoverPure +
-                           #guard scenarios (linear/diamond/cycle/SONAME/search-order)
-  Plan/                    base-free pure planning — abstract data only
+    Traversal.lean         WorkResult / WorkListAcc + mutual `discoverWork` /
+                           `discoverWorkList`
+    Finalize.lean          `discoverWith` top-level (promotes final state to LoadGraph)
+    IO.lean                Resolver.io (Runtime.openByName → parseFromHandle) +
+                           `discover` (production entry; opens main, drives discovery)
+    Examples.lean          private in-memory Resolver + #guard scenarios
+                           (linear/diamond/cycle/SONAME/search-order)
+  Reloc.lean               base-free relocation planning over the discovered graph
+  Reloc/
+    Symbol/                BFS symbol lookup helpers used only by relocation planning
+    ABI.lean               per-arch relocation formulas and write widths
+  Layout/                  base-free page layout
     Align.lean             alignment / page-math helpers over UInt64
-    SegmentLayout.lean     per-segment plan (file + bss + mprotect shape), base-free
-    Layout.lean            per-object base assignment; totalSpan; segmentsSorted
-    Resolve.lean           re-exports the four sub-modules below
-    Resolve/Find.lean      `findInElf` returning `Option (MatchedSym elf name)`;
-                           witnesses (lt_size / isDef / nameEq / isFirst) on the struct
-    Resolve/Bfs.lean       `bfsOrder g` BFS traversal of LoadGraph + nodup / head witnesses
-    Resolve/Lookup.lean    `resolveByName g order name` + first-match-along-order theorems
-    Resolve/Table.lean     `Resolution` / `Table` / `buildTable` — per-graph aggregation
-    Reloc.lean             per-arch formula → `Patch` list with `coversRela` witness
-                           + psABI 32-bit overflow check
-    Aggregate.lean         top-level `Aggregate.ofGraph` — strong-undef rejection +
-                           per-object bundling
-  Materialize/             base-aware staging — turn Plan into a witnessed op tree
-    BoundPlan.lean         extends `Plan.Aggregate` with the IO-supplied `Reserve`
-                           plus the coherence proof tying them
-    Reloc.lean             relocation **baking** — apply formulas at the bound base
-    LoadOps.lean           `SegmentOps` / `ElfOps` / `LoadOps` tree over typed slot
+    Segment.lean           per-segment layout (file + bss + mprotect shape)
+    Basic.lean             per-object layout tree + totalSpan
+  Exec/                    base-aware stage — turn Reloc + Layout into witnessed ops
+    BoundPlan.lean         Reloc.Result + Layout.Layout + IO Reserve/coherence proof
+    Reloc.lean             relocation baking — apply ABI formulas at the bound base
+    LoadOps.lean           `SegmentOps` / `ElfOps` / `LoadOps` tree over typed op
                            records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
     Safety.lean            `SegmentSafe` / `ElfSafe` / `LoadSafe` mirror the tree;
                            `LoadOps.runSafe` is the IO trust seam
-    Apply.lean             pure denotation of the materialize pipeline:
-                           `Memory` + `File` types + per-op `apply` (formal mirror of
-                           `Op.run`) + tree-level `SegmentOps`/`ElfOps`/`LoadOps.apply`
-    ApplyLemmas.lean       inside/outside reusable lemmas about `apply`
     Build.lean             builder: `BoundPlan` → safety-witnessed `LoadOps` tree;
                            DFS post-order ctor / fini address lists
   Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
                            mmapAnonAlloc, mprotect, write, zeroout, mmapStack,
                            callCtor, execAndJump
-  RuntimeAxiom.lean        the FFI axiom: `runSafe_image rsv lo safe fs =
-                           LoadOps.apply fs lo Memory.zero` — the single formal
-                           statement about `runtime/runtime.c`'s extern primitives
   Runtime.c                C shims behind the @[extern] declarations
-  Soundness.lean           byte-level apply preservation lemmas (outside-reservation,
-                           no-touch, at-target) plus the three end-to-end target
-                           theorems (`bytes_preserved` / `bss_zeroed` /
-                           `relocs_applied`)
-  Example.lean             cross-stage `#guard` walkthrough (synthetic fixtures)
+  Examples.lean            cross-stage `#guard` walkthrough (synthetic fixtures)
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)
 third_party/               submodules (musl, gabi, glibc, elfutils, …)
 ```

@@ -18,23 +18,23 @@ structural invariants:
                        `initOrder` a permutation of `[0, objects.size)`.
 
 `LoadGraph` is the *output* type of Discover and the canonical spec of
-what Discover produces. Construction lives in `Discover/Driver.lean`
-on an internal `DfsState` (carries the four "structural" invariants
-plus a name→index HashMap accelerator, a pending counter for closure,
-and the postOrder array). The output invariants `closure`,
-`initOrderSize`, `initOrderNodup` are established at the end of
-`discoverWith` from `DfsState`'s end-state.
+what Discover produces. Construction lives in `Discover/Traversal.lean`
+and `Discover/Finalize.lean` on an internal `Discovered` set (carries the
+four "structural" invariants plus a name→index HashMap accelerator, a
+pending counter for closure, and the postOrder array). The output invariants
+`closure`, `initOrderSize`, `initOrderNodup` are established at the end
+of `discoverWith` from `Discovered`'s end-state.
 
 File layout:
   · `LoadedObject` + `ofMain` — one entry of the graph.
   · `LoadGraph` + `LoadGraph.main` — the bundled output.
   · `recordEdge` + lemmas — `Array (Array Nat)` push primitive used by
-    `DfsState.recordDep`.
+    `Discovered.recordDep`.
   · `findLoadedIdx` + lemmas — name-based lookup over `Array
-    LoadedObject`. Free function so `DfsState` can use it.
+    LoadedObject`. Free function so `Discovered` can use it.
 -/
 
-import LeanLoad.Parse.Elf
+import LeanLoad.Parse
 import LeanLoad.Runtime
 
 namespace LeanLoad.Discover
@@ -55,7 +55,7 @@ structure LoadedObject where
       requires DT_SONAME). For the main executable: `basename mainPath`. -/
   name : String
   /-- Open read-only file, kept for `pread` (parsing extras) and
-      `mmap` (Materialize stage). Production paths always carry a real
+      `mmap` (Exec stage). Production paths always carry a real
       fd plus observed size; tests use a dummy `Runtime.File`. -/
   handle : Runtime.File
   /-- Checked ELF — output of `Parse.parse`. The type is the witness
@@ -81,7 +81,7 @@ def LoadedObject.ofMain (mainPath : String) (handle : Runtime.File)
     order Discover used is an implementation detail: only `[0] = main`
     is spec-relevant. Symbol resolution (gabi 08 § Shared Object
     Dependencies) iterates BFS-from-0 over `deps` — see
-    `Plan.Resolve.bfsOrder` — and doesn't depend on `objects`'s
+    `Reloc.Symbol.bfsOrder` — and doesn't depend on `objects`'s
     intrinsic order.
 
     See the module docstring for the seven invariants. -/
@@ -90,7 +90,7 @@ structure LoadGraph where
       whose only spec-relevant property is `objects[0] = main` (the
       `Discover` seed). Consumers that need a particular traversal
       order compute it explicitly from `deps` — e.g. BFS for symbol
-      resolution (`Plan.Resolve.bfsOrder`), DFS post-order for init
+      resolution (`Reloc.Symbol.bfsOrder`), DFS post-order for init
       (already bundled as `initOrder`). -/
   objects     : Array LoadedObject
   /-- Per-object dependency indices, recorded during DFS. Parallel to
@@ -98,11 +98,11 @@ structure LoadGraph where
       idx in `deps[i]`. -/
   deps        : Array (Array Nat)
   /-- DFS post-order over the dep graph: indices in the order each
-      object's `dfs` returned. Used as the init order (deps before
+      object's `discoverWork` returned. Used as the init order (deps before
       dependents, cycles undefined per gabi 08). Established during
-      `discoverWith` via `DfsState.markComplete`. -/
+      `discoverWith` via `Discovered.markComplete`. -/
   initOrder   : Array (Fin objects.size)
-  /-- Non-emptiness — witnessed by `DfsState.initial` seeding with main
+  /-- Non-emptiness — witnessed by `Discovered.initial` seeding with main
       before the DFS begins. -/
   sizePos     : 0 < objects.size
   /-- Names pairwise distinct. Witnessed by the DFS `nameIx` dedup
@@ -155,7 +155,7 @@ def ReachableFromMain (g : LoadGraph) (i : Nat) : Prop :=
 end LoadGraph
 
 -- ============================================================================
--- recordEdge — push a target onto deps[src]. Used by `DfsState.recordDep`.
+-- recordEdge — push a target onto deps[src]. Used by `Discovered.recordDep`.
 -- ============================================================================
 
 /-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
@@ -214,7 +214,7 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
 
 -- ============================================================================
 -- findLoadedIdx — name lookup over Array LoadedObject. Free function so
--- both `LoadGraph` (final output) and `DfsState` (Driver.lean
+-- both `LoadGraph` (final output) and `Discovered` (Discovered/Traversal
 -- construction state) can use it.
 -- ============================================================================
 
@@ -246,7 +246,7 @@ theorem findLoadedIdx_none_iff (objects : Array LoadedObject) (name : String) :
   simp
 
 /-- Pushing a freshly-resolved object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `DfsState.pushObject`
+    The precondition `findLoadedIdx = none` is what `Discovered.pushObject`
     discharges from `nameIx[obj.name]? = none` via `nameIxValid`. -/
 theorem nodup_names_push_of_findLoadedIdx_none
     {objects : Array LoadedObject} {obj : LoadedObject}

@@ -9,7 +9,7 @@ processor-specific ranges stay representable as raw values, and other
 unassigned values are classified as reserved.
 -/
 
-import LeanLoad.Parse.Decode
+import LeanLoad.Parse.Decode.Decodable
 
 namespace LeanLoad.Parse
 
@@ -59,8 +59,8 @@ inductive DynTag where
   | reserved (raw : UInt64)
   deriving Repr, BEq, DecidableEq, Inhabited
 
-instance : RawDecode DynTag UInt64 where
-  ofRaw
+instance : DecodableFromScalar DynTag UInt64 where
+  fromScalar
   | 0  => .ok .null
   | 1  => .ok .needed
   | 2  => .ok .pltrelsz

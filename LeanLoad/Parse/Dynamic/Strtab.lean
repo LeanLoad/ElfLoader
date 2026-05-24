@@ -16,7 +16,7 @@ type error rather than a silent runtime mis-read.
 -/
 
 import LeanLoad.Parse.Address
-import LeanLoad.Parse.Decode
+import LeanLoad.Parse.Decode.Decoder
 
 namespace LeanLoad.Parse
 
@@ -31,9 +31,9 @@ namespace Strtab
     string reference will fail later through `StrtabEntry.ofOff`. -/
 def empty : Strtab := ByteArray.mk #[]
 
-/-- Parse a string table: preserve bytes exactly. gabi 04 string tables have
+/-- Decode a string table: preserve bytes exactly. gabi 04 string tables have
     no fixed-width record structure; offsets are validated by `lookup`. -/
-def parse : Decoder Strtab := buffer
+def decode : Decoder Strtab := Decoder.buffer
 
 end Strtab
 
@@ -71,7 +71,7 @@ def ofOff (tab : Strtab) (off : StrtabOff) : Except String (StrtabEntry tab) :=
 end StrtabEntry
 
 /-- 32-byte string-table fixture holding four NUL-terminated names.
-    Coordinated with the consolidated `Parse.Example.fixtureBytes`: the
+    Coordinated with the consolidated `Parse.Examples.fixtureBytes`: the
     consumed entries are pointed at by `DT_NEEDED` (→ "libc.so.6"),
     `DT_SONAME` (→ "mylib.so"), `DT_RUNPATH` (→ "lib"), and
     `RawSym.fixtureBytes`'s second symbol's `st_name` (→ "printf").
