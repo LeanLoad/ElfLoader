@@ -1,17 +1,17 @@
 /-
 Discover finalization — seed DFS from main and build `LoadGraph`.
 
-`Traversal.lean` owns the mutual DFS over explicit `WorkItem`s and
+`DFS.lean` owns the mutual DFS over explicit `WorkItem`s and
 threads state-evolution invariants through recursive discovery. This file
 consumes that final `WorkListAcc`, marks the main object complete, and
-promotes the final `Discovered` to the public `LoadGraph` by proving:
+promotes the final `State` to the public `LoadGraph` by proving:
 
   · `closure` — every `deps[i]` row has one edge per `DT_NEEDED`.
   · `initOrderSize` — the DFS post-order covers every object.
   · `initOrderNodup` — post-order contains no duplicate indices.
 -/
 
-import LeanLoad.Discover.Traversal
+import LeanLoad.Discover.DFS
 
 namespace LeanLoad.Discover
 
@@ -21,17 +21,17 @@ open LeanLoad
 -- discoverWith — top-level finalizer. Seed with main, recurse into main's
 -- work-item list via `discoverWorkList` with `newIdx = 0` (each iteration records
 -- an edge 0 → childIdx into main's row), then promote the final
--- `Discovered` to a `LoadGraph` by discharging the closure invariant
+-- `State` to a `LoadGraph` by discharging the closure invariant
 -- pointwise from `rowSum` + `pending = 0` everywhere.
 -- ============================================================================
 
-/-- Drive the DFS to completion against `resolver`, then construct the
+/-- Drive the DFS to completion against `finder`, then construct the
     `LoadGraph` output. The fuel cap is a Lean-termination concession
     (each new push strictly grows `objects.size`, so a true upper bound
     is "the total number of transitively-needed sonames"). -/
-def discoverWith {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : Nat)
+def discoverWith {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fuel : Nat)
     (mainObj : LoadedObject) : m LoadGraph := do
-  let s0 := Discovered.initial mainObj
+  let s0 := State.initial mainObj
   let initialWork := WorkItem.ofNeededArray mainObj.elf.runpath mainObj.elf.needed
   -- Drive DFS over main's NEEDED via `discoverWorkList` with `newIdx = 0`. Each
   -- iteration: discoverWork(work) → (sub, childIdx), then recordDep 0 childIdx.
@@ -63,7 +63,7 @@ def discoverWith {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : N
         exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
       postOrderRange := by intro x h_mem; left; exact h_mem
       newIdxNotInPostOrder := h_zero_not_in }
-  let final ← discoverWorkList resolver fuel s0 0 initialWork init
+  let final ← discoverWorkList finder fuel s0 0 initialWork init
   -- After discoverWorkList, append main's idx (0) to postOrder via markComplete.
   -- markComplete needs 0 ∉ final.state.postOrder.toList, which is
   -- final.newIdxNotInPostOrder.

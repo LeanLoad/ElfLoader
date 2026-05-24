@@ -3,7 +3,7 @@ Discover examples — pure, in-memory `#guard` scenarios.
 
 The DFS traversal/finalization path is generic over the effect monad.
 This file substitutes an in-memory
-`ExampleStore` for the filesystem, builds an `Resolver (Except String)`
+`ExampleStore` for the filesystem, builds an `DependencyFinder (Except String)`
 instance over it (re-simulating the C-side path search at the Lean
 level), and exercises shape-level behaviors via `#guard` at
 elaboration time:
@@ -20,14 +20,14 @@ via `Runtime.openByName`) is exercised by `./run.sh` over
 `examples/build/main`.
 
 Canonical name = `elf.soname` (required) for NEEDED deps; `basename
-mainPath` for the main entry. Matches production `Resolver.io` /
+mainPath` for the main entry. Matches production `DependencyFinder.io` /
 `discover` exactly. `mockElf` defaults `soname := some "anon"` so the
 SONAME-required production policy is satisfied by default — examples
 that want to exercise the SONAME-missing error path pass
 `soname := none` explicitly.
 -/
 
-import LeanLoad.Discover.Finalize
+import LeanLoad.Discover.Build
 
 namespace LeanLoad.Discover
 
@@ -43,7 +43,7 @@ open LeanLoad.Parse (Elf)
 /-- Build a minimal `Elf` for Discover examples. `soname`, `runpath`,
     and `needed` are the only fields Discover observes; everything else is
     zeroed and the structural invariants discharge automatically.
-    `soname` defaults to `some "anon"` because production `Resolver.io`
+    `soname` defaults to `some "anon"` because production `DependencyFinder.io`
     *requires* DT_SONAME on every NEEDED-loaded `.so`. Examples that want
     to exercise the SONAME-missing error path can pass `soname := none`
     explicitly. -/
@@ -122,14 +122,14 @@ private def exampleSearchCandidates (soname : String)
       return acc
     dirs.map (fun d => s!"{d}/{soname}")
 
-/-- The example `Resolver` instance: simulate `Runtime.openByName` over an
+/-- The example `DependencyFinder` instance: simulate `Runtime.openByName` over an
     `ExampleStore`, with the same SONAME-required policy as production
-    `Resolver.io` — `findSome?` skips entries whose elf has no DT_SONAME
+    `DependencyFinder.io` — `findSome?` skips entries whose elf has no DT_SONAME
     (treats them as "not found"; production throws). Closure captures
     both the store and a simulated `LD_LIBRARY_PATH`. -/
-private def exampleResolver (store : ExampleStore) (envPath : Option String := none) :
-    Resolver (Except String) :=
-  { resolve := fun work => .ok <|
+private def exampleFinder (store : ExampleStore) (envPath : Option String := none) :
+    DependencyFinder (Except String) :=
+  { find := fun work => .ok <|
       (exampleSearchCandidates work.needed work.runpath envPath).findSome? fun path =>
         (store.getElf? path).bind fun elf =>
           elf.soname.map fun name => { name, handle := (default : Runtime.File), elf }
@@ -149,7 +149,7 @@ private def discoverExample (store : ExampleStore) (mainPath : String)
     (envPath : Option String := none) : Except String LoadGraph := do
   let some mainElf := store.getElf? mainPath
     | .error s!"discoverExample: main {mainPath} not in store"
-  discoverWith (exampleResolver store envPath) 64
+  discoverWith (exampleFinder store envPath) 64
     (LoadedObject.ofMain mainPath (default : Runtime.File) mainElf)
 
 -- ============================================================================
@@ -263,8 +263,8 @@ private def sonameGraph : Except String LoadGraph := discoverExample sonameStore
   | _     => false
 
 -- ---- 5. Missing dep -----------------------------------------------------
--- main NEEDs /missing which isn't in the store → `Resolver.resolve` returns
--- none → traversal fires `resolver.fail` → `.error` propagates out.
+-- main NEEDs /missing which isn't in the store → `DependencyFinder.find` returns
+-- none → traversal fires `finder.fail` → `.error` propagates out.
 
 private def missingStore : ExampleStore := [
   ("/main", mockElf (soname := some "main") (needed := #["/missing"]))]
@@ -291,8 +291,8 @@ private def searchStore : ExampleStore := [
   | _     => false
 
 -- ---- 7. SONAME-required for NEEDED deps --------------------------------
--- A NEEDED dep without DT_SONAME is rejected: production Resolver.io
--- throws; `exampleResolver` (matching policy) makes the entry invisible to
+-- A NEEDED dep without DT_SONAME is rejected: production DependencyFinder.io
+-- throws; `exampleFinder` (matching policy) makes the entry invisible to
 -- the store lookup (findSome? skips SONAME-less elves), surfacing as
 -- the same "cannot find" diagnostic.
 

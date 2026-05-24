@@ -1,8 +1,8 @@
 /-
 Recursive discovery over explicit dependency work items.
 
-The construction carrier (`Discovered`, with its smart constructors
-and characterisation theorems) lives in `Discovered.lean`. This file adds
+The construction carrier (`State`, with its smart constructors
+and characterisation theorems) lives in `State.lean`. This file adds
 the state-evolution layer on top:
 
   · `WorkResult` / `WorkListAcc` — return types that thread the
@@ -11,7 +11,7 @@ the state-evolution layer on top:
      `WorkResult` is what one `discoverWork` returns; `WorkListAcc` is what
      `discoverWorkList` carries through a list of `WorkItem`s.
 
-  · `discoverWork resolver fuel discovered work` — one recursive discovery call.
+  · `discoverWork finder fuel discovered work` — one recursive discovery call.
      Resolves the explicit `WorkItem`, dedups against `discovered.nameIx`
      (catches both already-finished and in-progress-via-cycle:
      `pushObject` inserts into `nameIx` BEFORE recursing into children,
@@ -19,13 +19,13 @@ the state-evolution layer on top:
      On miss, pushes the object and folds over its child work items,
      recording each child edge via `recordDep`.
 
-Resolvers are abstract — `Resolver m` from `Discover/Resolver.lean`.
-`Discover.Finalize` seeds the traversal from the main object and
-promotes the final `Discovered` to `LoadGraph`.
+Dependency finders are abstract — `DependencyFinder m` from the public `LeanLoad.Discover` interface.
+`Discover.Build` seeds the traversal from the main object and
+promotes the final `State` to `LoadGraph`.
 -/
 
-import LeanLoad.Discover.Discovered
-import LeanLoad.Discover.Resolver
+import LeanLoad.Discover.State
+import LeanLoad.Discover
 
 namespace LeanLoad.Discover
 
@@ -52,8 +52,8 @@ open LeanLoad
 --   old (`j < s0.size, j ≠ newIdx`) and new (`j ≥ s0.size`) rows.
 -- ============================================================================
 
-structure WorkResult (s0 : Discovered) where
-  state : Discovered
+structure WorkResult (s0 : State) where
+  state : State
   idx : Nat
   sizeMono : s0.objects.size ≤ state.objects.size
   idxLt : idx < state.objects.size
@@ -83,8 +83,8 @@ structure WorkResult (s0 : Discovered) where
   postOrderRange : ∀ (x : Nat), x ∈ state.postOrder.toList →
     x ∈ s0.postOrder.toList ∨ s0.objects.size ≤ x
 
-structure WorkListAcc (s0 : Discovered) (newIdx : Nat) (remaining : Nat) where
-  state : Discovered
+structure WorkListAcc (s0 : State) (newIdx : Nat) (remaining : Nat) where
+  state : State
   sizeMono : s0.objects.size ≤ state.objects.size
   newIdxLt : newIdx < state.objects.size
   /-- `state.pending[newIdx]` tracks the unprocessed tail of the
@@ -137,16 +137,16 @@ structure WorkListAcc (s0 : Discovered) (newIdx : Nat) (remaining : Nat) where
 
 mutual
 
-/-- Resolve a work item, dedup, push-on-miss, recurse into child work items.
+/-- Find a work item's dependency, dedup, push-on-miss, recurse into child work items.
     Fuel-bounded; mutual with `discoverWorkList`. -/
-def discoverWork {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : Nat)
-    (s0 : Discovered) (work : WorkItem) :
+def discoverWork {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fuel : Nat)
+    (s0 : State) (work : WorkItem) :
     m (WorkResult s0) := do
   match fuel with
-  | 0 => resolver.fail "discover: fuel exhausted"
+  | 0 => finder.fail "discover: fuel exhausted"
   | fuel + 1 =>
-    match ← resolver.resolve work with
-    | none => resolver.fail s!"discover: cannot find '{work.needed}' (runpath={work.runpath})"
+    match ← finder.find work with
+    | none => finder.fail s!"discover: cannot find '{work.needed}' (runpath={work.runpath})"
     | some resolved =>
       let canonical := resolved.name
       let handle := resolved.handle
@@ -176,7 +176,7 @@ def discoverWork {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : N
         let newIdx := s0.objects.size
         let s1 := s0.pushObject obj h_lookup
         have h_s1_size : s1.objects.size = s0.objects.size + 1 :=
-          Discovered.pushObject_size s0 obj h_lookup
+          State.pushObject_size s0 obj h_lookup
         have h_newIdx_lt_s1 : newIdx < s1.objects.size := by
           show s0.objects.size < s1.objects.size
           rw [h_s1_size]; omega
@@ -188,7 +188,7 @@ def discoverWork {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : N
         have h_pend_new : (s1.pending[newIdx]'(by
             rw [s1.pendingSize]; exact h_newIdx_lt_s1))
               = childWork.length := by
-          rw [Discovered.pushObject_pending_new s0 obj h_lookup]
+          rw [State.pushObject_pending_new s0 obj h_lookup]
           simp [obj, childWork, WorkItem.ofNeededArray, Array.length_toList]
         -- s1's postOrder = s0's postOrder (pushObject doesn't touch it).
         -- newIdx = s0.size is not in s0.postOrder (by s0.postOrderBounds).
@@ -217,7 +217,7 @@ def discoverWork {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : N
               exact absurd (Nat.lt_of_lt_of_le h_hi h_lo) (Nat.lt_irrefl _)
             postOrderRange := by intro x h_mem; left; exact h_mem
             newIdxNotInPostOrder := h_newIdx_not_in_s1 }
-        let final ← discoverWorkList resolver fuel s1 newIdx childWork init
+        let final ← discoverWorkList finder fuel s1 newIdx childWork init
         -- Append newIdx to postOrder via markComplete (using
         -- WorkListAcc's newIdxNotInPostOrder as the Nodup precondition).
         let s_final := final.state.markComplete newIdx final.newIdxLt
@@ -240,7 +240,7 @@ def discoverWork {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : N
               show j ≠ s0.objects.size
               exact Nat.ne_of_lt h_j
             have h_step1 := final.pendingOldPreserved j h_j_s1 h_ne
-            have h_step2 := Discovered.pushObject_pending_old s0 obj h_lookup j h_j
+            have h_step2 := State.pushObject_pending_old s0 obj h_lookup j h_j
             exact h_step1.trans h_step2
           newRowsComplete := by
             intro j h_lo h_hi
@@ -325,8 +325,8 @@ def discoverWork {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : N
 /-- Process a list of dependency work items for an object at `newIdx`. For each
     item: recurse via `discoverWork`, then `recordDep newIdx childIdx` into the
     returned state. Threads `WorkListAcc` through the recursion. -/
-def discoverWorkList {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel : Nat)
-    (s0 : Discovered) (newIdx : Nat)
+def discoverWorkList {m : Type → Type} [Monad m] (finder : DependencyFinder m) (fuel : Nat)
+    (s0 : State) (newIdx : Nat)
     (work : List WorkItem) (acc : WorkListAcc s0 newIdx work.length) :
     m (WorkListAcc s0 newIdx 0) := do
   match work, acc with
@@ -336,7 +336,7 @@ def discoverWorkList {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel
   | next :: rest, acc =>
     -- `(next :: rest).length = rest.length + 1` definitionally, so acc' is a cast.
     let acc' : WorkListAcc s0 newIdx (rest.length + 1) := acc
-    let sub ← discoverWork resolver fuel acc'.state next
+    let sub ← discoverWork finder fuel acc'.state next
     -- recordDep preconditions:
     --   · h_src : newIdx < sub.state.objects.size (from acc.newIdxLt + sub.sizeMono).
     --   · h_tgt : sub.idx < sub.state.objects.size (= sub.idxLt).
@@ -383,7 +383,7 @@ def discoverWorkList {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel
       --   1. s'.pending[j] = sub.state.pending[j] (recordDep src≠j).
       --   2. sub.state.pending[j] = acc'.state.pending[j] (sub.pendingPreserved).
       --   3. acc'.state.pending[j] = s0.pending[j] (acc'.pendingOldPreserved).
-      have h_step1 := Discovered.recordDep_pending_other sub.state
+      have h_step1 := State.recordDep_pending_other sub.state
         newIdx sub.idx h_src sub.idxLt h_pending_pos j
         (Nat.lt_of_lt_of_le h_j h_mono') (fun h_eq => h_ne h_eq.symm)
       have h_step2 := sub.pendingPreserved j
@@ -399,7 +399,7 @@ def discoverWorkList {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel
       have h_hi_sub : j < sub.state.objects.size := h_hi
       -- Step 1: s'.pending[j] = sub.state.pending[j] (recordDep src=newIdx,
       -- so other rows untouched).
-      have h_step1 := Discovered.recordDep_pending_other sub.state
+      have h_step1 := State.recordDep_pending_other sub.state
         newIdx sub.idx h_src sub.idxLt h_pending_pos j h_hi_sub
         (fun h_eq => h_ne h_eq.symm)
       -- Step 2: cases on whether j was in acc'.state or pushed by sub-discovery.
@@ -486,7 +486,7 @@ def discoverWorkList {m : Type → Type} [Monad m] (resolver : Resolver m) (fuel
         postOrderContainsNew := h_postOrderContainsNew'
         postOrderRange := h_postOrderRange'
         newIdxNotInPostOrder := h_newIdxNotInPostOrder' }
-    discoverWorkList resolver fuel s0 newIdx rest acc''
+    discoverWorkList finder fuel s0 newIdx rest acc''
 
 end
 

@@ -134,7 +134,7 @@ def soname? (tab : Dyntab) : Except String (Option StrtabOff) :=
   (single? tab .soname).map (·.map StrtabOff.mk)
 
 /-- `DT_RUNPATH` strtab byte-offset, if present. `DT_RPATH` is intentionally not
-    consulted (deprecated by gabi 08; `Discover/IO.lean` refuses it too). -/
+    consulted (deprecated by gabi 08; `Discover/Runtime.lean` refuses it too). -/
 def runpath? (tab : Dyntab) : Except String (Option StrtabOff) :=
   (single? tab .runpath).map (·.map StrtabOff.mk)
 

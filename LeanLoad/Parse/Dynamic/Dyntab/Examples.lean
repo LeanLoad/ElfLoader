@@ -112,7 +112,7 @@ private def okEq [BEq α] (actual : Except String α) (expected : α) : Bool :=
 
 -- `DT_RPATH` is intentionally not consulted: a table with only
 -- `DT_RPATH` (no `DT_RUNPATH`) yields `runpath = none`. README
--- + `Discover/IO.lean` + `Runtime.c` all agree on this policy;
+-- + `Discover/Runtime.lean` + `Runtime.c` all agree on this policy;
 -- the Parse layer enforces it by simply not reading `DT_RPATH`.
 private def rpathOnlyTab : Dyntab := #[
   { d_tag := .rpath, d_un := 0x42 },

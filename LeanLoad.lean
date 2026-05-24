@@ -50,12 +50,8 @@ import LeanLoad.Reloc.ABI
 import LeanLoad.Exec.Range
 import LeanLoad.Runtime
 
-import LeanLoad.Discover.Work
-import LeanLoad.Discover.Resolver
-import LeanLoad.Discover.Discovered
-import LeanLoad.Discover.Traversal
-import LeanLoad.Discover.Finalize
-import LeanLoad.Discover.IO
+import LeanLoad.Discover
+import LeanLoad.Discover.Runtime
 import LeanLoad.Discover.Examples  -- pure #guard scenarios; elaborate on build
 
 import LeanLoad.Layout.Align
@@ -65,6 +61,7 @@ import LeanLoad.Reloc.Symbol
 import LeanLoad.Reloc
 import LeanLoad.Layout
 
+import LeanLoad.Exec
 import LeanLoad.Exec.LoadOps
 import LeanLoad.Exec.Safety
 import LeanLoad.Exec.Reloc

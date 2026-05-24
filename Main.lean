@@ -3,7 +3,7 @@ LeanLoad CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is
 glue that ties the pure core (`Parse` + `Resolve` + `Layout`) and the exec
-stage (`Exec`) to the IO layer (`Runtime`, `Discover.IO`).
+stage (`Exec`) to the IO layer (`Runtime`, `Discover.Runtime`).
 
 The IO bookend `realize` (below) is a thin wrapper:
 `Exec.build` produces a safety-witnessed `LoadOps`,

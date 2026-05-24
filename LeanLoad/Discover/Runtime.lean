@@ -1,11 +1,12 @@
 /-
 Discover executor — IO instantiation.
 
-The DFS traversal/finalization path lives in `Discover.Traversal` and
-`Discover.Finalize` — pure and generic over the effect monad. The
-abstract IO leaf (`Resolver m`) is in `Discover.Resolver`. This file:
+The DFS traversal/finalization path lives in `Discover.DFS` and
+`Discover.Build` — pure and generic over the effect monad. The
+abstract IO leaf (`DependencyFinder m`) is in the public `LeanLoad.Discover`
+interface. This file:
 
-  · Builds `Resolver.io` — production `resolve` composed from
+  · Builds `DependencyFinder.io` — production `find` composed from
     `Runtime.openByName` (C-side path search + open) + checked `Parse`.
     Canonical dedup key = `DT_SONAME` (production
     *requires* it; missing-SONAME deps fail loud).
@@ -15,7 +16,7 @@ abstract IO leaf (`Resolver m`) is in `Discover.Resolver`. This file:
     (basename of `mainPath` — executables don't conventionally set
     SONAME), and drives the DFS via `discoverWith`.
 
-Examples substitute a private in-memory `Resolver` value for `Resolver.io`
+Examples substitute a private in-memory `DependencyFinder` value for `DependencyFinder.io`
 and call the same `discoverWith` — no IO needed.
 
 Search rules (gabi 08 § Shared Object Dependencies) all live in
@@ -26,7 +27,7 @@ Search rules (gabi 08 § Shared Object Dependencies) all live in
 `DT_RPATH` is deprecated and intentionally not honoured.
 -/
 
-import LeanLoad.Discover.Finalize
+import LeanLoad.Discover.Build
 import LeanLoad.Parse
 import LeanLoad.Runtime
 
@@ -38,7 +39,7 @@ open LeanLoad
 
 -- ============================================================================
 -- Checked parse over an already-open file. Used by both
--- `Resolver.io.resolve` (DFS-discovered deps) and `discover` (main).
+-- `DependencyFinder.io.find` (DFS-discovered deps) and `discover` (main).
 -- ============================================================================
 
 /-- Parse and validate the open file. The file stays open for the loader's
@@ -50,10 +51,10 @@ def parseFromFile (file : Runtime.File) : IO Parse.Elf :=
   Parse.parse file
 
 -- ============================================================================
--- Resolver instance for production IO.
+-- DependencyFinder instance for production IO.
 -- ============================================================================
 
-/-- Production `Resolver.resolve`: C-side search + open, then Lean-
+/-- Production `DependencyFinder.find`: C-side search + open, then Lean-
     side checked parse. Canonical dedup key = `DT_SONAME` —
     required for every NEEDED-loaded `.so`. Fails loud if unset.
 
@@ -63,8 +64,8 @@ def parseFromFile (file : Runtime.File) : IO Parse.Elf :=
     toolchain sets it via `-Wl,-soname,…`; a SONAME-less `.so` is
     almost always a build mistake. Failing loud here is more
     diagnostic-friendly than silently double-loading. -/
-def Resolver.io : Resolver IO :=
-  { resolve := fun work => do
+def DependencyFinder.io : DependencyFinder IO :=
+  { find := fun work => do
       match ← Runtime.openByName work.needed work.runpath with
       | none => pure none
       | some file => do
@@ -88,13 +89,13 @@ def Resolver.io : Resolver IO :=
     Main is opened directly via `Runtime.openByName` (literal-path
     branch — `mainPath` contains '/'). Its canonical name is the
     path basename (via `LoadedObject.ofMain`); all NEEDED-loaded deps
-    go through `Resolver.io.resolve`, which *requires* DT_SONAME. -/
+    go through `DependencyFinder.io.find`, which *requires* DT_SONAME. -/
 def discover (mainPath : String) : IO LoadGraph := do
   match ← Runtime.openByName mainPath none with
   | none => throw (IO.userError s!"discover: cannot open main '{mainPath}'")
   | some mainFile => do
     let mainElf ← parseFromFile mainFile
-    discoverWith Resolver.io 4096
+    discoverWith DependencyFinder.io 4096
       (LoadedObject.ofMain mainPath mainFile mainElf)
 
 end LeanLoad.Discover

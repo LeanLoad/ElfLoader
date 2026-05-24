@@ -38,6 +38,7 @@ no separate flat predicate — `runSafe` consumes a `LoadSafe`
 witness directly.
 -/
 
+import LeanLoad.Exec
 import LeanLoad.Layout.Basic
 import LeanLoad.Runtime
 
@@ -45,44 +46,6 @@ namespace LeanLoad.Exec
 
 open LeanLoad
 open LeanLoad.Layout (SegmentLayout)
-
--- ============================================================================
--- Hierarchy: SegmentSetup + (layout, stores) → SegmentOps objCount → ElfOps objCount → LoadOps objCount.
--- ============================================================================
-
-/-- The three setup ops for one segment: file overlay (`mmap`),
-    partial-page BSS clear (`zero`), and final permission (`mprotect`).
-    `mmap` and `zero` are `Option`-typed because they may be skipped
-    (BSS-only segments have no mmap; segments aligned to a page
-    boundary have no partial BSS). `mprotect` is mandatory. The
-    relocation stores are computed separately and added when extending
-    to a full `SegmentOps`. -/
-structure SegmentSetup where
-  mmap     : Option MmapOp
-  zero     : Option ZeroOp
-  mprotect : MprotectOp
-
-/-- Per-segment ops bundle: extends `SegmentSetup` (the three setup-time
-    ops) with the underlying layout and the baked relocation stores.
-    `setupSegment` produces the parent `SegmentSetup`; `bakeSegmentRelocs`
-    produces `stores`; `Exec.buildSegment` combines them via
-    `{ setup with layout, stores }`. -/
-structure SegmentOps (objCount : Nat) extends SegmentSetup where
-  layout   : SegmentLayout objCount
-  stores   : Array StoreOp
-
-/-- Per-elf ops: just the per-segment ops bundles. The per-elf base
-    address is implicit in each segment's op records (`MmapOp.addr`,
-    `StoreOp.addr`, etc.) — those carry absolute addresses computed
-    via `setupSegment` with the base mixed in. The source-of-truth
-    base lives on `BoundPlan.bases[i]` for callers that need it
-    (e.g. `Exec.ctorAddrs`, `Main.debug`). -/
-structure ElfOps (objCount : Nat) where
-  segments : Array (SegmentOps objCount)
-
-/-- Top-level op bundle, in elf order (main is at index 0). -/
-structure LoadOps (objCount : Nat) where
-  elfs : Array (ElfOps objCount)
 
 -- ============================================================================
 -- Construction helper — compute the setup ops from a SegmentLayout.

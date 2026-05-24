@@ -14,47 +14,12 @@ in-order per elf; elves in-order top-level). The witness fields are
 erased at runtime — they exist only to gate the call.
 -/
 
-import LeanLoad.Exec.Range
+import LeanLoad.Exec
 import LeanLoad.Exec.LoadOps
 
 namespace LeanLoad.Exec
 
 open LeanLoad
-
--- ============================================================================
--- Structural safety witness — mirrors the LoadOps tree shape.
--- ============================================================================
-
-/-- Per-segment safety: every emitted op fits inside the reservation. -/
-structure SegmentSafe (rsvAddr rsvLen : UInt64) (so : SegmentOps objCount) : Prop where
-  mmapInRange     : ∀ m, so.mmap = some m → Range.InRange m.addr m.len rsvAddr rsvLen
-  zeroInRange     : ∀ z, so.zero = some z → Range.InRange z.addr z.len rsvAddr rsvLen
-  storesInRange   : ∀ s ∈ so.stores, Range.InRange s.addr s.byteLen rsvAddr rsvLen
-  mprotectInRange : Range.InRange so.mprotect.addr so.mprotect.len rsvAddr rsvLen
-
-/-- Per-elf safety: every segment is SegmentSafe, plus within-elf mmap
-    disjointness. -/
-structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps objCount) : Prop where
-  segments : ∀ k, ∀ h : k < eo.segments.size,
-    SegmentSafe rsvAddr rsvLen (eo.segments[k]'h)
-  mmapsDisjoint : ∀ i j, ∀ hi : i < eo.segments.size, ∀ hj : j < eo.segments.size,
-    i < j → ∀ m_i m_j,
-    (eo.segments[i]'hi).mmap = some m_i →
-    (eo.segments[j]'hj).mmap = some m_j →
-    Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
-
-/-- Top-level structural safety: every elf is ElfSafe, plus cross-elf
-    mmap disjointness. The natural target of the build's safety
-    proof: `BoundPlan`'s per-op and disjointness theorems map
-    directly onto its fields. -/
-structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps objCount) : Prop where
-  elfs : ∀ k, ∀ h : k < lo.elfs.size, ElfSafe rsvAddr rsvLen (lo.elfs[k]'h)
-  mmapsDisjoint : ∀ i j, ∀ hi : i < lo.elfs.size, ∀ hj : j < lo.elfs.size, i < j →
-    ∀ k_i k_j (h_ki : k_i < (lo.elfs[i]'hi).segments.size)
-              (h_kj : k_j < (lo.elfs[j]'hj).segments.size) m_i m_j,
-    ((lo.elfs[i]'hi).segments[k_i]'h_ki).mmap = some m_i →
-    ((lo.elfs[j]'hj).segments[k_j]'h_kj).mmap = some m_j →
-    Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
 
 -- ============================================================================
 -- IO interpreter — dispatches each op in protocol order.

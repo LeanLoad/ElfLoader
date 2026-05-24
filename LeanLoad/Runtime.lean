@@ -66,7 +66,7 @@ end File
 
     Returns just the open file (no resolved path back) — the
     canonical dedup key is `DT_SONAME` with the requested name as
-    fallback (see `Discover.Resolver.io`), neither of which needs the
+    fallback (see `Discover.DependencyFinder.io`), neither of which needs the
     resolved path. Implementation lives in `Runtime.c` — keeps the
     path splitting and `getenv` call out of Lean. -/
 @[extern "leanload_open_by_name"]

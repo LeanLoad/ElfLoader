@@ -23,10 +23,12 @@ abbrev InitFiniEntry (segments : SegmentTable) :=
 abbrev InitFiniArray (segments : SegmentTable) :=
   Array (InitFiniEntry segments)
 
+namespace InitFiniArray
+
 /-- Check one dynamic constructor/destructor array. Zero is accepted by
     `callTargetInExecSeg`; non-zero entries must point into an executable
     PT_LOAD segment. -/
-def checkInitFiniArray (label : String) (segments : SegmentTable) (entries : Array Eaddr) :
+def ofRaw (label : String) (segments : SegmentTable) (entries : Array Eaddr) :
     Except String (InitFiniArray segments) := do
   let mut checked : InitFiniArray segments := #[]
   for h : i in [:entries.size] do
@@ -42,6 +44,8 @@ def checkInitFiniArray (label : String) (segments : SegmentTable) (entries : Arr
         .error s!"parse: {label}[{i}] = 0x{entry.toNat} is not zero or in any \
           executable PT_LOAD ({entries.size} entries total)"
   return checked
+
+end InitFiniArray
 
 end Dynamic
 

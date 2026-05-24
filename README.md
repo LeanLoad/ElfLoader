@@ -31,7 +31,7 @@ The byte-level trust surface is [`LeanLoad/Parse/`](LeanLoad/Parse/)
 [`LeanLoad/Elaborate/`](LeanLoad/Elaborate/) (typed views with
 gABI-mandated invariants carried as `Segment` fields). The IO trust
 seam is `LoadOps.runSafe` in
-[`LeanLoad/Materialize/Safety.lean`](LeanLoad/Materialize/Safety.lean):
+[`LeanLoad/Exec/Safety.lean`](LeanLoad/Exec/Safety.lean):
 it only accepts a `LoadSafe`-witnessed `LoadOps` tree, where
 `SegmentSafe` / `ElfSafe` / `LoadSafe` together discharge in-bounds
 and pairwise-disjoint without ever materialising a flat predicate
@@ -284,20 +284,18 @@ LeanLoad/
     LoadMap/               checked header / PT_LOAD map used before dynamic reads
     Dynamic/               .dynamic table, strtab/symtab, relocation, init/fini staging
     Examples.lean          checked parse fixture and cross-section #guards
+  Discover.lean            public Discover interface: LoadedObject, LoadGraph,
+                           WorkItem, ResolvedObject, DependencyFinder
   Discover/
-    Graph.lean             LoadedObject + LoadGraph with non-emptiness / names-Nodup /
-                           deps-shape / deps-bounds witnesses + smart constructors
-    Work.lean               WorkItem / ResolvedObject dependency-discovery boundary types
-    Resolver.lean           resolver leaf (resolve + fail), monad-polymorphic;
-                           instantiated by IO.lean (production) and examples (pure)
-    Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
+    Graph.lean             recordEdge / findLoadedIdx construction helpers
+    State.lean             State carrier + smart constructors (initial/pushObject/
                            recordDep/markComplete) + characterisation theorems
-    Traversal.lean         WorkResult / WorkListAcc + mutual `discoverWork` /
+    DFS.lean               WorkResult / WorkListAcc + mutual `discoverWork` /
                            `discoverWorkList`
-    Finalize.lean          `discoverWith` top-level (promotes final state to LoadGraph)
-    IO.lean                Resolver.io (Runtime.openByName → parseFromHandle) +
+    Build.lean             `discoverWith` top-level (promotes final state to LoadGraph)
+    Runtime.lean           DependencyFinder.io (Runtime.openByName → parseFromHandle) +
                            `discover` (production entry; opens main, drives discovery)
-    Examples.lean          private in-memory Resolver + #guard scenarios
+    Examples.lean          private in-memory DependencyFinder + #guard scenarios
                            (linear/diamond/cycle/SONAME/search-order)
   Reloc.lean               base-free relocation planning over the discovered graph
   Reloc/
@@ -307,13 +305,12 @@ LeanLoad/
     Align.lean             alignment / page-math helpers over UInt64
     Segment.lean           per-segment layout (file + bss + mprotect shape)
     Basic.lean             per-object layout tree + totalSpan
+  Exec.lean                public Exec interface: BoundPlan, LoadOps tree, LoadSafe tree
   Exec/                    base-aware stage — turn Reloc + Layout into witnessed ops
-    BoundPlan.lean         Reloc.Result + Layout.Layout + IO Reserve/coherence proof
+    BoundPlan.lean         BoundPlan accessors and reservation-bound proofs
     Reloc.lean             relocation baking — apply ABI formulas at the bound base
-    LoadOps.lean           `SegmentOps` / `ElfOps` / `LoadOps` tree over typed op
-                           records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
-    Safety.lean            `SegmentSafe` / `ElfSafe` / `LoadSafe` mirror the tree;
-                           `LoadOps.runSafe` is the IO trust seam
+    LoadOps.lean           setupSegment + setup op characterisation lemmas
+    Safety.lean            `LoadOps.runSafe` IO trust seam
     Build.lean             builder: `BoundPlan` → safety-witnessed `LoadOps` tree;
                            DFS post-order ctor / fini address lists
   Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),

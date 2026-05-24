@@ -1,161 +1,19 @@
 /-
-LoadGraph — the typed output of Discover.
+Graph construction helpers for Discover.
 
-Loaded objects (`[0] = main`; the rest in an implementation-defined
-order), their dep edges, the DFS post-order init sequence, and seven
-structural invariants:
-
-  · `sizePos`        — `0 < objects.size`. Makes `main` total (no Option).
-  · `namesNodup`     — names pairwise distinct (canonical-SONAME dedup).
-  · `depsSize`       — `deps.size = objects.size`. `deps` parallel.
-  · `depsBounds`     — every recorded edge target is a valid object idx.
-  · `closure`        — `∀ i, deps[i].size = objects[i].elf.needed.size`.
-                       Every NEEDED has been discovered, resolved, and
-                       recorded — downstream sees a complete dep relation.
-  · `initOrderSize`  — `initOrder.size = objects.size`. Every object
-                       appears exactly once in the init sequence.
-  · `initOrderNodup` — no duplicate `.val`s. With `initOrderSize`, makes
-                       `initOrder` a permutation of `[0, objects.size)`.
-
-`LoadGraph` is the *output* type of Discover and the canonical spec of
-what Discover produces. Construction lives in `Discover/Traversal.lean`
-and `Discover/Finalize.lean` on an internal `Discovered` set (carries the
-four "structural" invariants plus a name→index HashMap accelerator, a
-pending counter for closure, and the postOrder array). The output invariants
-`closure`, `initOrderSize`, `initOrderNodup` are established at the end
-of `discoverWith` from `Discovered`'s end-state.
-
-File layout:
-  · `LoadedObject` + `ofMain` — one entry of the graph.
-  · `LoadGraph` + `LoadGraph.main` — the bundled output.
-  · `recordEdge` + lemmas — `Array (Array Nat)` push primitive used by
-    `Discovered.recordDep`.
-  · `findLoadedIdx` + lemmas — name-based lookup over `Array
-    LoadedObject`. Free function so `Discovered` can use it.
+The public graph shape (`LoadedObject`, `LoadGraph`, reachability) lives in
+`LeanLoad/Discover.lean`. This file keeps the lower-level array primitives and
+lookup lemmas used by the internal `State` construction state.
 -/
 
-import LeanLoad.Parse
-import LeanLoad.Runtime
+import LeanLoad.Discover
 
 namespace LeanLoad.Discover
 
 open LeanLoad
-open LeanLoad.Parse
 
 -- ============================================================================
--- LoadedObject — one entry of the graph.
--- ============================================================================
-
-/-- One loaded object. Production policy (`Discover/IO.lean`):
-    NEEDED-loaded deps must have `DT_SONAME` (used as `.name`);
-    the main executable's `.name` is `basename mainPath` (executables
-    conventionally don't set SONAME). -/
-structure LoadedObject where
-  /-- Canonical dedup key. For NEEDED deps: `elf.soname.get!` (production
-      requires DT_SONAME). For the main executable: `basename mainPath`. -/
-  name : String
-  /-- Open read-only file, kept for `pread` (parsing extras) and
-      `mmap` (Exec stage). Production paths always carry a real
-      fd plus observed size; tests use a dummy `Runtime.File`. -/
-  handle : Runtime.File
-  /-- Checked ELF — output of `Parse.parse`. The type is the witness
-      that PT_LOAD well-formedness held and every dynamic relocation
-      was located against a covering segment. -/
-  elf  : Elf
-
-/-- Construct the main `LoadedObject` from a user-supplied path. The
-    canonical name is the path basename — executables don't conventionally
-    set DT_SONAME, and main is path-loaded (not NEEDED-driven), so we
-    don't consult `elf.soname`. -/
-def LoadedObject.ofMain (mainPath : String) (handle : Runtime.File)
-    (elf : Elf) : LoadedObject :=
-  { name := (mainPath.splitOn "/").getLast?.getD mainPath, handle, elf }
-
--- ============================================================================
--- LoadGraph — the bundled output of Discover.
--- ============================================================================
-
-/-- Output of `Discover` — every transitively-NEEDED object loaded,
-    indexed for `Fin`-total downstream access, with the dep graph and
-    a DFS post-order init sequence bundled. The specific *traversal*
-    order Discover used is an implementation detail: only `[0] = main`
-    is spec-relevant. Symbol resolution (gabi 08 § Shared Object
-    Dependencies) iterates BFS-from-0 over `deps` — see
-    `Reloc.Symbol.bfsOrder` — and doesn't depend on `objects`'s
-    intrinsic order.
-
-    See the module docstring for the seven invariants. -/
-structure LoadGraph where
-  /-- The loaded objects, indexed in an implementation-defined order
-      whose only spec-relevant property is `objects[0] = main` (the
-      `Discover` seed). Consumers that need a particular traversal
-      order compute it explicitly from `deps` — e.g. BFS for symbol
-      resolution (`Reloc.Symbol.bfsOrder`), DFS post-order for init
-      (already bundled as `initOrder`). -/
-  objects     : Array LoadedObject
-  /-- Per-object dependency indices, recorded during DFS. Parallel to
-      `objects` and complete: every NEEDED has been resolved to an
-      idx in `deps[i]`. -/
-  deps        : Array (Array Nat)
-  /-- DFS post-order over the dep graph: indices in the order each
-      object's `discoverWork` returned. Used as the init order (deps before
-      dependents, cycles undefined per gabi 08). Established during
-      `discoverWith` via `Discovered.markComplete`. -/
-  initOrder   : Array (Fin objects.size)
-  /-- Non-emptiness — witnessed by `Discovered.initial` seeding with main
-      before the DFS begins. -/
-  sizePos     : 0 < objects.size
-  /-- Names pairwise distinct. Witnessed by the DFS `nameIx` dedup
-      check before each push. -/
-  namesNodup  : (objects.map (·.name)).toList.Nodup
-  /-- `deps` is parallel to `objects`. -/
-  depsSize    : deps.size = objects.size
-  /-- Every recorded edge target is a valid index into `objects`. -/
-  depsBounds  : ∀ (i : Nat) (h : i < deps.size), ∀ t ∈ deps[i], t < objects.size
-  /-- Closure under NEEDED: every object's `deps` row holds exactly one
-      entry per `DT_NEEDED` of its elf. Established at the end of
-      `discoverWith` once the top-level DFS has returned. -/
-  closure     : ∀ (i : Nat) (h : i < objects.size),
-    (deps[i]'(by rw [depsSize]; exact h)).size = (objects[i]'h).elf.needed.size
-  /-- `initOrder` is parallel to `objects` — every object appears
-      exactly once. -/
-  initOrderSize  : initOrder.size = objects.size
-  /-- No duplicate indices in `initOrder` (treated as `Nat` via `.val`).
-      Combined with `initOrderSize`, makes `initOrder` a permutation
-      of `[0, objects.size)`. -/
-  initOrderNodup : (initOrder.toList.map (·.val)).Nodup
-
-namespace LoadGraph
-
-/-- The main executable — total because `LoadGraph` carries `sizePos`. -/
-def main (g : LoadGraph) : LoadedObject := g.objects[0]'g.sizePos
-
-/-- Single-step dependency edge in the loaded graph: `j ∈ deps[i]`.
-    Defined on `Nat × Nat`; the `i < g.deps.size` hypothesis is part
-    of the existential so the relation can be lifted through
-    `Reachable` without a Fin wrapper. -/
-def Step (g : LoadGraph) (i j : Nat) : Prop :=
-  ∃ (h : i < g.deps.size), j ∈ g.deps[i]'h
-
-/-- Reachable from `i` to `j` via dep edges (reflexive-transitive
-    closure of `Step`). Spec witness for the gabi 08 § Shared Object
-    Dependencies "dependency graph" — every NEEDED chain from main is
-    a path under this relation. -/
-inductive Reachable (g : LoadGraph) : Nat → Nat → Prop
-  /-- Every node is reachable from itself in zero steps. -/
-  | refl (i : Nat) : Reachable g i i
-  /-- Extending a reachability path by one edge. -/
-  | tail {i j k : Nat} (h_ij : Reachable g i j) (h_jk : g.Step j k) :
-      Reachable g i k
-
-/-- Reachable from main (idx 0). Convenience for the most common case. -/
-def ReachableFromMain (g : LoadGraph) (i : Nat) : Prop :=
-  g.Reachable 0 i
-
-end LoadGraph
-
--- ============================================================================
--- recordEdge — push a target onto deps[src]. Used by `Discovered.recordDep`.
+-- recordEdge — push a target onto deps[src]. Used by `State.recordDep`.
 -- ============================================================================
 
 /-- Add an out-edge `src → tgt` to `deps`. `Array.modify` returns the
@@ -214,7 +72,7 @@ theorem recordEdge_bounds (deps : Array (Array Nat)) (src tgt : Nat)
 
 -- ============================================================================
 -- findLoadedIdx — name lookup over Array LoadedObject. Free function so
--- both `LoadGraph` (final output) and `Discovered` (Discovered/Traversal
+-- both `LoadGraph` (final output) and `State` (State/DFS
 -- construction state) can use it.
 -- ============================================================================
 
@@ -246,7 +104,7 @@ theorem findLoadedIdx_none_iff (objects : Array LoadedObject) (name : String) :
   simp
 
 /-- Pushing a freshly-resolved object preserves the names-Nodup invariant.
-    The precondition `findLoadedIdx = none` is what `Discovered.pushObject`
+    The precondition `findLoadedIdx = none` is what `State.pushObject`
     discharges from `nameIx[obj.name]? = none` via `nameIxValid`. -/
 theorem nodup_names_push_of_findLoadedIdx_none
     {objects : Array LoadedObject} {obj : LoadedObject}

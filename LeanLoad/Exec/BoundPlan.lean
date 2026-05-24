@@ -13,7 +13,7 @@ rsv.len` (the workhorse `base_plus_advance_le_rsv_end` below) —
 has every link as a named lemma.
 -/
 
-import LeanLoad.Exec.Range
+import LeanLoad.Exec
 import LeanLoad.Layout
 import LeanLoad.Reloc
 
@@ -23,17 +23,6 @@ open LeanLoad
 open LeanLoad.Parse (Eaddr)
 open LeanLoad.Layout (cumOffset cumOffset_succ_of_lt cumOffset_mono
                      assignBases assignBases_at_toNat)
-
-/-- The pure-pipeline `Reloc.Result` plus `Layout.Layout`, extended with the
-    IO-supplied reservation,
-    plus the coherence proof threaded from `Reserve.run`'s subtype.
-    Every exec-stage consumer (`build`, `ctorAddrs`,
-    `Main.realize`) takes a `BoundPlan` and accesses its planning
-    fields directly via inheritance. -/
-structure BoundPlan extends Reloc.Result where
-  layout  : Layout.Layout graph.objects.size
-  rsv     : Reserve
-  h_total : rsv.len = layout.totalSpan
 
 namespace BoundPlan
 
