@@ -32,7 +32,7 @@ Key types:
   • `Entry objCount seg` — parameterised by the owning `Segment` so
     the `Reloc.covered` segment-containment witness from
     `Dynamic.Reloc.RelocTable` propagates forward into the
-    planned tree. `SegmentSafe.storesInRange` reads this witness
+    planned tree. `SegmentOps.storesInRange` reads this witness
     structurally (via `BoundPlan.segment_storeRange_in_rsv`).
 
 `Result.ofGraph` validates every relocation-bearing segment up front; the
@@ -54,7 +54,7 @@ open LeanLoad.Parse (Elf RawRela Segment Eaddr)
 -- Entry — one rela's planning result. Base-free.
 -- Parameterised by the owning segment so the `Reloc.covered` witness
 -- (inherited from `Dynamic.Reloc.RelocTable`) can be
--- preserved through planning. `SegmentSafe.storesInRange` needs
+-- preserved through planning. `SegmentOps.storesInRange` needs
 -- `r_offset + 8 ≤ seg.eaddr + seg.memsz` to discharge structurally.
 -- ============================================================================
 

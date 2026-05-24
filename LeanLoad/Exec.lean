@@ -2,19 +2,18 @@
 Exec stage public interface.
 
 Exec is the base-aware stage: it takes pure relocation/layout output plus the
-IO-supplied reservation and emits a structurally safety-witnessed tree of
-runtime operations.
+IO-supplied reservation and emits an intrinsic-safe tree of runtime operations.
 
 Public model:
   · `BoundPlan` — relocation/layout facts bound to a concrete reservation.
   · `SegmentSetup`, `SegmentOps`, `ElfOps`, `LoadOps` — the structured op tree.
-  · `SegmentSafe`, `ElfSafe`, `LoadSafe` — structural safety predicates gating
-    the runtime interpreter.
+    Safety witnesses live on the op tree itself, so invalid runtime op trees are
+    not representable.
 
 Implementation lives under `LeanLoad/Exec/`: `BoundPlan.lean` proves the
-reservation bounds consumed by `Build.lean`, `LoadOps.lean` computes segment
-setup ops, `Reloc.lean` bakes relocation stores, `Safety.lean` interprets a
-witnessed tree, and `Build.lean` constructs the full witnessed tree.
+reservation bounds consumed by `Build.lean`, `LoadOps.lean` computes setup ops
+and interprets the intrinsic-safe tree, `Reloc.lean` bakes relocation stores,
+and `Build.lean` constructs the full witnessed tree.
 -/
 
 import LeanLoad.Exec.Range
@@ -62,9 +61,13 @@ structure SegmentSetup where
     `setupSegment` produces the parent `SegmentSetup`; `bakeSegmentRelocs`
     produces `stores`; `Exec.buildSegment` combines them via
     `{ setup with layout, stores }`. -/
-structure SegmentOps (objCount : Nat) extends SegmentSetup where
+structure SegmentOps (rsvAddr rsvLen : UInt64) (objCount : Nat) extends SegmentSetup where
   layout   : SegmentLayout objCount
   stores   : Array StoreOp
+  mmapInRange     : ∀ m, mmap = some m → Range.InRange m.addr m.len rsvAddr rsvLen
+  zeroInRange     : ∀ z, zero = some z → Range.InRange z.addr z.len rsvAddr rsvLen
+  storesInRange   : ∀ s ∈ stores, Range.InRange s.addr s.byteLen rsvAddr rsvLen
+  mprotectInRange : Range.InRange mprotect.addr mprotect.len rsvAddr rsvLen
 
 /-- Per-elf ops: just the per-segment ops bundles. The per-elf base
     address is implicit in each segment's op records (`MmapOp.addr`,
@@ -72,46 +75,21 @@ structure SegmentOps (objCount : Nat) extends SegmentSetup where
     via `setupSegment` with the base mixed in. The source-of-truth
     base lives on `BoundPlan.bases[i]` for callers that need it
     (e.g. `Exec.ctorAddrs`, `Main.debug`). -/
-structure ElfOps (objCount : Nat) where
-  segments : Array (SegmentOps objCount)
+structure ElfOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
+  segments : Array (SegmentOps rsvAddr rsvLen objCount)
+  mmapsDisjoint : ∀ i j, ∀ hi : i < segments.size, ∀ hj : j < segments.size,
+    i < j → ∀ m_i m_j,
+    (segments[i]'hi).mmap = some m_i →
+    (segments[j]'hj).mmap = some m_j →
+    Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
 
 /-- Top-level op bundle, in elf order (main is at index 0). -/
-structure LoadOps (objCount : Nat) where
-  elfs : Array (ElfOps objCount)
-
--- ============================================================================
--- Structural safety witness — mirrors the LoadOps tree shape.
--- ============================================================================
-
-/-- Per-segment safety: every emitted op fits inside the reservation. -/
-structure SegmentSafe (rsvAddr rsvLen : UInt64) (so : SegmentOps objCount) : Prop where
-  mmapInRange     : ∀ m, so.mmap = some m → Range.InRange m.addr m.len rsvAddr rsvLen
-  zeroInRange     : ∀ z, so.zero = some z → Range.InRange z.addr z.len rsvAddr rsvLen
-  storesInRange   : ∀ s ∈ so.stores, Range.InRange s.addr s.byteLen rsvAddr rsvLen
-  mprotectInRange : Range.InRange so.mprotect.addr so.mprotect.len rsvAddr rsvLen
-
-/-- Per-elf safety: every segment is SegmentSafe, plus within-elf mmap
-    disjointness. -/
-structure ElfSafe (rsvAddr rsvLen : UInt64) (eo : ElfOps objCount) : Prop where
-  segments : ∀ k, ∀ h : k < eo.segments.size,
-    SegmentSafe rsvAddr rsvLen (eo.segments[k]'h)
-  mmapsDisjoint : ∀ i j, ∀ hi : i < eo.segments.size, ∀ hj : j < eo.segments.size,
-    i < j → ∀ m_i m_j,
-    (eo.segments[i]'hi).mmap = some m_i →
-    (eo.segments[j]'hj).mmap = some m_j →
+structure LoadOps (rsvAddr rsvLen : UInt64) (objCount : Nat) where
+  elfs : Array (ElfOps rsvAddr rsvLen objCount)
+  mmapsDisjoint : ∀ i j, ∀ hi : i < elfs.size, ∀ hj : j < elfs.size, i < j →
+    ∀ k_i k_j (h_ki : k_i < (elfs[i]'hi).segments.size)
+              (h_kj : k_j < (elfs[j]'hj).segments.size) m_i m_j,
+    ((elfs[i]'hi).segments[k_i]'h_ki).mmap = some m_i →
+    ((elfs[j]'hj).segments[k_j]'h_kj).mmap = some m_j →
     Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
-
-/-- Top-level structural safety: every elf is ElfSafe, plus cross-elf
-    mmap disjointness. The natural target of the build's safety proof:
-    `BoundPlan`'s per-op and disjointness theorems map directly onto
-    its fields. -/
-structure LoadSafe (rsvAddr rsvLen : UInt64) (lo : LoadOps objCount) : Prop where
-  elfs : ∀ k, ∀ h : k < lo.elfs.size, ElfSafe rsvAddr rsvLen (lo.elfs[k]'h)
-  mmapsDisjoint : ∀ i j, ∀ hi : i < lo.elfs.size, ∀ hj : j < lo.elfs.size, i < j →
-    ∀ k_i k_j (h_ki : k_i < (lo.elfs[i]'hi).segments.size)
-              (h_kj : k_j < (lo.elfs[j]'hj).segments.size) m_i m_j,
-    ((lo.elfs[i]'hi).segments[k_i]'h_ki).mmap = some m_i →
-    ((lo.elfs[j]'hj).segments[k_j]'h_kj).mmap = some m_j →
-    Range.Disjoint m_i.addr m_i.len m_j.addr m_j.len
-
 end LeanLoad.Exec

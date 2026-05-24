@@ -4,9 +4,8 @@ IO-supplied `Reserve` plus coherence proof. Reads as the pure relocation and
 layout facts bound to a concrete reservation — hence "BoundPlan".
 
 `BoundPlan` is the canonical input to `Exec.build` and
-`Exec.ctorAddrs`. The exec-stage safety witness
-`LoadSafe` (and its `ElfSafe` / `SegmentSafe` constituents) is
-provable structurally from plan invariants. The bounds chain —
+`Exec.ctorAddrs`. The exec-stage safety fields on `LoadOps`
+are provable structurally from plan invariants. The bounds chain —
 `pageEaddr + fileOverlayLen ≤ pageEndAddr ≤ advance` (existing
 lemmas in `Layout/Basic.lean`) plus `base + advance ≤ rsv.addr +
 rsv.len` (the workhorse `base_plus_advance_le_rsv_end` below) —
@@ -26,8 +25,8 @@ open LeanLoad.Layout (cumOffset cumOffset_succ_of_lt cumOffset_mono
 
 namespace BoundPlan
 
-/-- The number of loaded elves. Used as the `objCount` parameter on every
-    `objCount`-indexed downstream type (`LoadOps objCount`, `SegmentOps objCount`, ...). -/
+/-- The number of loaded elves. Used as the `objCount` parameter on downstream
+    types (`LoadOps rsvAddr rsvLen objCount`, `SegmentOps rsvAddr rsvLen objCount`, ...). -/
 abbrev objCount (bp : BoundPlan) : Nat := bp.graph.objects.size
 
 /-- Per-elf base addresses inside the reservation. `Vector`-typed at
@@ -163,8 +162,8 @@ def mainBase (bp : BoundPlan) : UInt64 :=
 -- ============================================================================
 -- Per-segment op bounds. Each of these turns a `(bp, i, j)` index
 -- into a `Range.InRange` fact about the op `setupSegment` or `bakeReloc`
--- emits at that position. Consumed by `Exec.Build` to assemble
--- `SegmentSafe` witnesses in lock-step with `SegmentOps`.
+-- emits at that position. Consumed by `Exec.Build` to assemble `SegmentOps`
+-- proof fields in lock-step with the emitted operations.
 -- ============================================================================
 
 /-- The `[base + sp.pageEaddr, base + sp.pageEndAddr)` page-aligned

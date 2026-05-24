@@ -10,45 +10,44 @@ See `AGENTS.md` for working-style guidance.
 
 | Stage           | Type | Input → Output                                                                       |
 | --------------- | ---- | ------------------------------------------------------------------------------------ |
-| **Parse**       | IO   | `FileHandle → RawElf` — per-section `pread`s; bytes only                              |
-| **Elaborate**   | pure | `RawElf → Except String Elf` — gabi-07 invariants on `Segment` / `Elf`                |
+| **Parse**       | IO   | `FileReader → ExceptT String m Elf` — bytes plus gabi-07 invariants on `Segment` / `Elf` |
 | **Discover**    | IO   | `path → LoadGraph` — DFS over `DT_NEEDED`; deps + init order recorded inline          |
-| **Plan**        | pure | `LoadGraph → Plan.Aggregate` — resolve table + per-elf `Layout`                        |
-| **Materialize** | pure | `BoundPlan → { lo : LoadOps n // Safe rsv.addr rsv.len lo }`                          |
-| **Runtime**     | IO   | witnessed `LoadOps → IO Unit` — mmap + zeroout + mprotect + reloc + ctor + jump; no return |
+| **Reloc**       | pure | `LoadGraph → Reloc.Result` — relocation-driven symbol resolution                       |
+| **Layout**      | pure | `Reloc.Result → Layout` — per-elf placement + cumulative span                         |
+| **Exec**        | pure | `BoundPlan → LoadOps rsv.addr rsv.len n` — intrinsic-safe ops                         |
+| **Runtime**     | IO   | intrinsic-safe `LoadOps → IO Unit` — mmap + zeroout + mprotect + reloc + ctor + jump; no return |
 
-Plan runs Resolve (per-undef BFS lookup; strong-undef rejected) then
-Layout (per-segment + per-elf + cumulative; rejects page-aligned
-overlap or `totalSpan` overflow). Init order is computed during
-Discover's DFS and lives on `LoadGraph.initOrder`. Reloc planning
-runs inside Layout.
+Reloc runs relocation-driven BFS lookup (strong referenced undef rejected), then
+Layout computes per-segment, per-elf, and cumulative placement. Init order is
+computed during Discover's DFS and lives on `LoadGraph.initOrder`.
 
 ## Witness flow
 
 Each stage adds either data or a Prop witness; no downstream stage
 re-checks.
 
-- **Elaborate**: per-`Segment` gabi-07 invariants + per-`Elf` (sorted,
+- **Parse**: per-`Segment` gabi-07 invariants + per-`Elf` (sorted,
   non-overlap, phdr-covered, ctors-in-exec-seg).
 - **Discover**: `LoadGraph` carries `sizePos`, `namesNodup`,
   `depsSize`, `depsBounds`, `closure`.
-- **Plan**: per-`SegmentLayout` page-math invariants; `ElfLayout`
-  segment-sorting + advance; `Layout` cumulative span. `Resolve.Table`
-  discharges no strong-undef.
-- **Materialize**: `LoadSafe` — every op in-range, mmaps pairwise
+- **Reloc**: relocation-driven symbol resolution; discharges referenced
+  unresolved strong symbols.
+- **Layout**: per-`SegmentLayout` page-math invariants; `ElfLayout`
+  segment-sorting + advance; `Layout` cumulative span.
+- **Exec**: intrinsic-safe `LoadOps` — every op in-range, mmaps pairwise
   disjoint.
-- **Runtime**: FFI dispatch on a `Safe`-witnessed tree; no further
+- **Runtime**: FFI dispatch on the intrinsic-safe tree; no further
   checks.
 
 ## Trust boundary
 
 - **Verified** (pure Lean, no IO, no `@[extern]`): `Parse/`,
-  `Elaborate/`, `Plan/`, `Materialize/` (excluding the IO interpreter
-  at the bottom of `Materialize/LoadOps.lean`).
+  `Reloc/`, `Layout/`, `Exec/` (excluding the IO interpreter
+  at the bottom of `Exec/LoadOps.lean`).
 - **Trusted**: `runtime/*.c` (~150 lines of audited C shims),
   `LeanLoad/Runtime.lean` (FFI declarations + `run` methods +
-  `Reserve.run`), and the IO bookends (`Discover/IO.lean`,
-  `Main.lean`, `LoadOps.runSafe`).
+  `Reserve.run`), and the IO bookends (`Discover/Runtime.lean`,
+  `Main.lean`, `LoadOps.run`).
 
 ## Scope
 
@@ -108,11 +107,6 @@ forwarded from the host process via `getauxval`; musl's
 
 - **Init-order invariants**: `g.initOrder` indices in bounds and
   duplicate-free.
-- **Resolve.Table bounds**: `objectIdx < lm.objects.size` for every
-  entry — loop-invariant reasoning over `for ... in lm.objects do`.
-- **Bytes preserved / BSS zeroed**: the materialised image agrees
-  with file bytes (linksem-style soundness); BSS regions read as 0.
-  Both require an abstract `Memory` type + state-monad IO shadow.
 - **Init topological order**: `DT_NEEDED` edges respected; cycles
   undefined per gabi 08.
 

@@ -378,15 +378,15 @@ structure SegmentLayout (objCount : Nat) where
       addition lifts to `Nat` without wrap. -/
   pageEnd_lt : pageEaddr.toNat + pageLength.toNat < 2 ^ 64
   /-- The file overlay sits inside the page-aligned segment range —
-      the `SegmentSafe.mmapInRange` bound. -/
+      the `SegmentOps.mmapInRange` bound. -/
   fileOverlay_le_pageLength : fileOverlayLen.toNat ≤ pageLength.toNat
   /-- The 4/8-byte write window of any rela sits inside the
       page-aligned segment range — combines with `Reloc.covered` to
-      discharge `SegmentSafe.storesInRange`. -/
+      discharge `SegmentOps.storesInRange`. -/
   vaddr_memsz_le_pageEnd : segment.eaddr.toNat + segment.memsz.toNat ≤
     pageEaddr.toNat + pageLength.toNat
   /-- The partial-page BSS zero op's end sits inside the
-      page-aligned segment range — the `SegmentSafe.zeroInRange`
+      page-aligned segment range — the `SegmentOps.zeroInRange`
       bound. -/
   zero_end_le_pageLength : pageInset.toNat + segment.filesz.toNat +
     partialBssLen.toNat ≤ pageLength.toNat
@@ -397,7 +397,7 @@ structure SegmentLayout (objCount : Nat) where
   /-- Planned relocations targeting this segment, in
       `Dynamic.Reloc.RelocTable.rela ++ Dynamic.Reloc.RelocTable.jmprel` order. Each
       entry carries its `Reloc.covered` witness keyed to `segment` so
-      `SegmentSafe.storesInRange` is structurally provable.
+      `SegmentOps.storesInRange` is structurally provable.
       `Exec.bakeSegmentRelocs` reads this directly. -/
   relocs         : Array (Entry objCount segment)
 

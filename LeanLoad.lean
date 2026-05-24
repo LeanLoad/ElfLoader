@@ -30,13 +30,11 @@ stage re-checks it — the witness travels in the type.
 
   • Exec — base-aware. Takes a `BoundPlan` (= `Reloc.Result` +
     `Layout.Layout` + IO `Reserve` + coherence proof) and emits a `LoadOps` tree of
-    typed ops (`Mmap` / `Zero` / `Store` / `Mprotect`). Gated by
-    `LoadSafe rsv.addr rsv.len ops`, a structural witness over
-    per-op containment and mmap disjointness.
+    typed ops (`Mmap` / `Zero` / `Store` / `Mprotect`). The tree carries
+    per-op containment and mmap-disjointness witnesses intrinsically.
 
   • Runtime — the trust seam. `@[extern]` primitives wrapped in
-    typed op records; `LoadOps.runSafe` accepts the
-    safety-witnessed tree only.
+    typed op records; `LoadOps.run` accepts the intrinsic-safe tree only.
 
   • Formal boundary — the final structured load ops plus safety witnesses.
     Semantic byte-level memory modelling is intentionally out of scope for
@@ -63,7 +61,6 @@ import LeanLoad.Layout
 
 import LeanLoad.Exec
 import LeanLoad.Exec.LoadOps
-import LeanLoad.Exec.Safety
 import LeanLoad.Exec.Reloc
 import LeanLoad.Exec.BoundPlan
 import LeanLoad.Exec.Build

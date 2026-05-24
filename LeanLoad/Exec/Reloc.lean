@@ -27,7 +27,6 @@ Used by `Exec.buildSegment` (one call per segment).
 
 import LeanLoad.Layout.Basic
 import LeanLoad.Exec.LoadOps
-import LeanLoad.Exec.Safety
 import LeanLoad.Reloc.ABI
 import LeanLoad.Parse.LoadMap.Segment.Basic
 

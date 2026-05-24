@@ -72,17 +72,6 @@ private def resolveStrtabOff? (label : String) (strtab : Strtab) :
       let s ← resolveStrtabOff label strtab off
       pure (some s)
 
-/-- Read `DT_HASH`'s SysV `nchain`, the dynamic-symbol count. -/
-private def readSymCount [Monad m] (r : FileReader m) (view : LoadMap)
-    (hashVa : Option Eaddr) : ExceptT String m Nat := do
-  match hashVa with
-  | none    => pure 0
-  | some va =>
-      let range : EaddrRange := { start := va, size := RawSysVHash.byteSize }
-      let mapped ← liftExcept (LoadMap.mapRange view r.fileSize range)
-      let hdr : RawSysVHash ← decodeRange r mapped.fileRange Decodable.decoder
-      pure hdr.symCount
-
 /-- Read `.dynstr` bytes. UTF-8 validation is delayed until `StrtabEntry`. -/
 private def readStrtab [Monad m] (r : FileReader m) (view : LoadMap)
     (loc : Option EaddrRange) : ExceptT String m Strtab :=
@@ -92,29 +81,23 @@ private def readStrtab [Monad m] (r : FileReader m) (view : LoadMap)
       let mapped ← liftExcept (LoadMap.mapRange view r.fileSize range)
       decodeRange r mapped.fileRange Strtab.decode
 
-/-- Read `.dynsym`; count comes from `DT_HASH.nchain`. -/
+/-- Read `.dynsym` using `DT_HASH.nchain` as the symbol count. LeanLoad requires
+    `DT_SYMTAB` and `DT_HASH` to appear together. -/
 private def readSymtab [Monad m] (r : FileReader m) (view : LoadMap)
-    (symVa : Option Eaddr) (count : Nat) : ExceptT String m RawSymtab := do
-  if count == 0 then return #[]
-  match symVa with
-  | none    => pure #[]
-  | some va =>
-      let range : EaddrRange := { start := va, size := RawSymtab.tableByteSize count }
-      let mapped ← liftExcept (LoadMap.mapRange view r.fileSize range)
-      decodeRange r mapped.fileRange (RawSymtab.decode count)
-
-/-- Read `.dynsym` and its SysV hash header. LeanLoad requires `DT_SYMTAB` and
-    `DT_HASH` to appear together because `DT_HASH.nchain` supplies the symbol
-    count. -/
-private def readSymtabData [Monad m] (r : FileReader m) (view : LoadMap)
     (symVa hashVa : Option Eaddr) : ExceptT String m RawSymtab := do
   match symVa, hashVa with
   | none, none => pure #[]
   | some _, none => throw "parse: DT_SYMTAB present without DT_HASH"
   | none, some _ => throw "parse: DT_HASH present without DT_SYMTAB"
-  | some _, some _ =>
-      let symCount ← readSymCount r view hashVa
-      readSymtab r view symVa symCount
+  | some symVa, some hashVa =>
+      let hashRange : EaddrRange := { start := hashVa, size := RawSysVHash.byteSize }
+      let mappedHash ← liftExcept (LoadMap.mapRange view r.fileSize hashRange)
+      let hash : RawSysVHash ← decodeRange r mappedHash.fileRange Decodable.decoder
+      if hash.symCount == 0 then
+        return #[]
+      let symRange : EaddrRange := { start := symVa, size := RawSymtab.tableByteSize hash.symCount }
+      let mappedSym ← liftExcept (LoadMap.mapRange view r.fileSize symRange)
+      decodeRange r mappedSym.fileRange (RawSymtab.decode hash.symCount)
 
 /-- Read a `DT_RELA` / `DT_JMPREL` table. -/
 private def readRelas [Monad m] (label : String) (r : FileReader m)
@@ -158,11 +141,9 @@ private def readEaddrArray [Monad m] (label : String) (r : FileReader m)
 /-- Monad-polymorphic checked parse. The `FileReader m` abstracts byte delivery;
     all parse and validation errors flow through `ExceptT`. -/
 def parseM [Monad m] (r : FileReader m) : ExceptT String m Elf := do
-  let headerLen := ByteSize.ofNat ElfHeaderSize
-  let headerRange ← liftExcept (checkRange r (0 : FileOff) headerLen)
+  let headerRange ← liftExcept (ElfHeader.fileRange r.fileSize)
   let header : ElfHeader ← decodeRange r headerRange Decodable.decoder
-  let phdrLen := ProgramHeader.tableByteSize header.e_phnum.toNat
-  let phdrRange ← liftExcept (checkRange r header.e_phoff phdrLen)
+  let phdrRange ← liftExcept (ProgramHeader.tableRange r.fileSize header.e_phoff header.e_phnum.toNat)
   let programHeaders ← decodeRange r phdrRange (ProgramHeader.decodeTable header.e_phnum.toNat)
   let view ←
     match LoadMap.ofHeaders r.fileSize header programHeaders with
@@ -171,11 +152,11 @@ def parseM [Monad m] (r : FileReader m) : ExceptT String m Elf := do
   let dyn ← match programHeaders.find? (·.p_type == .dynamic) with
     | none    => pure #[]
     | some ph =>
-        let dynRange ← liftExcept (checkRange r ph.p_offset ph.p_filesz)
+        let dynRange ← liftExcept (ProgramHeader.fileRange r.fileSize ph)
         decodeRange r dynRange (Dyntab.decode ph.p_filesz)
   let strtab ← readStrtab r view (← liftExcept (Dyntab.strtab? dyn))
   let symtabRaw ←
-    readSymtabData r view (← liftExcept (Dyntab.symtab? dyn)) (← liftExcept (Dyntab.hash? dyn))
+    readSymtab r view (← liftExcept (Dyntab.symtab? dyn)) (← liftExcept (Dyntab.hash? dyn))
   let rela ← readRelas "DT_RELA" r view (← liftExcept (Dyntab.rela? dyn))
   let jmprel ←
     readJmprel r view (← liftExcept (Dyntab.jmprel? dyn)) (← liftExcept (Dyntab.pltrel? dyn))

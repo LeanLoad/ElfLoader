@@ -4,10 +4,10 @@ A verified ELF loader in Lean 4 for PIE Linux ELF binaries
 (static-PIE + dynamically-linked), targeting AArch64 + x86-64 with
 musl libc.
 
-Architecture: a **pure verified middle** — `Parse` → `Elaborate` →
-`Discover` → `Plan` → `Materialize` — bracketed by two **trusted IO
+Architecture: a **pure verified middle** — `Parse` → `Discover` →
+`Reloc` → `Layout` → `Exec` — bracketed by two **trusted IO
 bookends**: `Discover.discover` (file reads) at the front and
-`LoadOps.runSafe` + `execAndJump` (mmap + writes + control transfer)
+`LoadOps.run` + `execAndJump` (mmap + writes + control transfer)
 at the back.
 
 https://github.com/ShawnZhong/LeanLoad/blob/4f885ee61cfbb39d6359b42f4086aa4c32116342/run.log#L1-L319
@@ -27,19 +27,12 @@ and example files (`Discover/Examples.lean`, `Examples.lean`, …) and elaborate
 ## Audit surface
 
 The byte-level trust surface is [`LeanLoad/Parse/`](LeanLoad/Parse/)
-(gABI / psABI C-struct transcriptions) and
-[`LeanLoad/Elaborate/`](LeanLoad/Elaborate/) (typed views with
+(gABI / psABI C-struct transcriptions and typed views with
 gABI-mandated invariants carried as `Segment` fields). The IO trust
-seam is `LoadOps.runSafe` in
-[`LeanLoad/Exec/Safety.lean`](LeanLoad/Exec/Safety.lean):
-it only accepts a `LoadSafe`-witnessed `LoadOps` tree, where
-`SegmentSafe` / `ElfSafe` / `LoadSafe` together discharge in-bounds
-and pairwise-disjoint without ever materialising a flat predicate
-array. The formal trust seam (`runSafe_image_eq` axiom) lives in
-[`LeanLoad/RuntimeAxiom.lean`](LeanLoad/RuntimeAxiom.lean); soundness
-theorems against the abstract `Memory` model live in
-[`LeanLoad/Soundness.lean`](LeanLoad/Soundness.lean) (consuming the
-preservation lemmas in [`LeanLoad/Soundness/`](LeanLoad/Soundness/)).
+seam is `LoadOps.run` in [`LeanLoad/Exec/LoadOps.lean`](LeanLoad/Exec/LoadOps.lean):
+it only accepts an intrinsic-safe `LoadOps` tree, where `SegmentOps`,
+`ElfOps`, and `LoadOps` fields discharge in-bounds and pairwise-disjoint
+without ever materialising a flat predicate array.
 
 See [`DESIGN.md`](DESIGN.md) for the full pipeline + trust-boundary
 writeup.
@@ -68,7 +61,7 @@ edge cases instead of papering over them), it's called out below.
   ld.so still honours both with quirky precedence rules; we just
   refuse RPATH outright.
 
-**Layout & process startup** (`Plan/`, `Elaborate/Elf.lean`, `Main.lean`)
+**Layout & process startup** (`Parse/`, `Layout/`, `Exec/`, `Main.lean`)
 
 - **PT_LOAD segments pairwise disjoint.** gABI only mandates sorted
   `p_vaddr` order; non-overlap is de facto. We carry it as a
@@ -91,7 +84,7 @@ edge cases instead of papering over them), it's called out below.
   process exit; the loaded program inherits the fd table. Simplifies
   handle ownership; we never need to track refcounts.
 
-**Init / fini** (`Materialize/Build.lean`)
+**Init / fini** (`Exec/Build.lean`)
 
 - **Init order = DFS post-order over the dep DAG; fini = its
   reverse.** gABI 08 mandates a *partial* order ("deps before
@@ -100,14 +93,14 @@ edge cases instead of papering over them), it's called out below.
 - **Zero entries in `DT_INIT_ARRAY` / `DT_FINI_ARRAY` skipped as
   no-ops.** gABI leaves them unspecified; glibc / musl skip them.
 
-**Relocations** (`Elaborate/Reloc.lean`, `Materialize/Reloc.lean`)
+**Relocations** (`Parse/Dynamic/Reloc/`, `Reloc/`, `Exec/Reloc.lean`)
 
 - **RELA only, not REL.** Toolchains emit RELA for x86_64 + AArch64;
   REL is legacy.
 - **`R_*_GLOB_DAT` addend `A` treated as 0.** psABI documents the
   formula as `S + A` for completeness, but linkers emit GLOB_DAT
   with `A = 0`; a nonzero addend would be a malformed link.
-- **Strong undef → fail loud at `Plan.Aggregate.ofGraph`.** ld.so
+- **Strong undef → fail loud at `Reloc.Result.ofGraph`.** ld.so
   fails at startup; we fail at planning time (earlier).
 - **Weak undef → resolves to 0.** psABI convention.
 - **psABI `OVERFLOW_CHECK` enforced per-relocation.** A 32-bit
@@ -193,7 +186,7 @@ posture per field is in the bullet.
   with junk low bits in `p_align` loads fine under both libc's.
 - LeanLoad carries a per-segment `alignCong` witness modulo `p_align`
   (gABI-strict — stricter than either loader). See
-  [`Elaborate/Segment.lean`](LeanLoad/Elaborate/Segment.lean).
+  [`Parse/LoadMap/Segment/Basic.lean`](LeanLoad/Parse/LoadMap/Segment/Basic.lean).
 
 **`DT_TEXTREL` "deprecated" in favor of `DF_TEXTREL` (gABI 08)**
 
@@ -204,7 +197,7 @@ posture per field is in the bullet.
   the form its reloc loop checks. The "deprecated" tag never died.
 - LeanLoad's per-arch reloc tables don't enumerate any text-touching
   relocs, so we never emit a text-segment write — protection by
-  omission, not by safety predicate. (`SegmentSafe` checks in-bounds
+  omission, not by safety predicate. (`SegmentOps` checks in-bounds
   and disjointness; it doesn't inspect `PF_W`.)
 
 **`PT_INTERP` uniqueness + position (gABI 07)**
@@ -305,13 +298,12 @@ LeanLoad/
     Align.lean             alignment / page-math helpers over UInt64
     Segment.lean           per-segment layout (file + bss + mprotect shape)
     Basic.lean             per-object layout tree + totalSpan
-  Exec.lean                public Exec interface: BoundPlan, LoadOps tree, LoadSafe tree
+  Exec.lean                public Exec interface: BoundPlan and intrinsic-safe LoadOps tree
   Exec/                    base-aware stage — turn Reloc + Layout into witnessed ops
     BoundPlan.lean         BoundPlan accessors and reservation-bound proofs
     Reloc.lean             relocation baking — apply ABI formulas at the bound base
-    LoadOps.lean           setupSegment + setup op characterisation lemmas
-    Safety.lean            `LoadOps.runSafe` IO trust seam
-    Build.lean             builder: `BoundPlan` → safety-witnessed `LoadOps` tree;
+    LoadOps.lean           setupSegment, op lemmas, and `LoadOps.run` IO trust seam
+    Build.lean             builder: `BoundPlan` → intrinsic-safe `LoadOps` tree;
                            DFS post-order ctor / fini address lists
   Runtime.lean             @[extern] trust seam — FileHandle, mmap (file overlay),
                            mmapAnonAlloc, mprotect, write, zeroout, mmapStack,

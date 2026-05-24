@@ -19,8 +19,7 @@ stages plus boundary-rejection cases that span more than one file:
   4. **Exec** — the structured `LoadOps` tree that
      `Main.realize` runs. Shows how
      `Exec.setupSegment` shapes change with BSS-only vs file+BSS
-     segments, and how `Exec.build` constructs the safety-witnessed
-     load ops.
+     segments, and how `Exec.build` constructs intrinsic-safe load ops.
 
 `./run.sh` exercises the real `examples/build/main` end-to-end —
 that remains the authoritative "the loader copes with musl-gcc's
@@ -287,18 +286,15 @@ private def slotCount (seg : Option Segment) : Option Nat :=
 #guard slotCount fileAnonBss    = some 2  -- mmap + mprotect
 #guard slotCount fileBothBss    = some 3  -- mmap + zero + mprotect
 
--- ---- 4c. Safety witness: vacuously holds for an empty LoadOps. -----------
---
--- `Exec.LoadSafe` mirrors the LoadOps tree (per-elf, per-
--- segment) and is what `runSafe` consumes. With no elves, both its
--- fields (per-elf `ElfSafe`, cross-elf disjointness) hold vacuously.
+-- ---- 4c. Intrinsic safety: vacuously holds for an empty LoadOps. ----------
 
 private def exampleReserve : Reserve :=
   { addr := exampleAnchor, len := 0x1000, noWrap := by decide }
 
-example : Exec.LoadSafe exampleReserve.addr exampleReserve.len
-    ({ elfs := #[] } : Exec.LoadOps 0) :=
-  ⟨fun _ h => absurd h (by simp),
-   fun _ _ hi _ _ _ _ _ _ _ _ _ _ => absurd hi (by simp)⟩
+example : Exec.LoadOps exampleReserve.addr exampleReserve.len 0 :=
+  { elfs := #[]
+    mmapsDisjoint := by
+      intro _ _ hi
+      simp at hi }
 
 end LeanLoad.Examples

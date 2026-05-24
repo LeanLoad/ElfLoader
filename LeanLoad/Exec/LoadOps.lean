@@ -1,5 +1,6 @@
 /-
-Load ops: `SegmentOps objCount` / `ElfOps objCount` / `LoadOps objCount` over
+Load ops: `SegmentOps rsvAddr rsvLen objCount` /
+`ElfOps rsvAddr rsvLen objCount` / `LoadOps rsvAddr rsvLen objCount` over
 the typed op records (`MmapOp` / `ZeroOp` / `StoreOp` / `MprotectOp`)
 defined in `Runtime`.
 
@@ -9,7 +10,7 @@ Stage boundary:
     DFS post-order init sequence. None of those know an mmap base.
   • `Exec/` consumes those plus the IO-supplied reservation
     base and emits the structured ops below. The runtime seam
-    (`runSafe`) consumes the witnessed tree directly — there is no
+    (`LoadOps.run`) consumes the witnessed tree directly — there is no
     flat `Array` intermediate.
 
 The natural number parameter `objCount` is the elf count, threaded through
@@ -26,16 +27,13 @@ Per-segment shape (the "realize protocol"):
      segment range.
 
 Hierarchy:
-  • `SegmentOps objCount` — one segment's plan + its 4 typed ops.
-  • `ElfOps objCount`     — one elf's chosen base + its `SegmentOps`.
-  • `LoadOps objCount`    — the top-level op bundle for every loaded object.
+  • `SegmentOps rsvAddr rsvLen objCount` — one segment's plan + its 4 typed ops.
+  • `ElfOps rsvAddr rsvLen objCount`     — one elf's chosen base + its segments.
+  • `LoadOps rsvAddr rsvLen objCount`    — the top-level op bundle for all elfs.
 
-Safety witness: `LoadSafe` mirrors the tree structure
-(`SegmentSafe` per op, `ElfSafe` per elf, `LoadSafe` across the
-layout) and is built constructively by `Exec.build` from
-`BoundPlan`'s per-(i, j) `InRange` / `Disjoint` theorems. There is
-no separate flat predicate — `runSafe` consumes a `LoadSafe`
-witness directly.
+Safety witnesses are fields on the op records themselves and are built
+constructively by `Exec.build` from `BoundPlan`'s per-(i, j)
+`InRange` / `Disjoint` theorems. There is no separate flat predicate.
 -/
 
 import LeanLoad.Exec
@@ -74,7 +72,7 @@ def setupSegment (sp : SegmentLayout objCount) (handle : Runtime.File)
 -- ============================================================================
 -- `setupSegment` characterisation. The three op positions are simple
 -- closed forms of `(base, sp)`; these lemmas extract them so the
--- `SegmentSafe` construction below can invoke the matching
+-- `SegmentOps` construction below can invoke the matching
 -- `BoundPlan.segment_*_in_rsv` theorem directly.
 -- ============================================================================
 
@@ -116,32 +114,44 @@ theorem setupSegment_mprotect_eq (sp : SegmentLayout objCount) (handle : Runtime
 
 -- ============================================================================
 -- Op collectors — diagnostic-only. Walk the tree and gather one
--- op kind. `Main.debug` prints their sizes for visibility; the
--- safety witness chain does not consume them.
+-- op kind. `Main.debug` prints their sizes for visibility; the proof
+-- fields do not consume them.
 -- ============================================================================
+
+namespace SegmentOps
+
+/-- Run one segment's intrinsic-safe ops in protocol order. -/
+def run (so : SegmentOps rsvAddr rsvLen objCount) : IO Unit := do
+  if let some m := so.mmap then m.run
+  if let some z := so.zero then z.run
+  for s in so.stores do s.run
+  so.mprotect.run
+
+end SegmentOps
 
 namespace LoadOps
 
 /-- Every mmap across every elf and segment, in tree-walk order. -/
-def mmaps (lo : LoadOps objCount) : Array MmapOp :=
+def mmaps (lo : LoadOps rsvAddr rsvLen objCount) : Array MmapOp :=
   lo.elfs.flatMap fun eo => eo.segments.filterMap (·.mmap)
 
 /-- Every zero across every elf and segment. -/
-def zeros (lo : LoadOps objCount) : Array ZeroOp :=
+def zeros (lo : LoadOps rsvAddr rsvLen objCount) : Array ZeroOp :=
   lo.elfs.flatMap fun eo => eo.segments.filterMap (·.zero)
 
 /-- Every store across every elf and segment. -/
-def stores (lo : LoadOps objCount) : Array StoreOp :=
+def stores (lo : LoadOps rsvAddr rsvLen objCount) : Array StoreOp :=
   lo.elfs.flatMap fun eo => eo.segments.flatMap (·.stores)
 
 /-- Every mprotect across every elf and segment. -/
-def mprotects (lo : LoadOps objCount) : Array MprotectOp :=
+def mprotects (lo : LoadOps rsvAddr rsvLen objCount) : Array MprotectOp :=
   lo.elfs.flatMap fun eo => eo.segments.map (·.mprotect)
 
-end LoadOps
+/-- Run an intrinsic-safe op tree in protocol order. The safety proof fields are
+    erased; IO behaviour is plain per-op dispatch. -/
+def run (lo : LoadOps rsvAddr rsvLen objCount) : IO Unit :=
+  lo.elfs.forM fun eo => eo.segments.forM SegmentOps.run
 
--- The structural safety witness (`SegmentSafe` / `ElfSafe` / `LoadSafe`)
--- and the IO interpreter (`runSafe`) live in `Exec/Safety.lean`,
--- which depends on the types defined here.
+end LoadOps
 
 end LeanLoad.Exec

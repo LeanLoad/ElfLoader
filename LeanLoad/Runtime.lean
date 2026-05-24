@@ -11,7 +11,7 @@ preconditions (the exec safety witnesses) in front of every FFI call.
 
 `Exec/LoadOps.lean` orchestrates the structured load ops
 (`SegmentOps` / `ElfOps` / `LoadOps`) on top of these op records
-and exposes the witnessed entry point `LoadOps.runSafe`.
+and exposes the intrinsic-safe entry point `LoadOps.run`.
 
 Reserve-then-overlay design:
   • At the IO boundary, `Reserve.run` requests a kernel-picked

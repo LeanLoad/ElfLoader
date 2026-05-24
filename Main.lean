@@ -6,8 +6,8 @@ glue that ties the pure core (`Parse` + `Resolve` + `Layout`) and the exec
 stage (`Exec`) to the IO layer (`Runtime`, `Discover.Runtime`).
 
 The IO bookend `realize` (below) is a thin wrapper:
-`Exec.build` produces a safety-witnessed `LoadOps`,
-`LoadOps.runSafe` dispatches it to externs,
+`Exec.build` produces an intrinsic-safe `LoadOps`,
+`LoadOps.run` dispatches it to externs,
 then the one-shot finalizers (`mmapAnon` for the stack +
 `execAndJump`) transfer control. Doesn't return.
 -/
@@ -25,8 +25,7 @@ private def stackBytes : UInt64 := 8 * 1024 * 1024
     allocate the kernel-style stack, and `execAndJump` to entry.
     **Does not return.** -/
 private def realize (bp : Exec.BoundPlan)
-    (witnessed : { lo : Exec.LoadOps bp.objCount //
-      Exec.LoadSafe bp.rsv.addr bp.rsv.len lo })
+    (lo : Exec.LoadOps bp.rsv.addr bp.rsv.len bp.objCount)
     (ctorAddrs : Array UInt64) (path : String) : IO Unit := do
   let mainElf := bp.graph.main.elf
   let mainBase := bp.mainBase
@@ -35,7 +34,7 @@ private def realize (bp : Exec.BoundPlan)
     Parse.ProgramHeaderMap.ofSegments mainElf.segments mainElf.header.e_phoff programHeaderNbytes
   let entry  := mainBase + mainElf.header.e_entry.val
   let programHeaderVa := mainBase + programHeaderMap.eaddr.val
-  Exec.LoadOps.runSafe bp.rsv.addr bp.rsv.len witnessed
+  Exec.LoadOps.run lo
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
   ctorAddrs.forM Runtime.callCtor
@@ -202,8 +201,7 @@ def debug (path : String) : IO Unit := do
           let typeStr := padR (toString entry.type) 2
           let sizeBytes : Nat := match res.size with | .b8 => 8 | .b4 => 4
           IO.eprintln s!"{label}  type={typeStr}  seg={segI}  @0x{Nat.hex12 (base + (entry.r_offset.val)).toNat} ← 0x{Nat.hex12 res.value.toNat} ({sizeBytes}B)  sym='{symName}'"
-  let witnessed ← IO.ofExcept (Exec.build bp)
-  let lo := witnessed.val
+  let lo ← IO.ofExcept (Exec.build bp)
   IO.eprintln s!"planned {lo.mmaps.size} mmaps, \
     {lo.zeros.size} zeros, \
     {lo.stores.size} stores, \
@@ -215,8 +213,8 @@ def debug (path : String) : IO Unit := do
   IO.eprintln s!"planned {ctorAddrs.size} constructor address(es), \
     {dtorAddrs.size} destructor address(es)"
 
-  IO.eprintln "\n== 7. LoadOps.runSafe → callCtors → execAndJump (does not return) =="
-  realize bp witnessed ctorAddrs path
+  IO.eprintln "\n== 7. LoadOps.run → callCtors → execAndJump (does not return) =="
+  realize bp lo ctorAddrs path
 
 end Main
 
