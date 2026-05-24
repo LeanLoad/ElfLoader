@@ -65,7 +65,8 @@ private def mockElf (soname : Option String := some "anon")
   fileSize := mockFileSize
   machine  := .x86_64
   segments := mockSegments
-  phdrTable := { off := 0, count := 0, map := .empty rfl }
+  phdrEaddr := 0
+  phdrCount := 0
   symtab   := #[]
   needed
   soname

@@ -77,13 +77,13 @@ private def realize (bp : Finalize.BoundPlan)
   let mainBase := bp.mainBase
   let entryCall ← liftExcept (Finalize.entryCall bp)
   let entry  := entryCall.addr
-  let programHeaderVa := mainBase + mainElf.phdrTable.eaddr.val
+  let programHeaderVa := mainBase + mainElf.phdrEaddr.val
   let _ ← (Runtime.runLoadOps lo : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
   let _ ← ((Finalize.ctorCalls bp).forM (fun call => Runtime.callCtor call.addr) : IO Unit)
   let stack ← Runtime.Memory.reserve stackBytes
-  let phnum  := mainElf.phdrTable.count.toUInt64
+  let phnum  := mainElf.phdrCount.toUInt64
   let phent  := Parse.ProgramHeaderSize.toUInt64
   let _ ← (Runtime.execAndJump
     { entry
@@ -162,7 +162,7 @@ def debug (path : String) : CliM Unit := do
     IO.eprintln s!"[{i}] {obj.name}"
     IO.eprintln s!"  machine    = {repr elf.machine}"
     IO.eprintln s!"  entry      = 0x{Nat.hex elf.callTargets.entry.val.toNat}"
-    IO.eprintln s!"  phnum      = {elf.phdrTable.count}"
+    IO.eprintln s!"  phnum      = {elf.phdrCount}"
     if let some sn := elf.soname  then IO.eprintln s!"  soname     = {sn}"
     if let some rp := elf.runpath then IO.eprintln s!"  runpath    = {rp}"
     if !elf.needed.isEmpty then
