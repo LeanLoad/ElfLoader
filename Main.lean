@@ -186,8 +186,8 @@ def debug (path : String) : CliM Unit := do
   let relocPlan := bp
 
   IO.eprintln "\n== 3. Reloc (resolve symbols referenced by dynamic relocations) =="
-  let providerName (r : Reloc.Symbol.SymRef relocPlan.graph.objects.size) : String :=
-    relocPlan.graph.objects[r.objectIdx.val] |>.name
+  let providerName (r : Reloc.SymRef relocPlan.graph.objects.size) : String :=
+    relocPlan.graph.objects[r.objectIdx] |>.name
   let mut relocsTotal := 0
   let mut resolvedTotal := 0
   let mut weakTotal := 0
