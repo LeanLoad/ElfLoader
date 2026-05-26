@@ -80,10 +80,12 @@ edge cases instead of papering over them), it's called out below.
 - **PT_LOAD segments pairwise disjoint.** gABI only mandates sorted
   `p_vaddr` order; non-overlap is de facto. We carry it as a
   validated `NonOverlap` witness on `Elf`.
-- **First PT_LOAD covers the ELF header + program-header table with
-  `vaddr = offset`.** Convention so `mainBase + phoff` equals the
-  kernel's `AT_PHDR` without offset→vaddr translation. Validated as
-  `phdrCovered`.
+- **Program-header table is file-backed by some PT_LOAD.** Required so
+  `AT_PHDR` can be reported as a loaded virtual address. Validated by
+  constructing a `ProgramHeaderMap` (see
+  [`Parse/LoadMap/ProgramHeader/Map.lean`](LeanLoad/Parse/LoadMap/ProgramHeader/Map.lean))
+  that records the covering PT_LOAD and translates `e_phoff` through it
+  via `eaddrOfFileOff` — no first-PT_LOAD or `vaddr = offset` assumption.
 - **4 KiB page size, hardcoded.** Linux x86_64 + AArch64 default.
   AArch64 supports 16/64 KiB pages but musl + most distros use 4 KiB.
   We don't honour `getpagesize()` at runtime.
@@ -114,7 +116,7 @@ edge cases instead of papering over them), it's called out below.
 - **Zero entries in `DT_INIT_ARRAY` / `DT_FINI_ARRAY` skipped as
   no-ops.** gABI leaves them unspecified; glibc / musl skip them.
 
-**Relocations** (`Parse/Dynamic/Reloc/`, `Reloc/`, `Finalize/Reloc.lean`)
+**Relocations** (`Parse/Reloc/`, `Reloc/`, `Finalize/Reloc.lean`)
 
 - **RELA only, not REL.** Toolchains emit RELA for x86_64 + AArch64;
   REL is legacy.
@@ -155,8 +157,10 @@ posture per field is in the bullet.
   it only in `elf/dl-addr.c` for `dladdr`'s bounds check, not on the
   load path. A `.so` missing `DT_STRSZ` would load fine under both.
 - LeanLoad uses it as the pread byte count for `.dynstr`. Absence →
-  empty strtab (silent, not an error). See [`Parse/RawElf.lean`'s
-  layer-3 strtab read](LeanLoad/Parse/RawElf.lean).
+  empty strtab (silent, not an error). The `DT_STRTAB` / `DT_STRSZ`
+  pair is resolved to a `FileRange` in
+  [`Parse/DynMap/Basic.lean`](LeanLoad/Parse/DynMap/Basic.lean) and
+  read by `parseFile` in [`Parse.lean`](LeanLoad/Parse.lean).
 
 **`DT_HASH` (gABI 08, "mandatory")**
 
@@ -327,41 +331,61 @@ never describes.
 LeanLoad.lean              package root (re-exports)
 Main.lean                  CLI executable entry — Lake-blessed top-level
 LeanLoad/
-  Parse.lean               public parse entry: checked `Elf`, `parseM`, `parseByteArray`
+  Basic.lean               cross-stage scalar wrappers (`ByteSize`, `FileOff`,
+                           `Eaddr`) + `require` / `buildFinFunction` helpers
+  Parse.lean               public parse entry: checked `Elf`, `parseFile`, `parseByteArray`
   Parse/
+    Basic.lean             parse-stage address / range / size wrappers and
+                           `DecodableFromScalar` lifts
     Decode/                byte decoder primitives + `Decodable` deriving support
-    Address.lean           parse-stage address / offset / byte-size wrappers
-    CallTargets.lean       checked e_entry + init/fini callable targets
-    LoadMap/               checked header / PT_LOAD map used before dynamic reads
-    Dynamic/               .dynamic table, strtab/symtab, relocation staging
+    Strtab.lean            gABI 04 string-table buffer + UTF-8 lookup
+    Symbol/                raw `Elf64_Sym`, `DT_HASH` SysV header, checked `Symbol` bundle
+    LoadMap/               checked ELF header / ident / phdr table / PT_LOAD map used
+                           before any dynamic-virtual-address read
+    DynMap/                `.dynamic` table: raw tag list + resolved `DynMap`
+                           (string offsets, file ranges, ELF addresses)
+    Reloc/                 raw `Elf64_Rela`, segment-located checked `Reloc`,
+                           and `RelocTable` grouped by rela / jmprel
+    CallTargets.lean       checked `e_entry` + `DT_INIT_ARRAY` / `DT_FINI_ARRAY`
+                           targets, each witnessed against an executable PT_LOAD
     Examples.lean          checked parse fixture and cross-section #guards
-  Discover.lean            public Discover interface: DiscoveredObject, LoadGraph,
-                           WorkItem, monadic ObjectFinder
+  Discover.lean            public Discover interface: `DiscoveredObject`, `LoadGraph`,
+                           `WorkItem`, monadic `ObjectFinder`
   Discover/
+    Names.lean             canonical naming policy: `DT_SONAME` for deps,
+                           path basename for main
+    Provider.lean          `ObjectFinder m` effect boundary used by traversal
     Search.lean            gABI dependency-search policy: RPATH/RUNPATH/env,
                            `$ORIGIN`, default dirs, exact-open candidates
-    Graph.lean             recordEdge / findDiscoveredIdx construction helpers
-    Discovered.lean        Discovered carrier + smart constructors (initial/pushObject/
-                           recordDep/markComplete) + characterisation theorems
-    Traversal.lean         WorkResult / WorkListAcc + mutual `discoverWork` /
-                           `discoverWorkList`
+    Graph.lean             dependency-graph reachability theorems
+    Order.lean             init-order predicates and `Nodup` / placement lemmas
+    Builder.lean           `Discovered` construction carrier + smart constructors
+                           (initial/pushObject/recordDep/markComplete) + characterisation theorems
+    Traversal.lean         `ActiveStack`, `WorkResult` / `WorkListAcc`, and the
+                           mutual `discoverWork` / `discoverWorkList`
     Finalize.lean          monadic `discover` top-level (promotes final state to LoadGraph)
     Examples.lean          private in-memory ObjectFinder + #guard scenarios
                            (linear/diamond/cycle/SONAME/search-order)
   Reloc.lean               base-free relocation planning over the discovered graph
   Reloc/
-    Symbol/                BFS symbol lookup helpers used only by relocation planning
+    Symbol.lean            single-elf "first global definition" lookup (`MatchedSym`)
+    ResolutionOrder.lean   gABI 08 BFS view of the dep graph (`bfsOrder`,
+                           nodup, head = main)
+    Resolve.lean           across-elves first-match-along-order lookup (`SymRef`)
     ABI.lean               per-arch relocation formulas and write widths
-  Layout.lean              public Layout stage: Layout, ofRelocResult, assignBases
+  Layout.lean              public Layout stage: `Layout`, `ofRelocResult`, `assignBases`
   Layout/                  base-free page layout helpers
     Align.lean             alignment / page-math helpers over UInt64
     Segment.lean           per-segment layout (file + bss + mprotect shape)
     Elf.lean               per-object layout tree + page-aligned span
-  Finalize.lean            public Finalize interface: BoundPlan and intrinsic-safe LoadOps tree
+  Finalize.lean            public Finalize interface: `BoundPlan` and intrinsic-safe
+                           `LoadOps` tree
   Finalize/                    base-aware stage — turn Reloc + Layout into witnessed ops
-    BoundPlan.lean         BoundPlan accessors and reservation-bound proofs
+    Range.lean             pure half-open `UInt64` interval predicates
+                           (`Disjoint`, `InRange`) used by safety witnesses
+    BoundPlan.lean         `BoundPlan` accessors and reservation-bound proofs
     Reloc.lean             relocation baking — apply ABI formulas at the bound base
-    LoadOps.lean           setupSegment, op lemmas, and diagnostic op collectors
+    LoadOps.lean           `setupSegment`, op lemmas, and diagnostic op collectors
     Build.lean             builder: `BoundPlan` → intrinsic-safe `LoadOps` tree;
                            proof-carrying ctor / fini call lists
   Runtime.lean             public Runtime facade
@@ -369,8 +393,8 @@ LeanLoad/
     File.lean              exact open, file size, and pread capability
     Memory.lean            concrete reserve, mmapFile, zero, store, and mprotect effects
     Exec.lean              constructor calls and final jump
-    Run.lean               concrete interpreter for finalized LoadOps
-  Runtime.c                C shims behind the @[extern] declarations
+    Run.lean               concrete interpreter for finalized `LoadOps`
+  Runtime.c                C shims behind the `@[extern]` declarations
   Examples.lean            cross-stage `#guard` walkthrough (synthetic fixtures)
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)
 third_party/               submodules (musl, gabi, glibc, elfutils, …)

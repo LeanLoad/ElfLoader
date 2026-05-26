@@ -2,7 +2,7 @@
 gabi 05 § Symbol Table — `Elf64_Sym` entry.
 
 `st_info` packs binding (high nibble) and type (low nibble) in a
-single byte; bit-field accessors live in `Parse/Dynamic/Symbol/Checked.lean`.
+single byte; bit-field accessors live in `Parse/Symbol/Checked.lean`.
 -/
 
 import LeanLoad.Parse.Decode.Decodable
