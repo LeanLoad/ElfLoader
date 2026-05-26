@@ -1,17 +1,20 @@
 /-
 Fixture-driven integration examples.
 
-`LeanLoad.Parse.Examples` owns the literal ELF bytes. This module starts from
-that checked parse result and walks the pure pipeline shape production uses:
+`LeanLoad.Parse.Examples` owns three checked byte-image fixtures (main, libc,
+libm); this module parses each one and walks the pure pipeline shape
+production uses:
 
-  * Discover loads the main fixture plus its two DT_NEEDED dependencies.
+  * Discover loads the main fixture plus its two DT_NEEDED dependencies,
+    each a real parsed ELF.
   * Reloc resolves the fixture's dynamic relocations against that graph.
   * Layout assigns deterministic example bases.
   * Finalize bakes concrete load operations inside a fixed reservation.
 
-The dependency objects deliberately reuse the parsed fixture's PT_LOAD layout so
-the example stays anchored to one real byte image, but they clear dynamic edges
-and relocations. `libc.so.6` defines the one strong symbol the fixture imports.
+Each provider is a small standalone ELF with its own DT_SONAME. `libc.so.6`
+defines `puts` as a global FUNC (the one symbol the main fixture imports);
+`libm.so.6` exports nothing. Both have no NEEDED entries of their own, so the
+dependency graph is one main + two leaves.
 -/
 
 import LeanLoad.Parse.Examples
@@ -34,28 +37,9 @@ private def dummyFile : Runtime.File :=
       throw s!"integration example dummy file cannot read {range.size.toNat} bytes \
         at file offset 0x{range.off.toNat}" }
 
-private def parsedFixture : Except String Elf :=
-  Parse.Examples.fixture
-
-private def putsDefinition : Symbol :=
-  { name := "puts", bind := .global, shndx := .concrete 1, value := 0x220 }
-
-private def providerElf (soname : String) (symtab : Array Symbol) (template : Elf) :
-    Elf :=
-  { template with
-    symtab := symtab
-    needed := #[]
-    soname := some soname
-    rpath := none
-    runpath := none
-    relocs := { rela := #[], jmprel := #[] }
-    callTargets := CallTargets.empty template.segments }
-
-private def libcElf (template : Elf) : Elf :=
-  providerElf "libc.so.6" #[default, putsDefinition] template
-
-private def libmElf (template : Elf) : Elf :=
-  providerElf "libm.so.6" #[default] template
+private def parsedMain : Except String Elf := Parse.Examples.fixtureMain
+private def parsedLibc : Except String Elf := Parse.Examples.fixtureLibc
+private def parsedLibm : Except String Elf := Parse.Examples.fixtureLibm
 
 private def dependencyObject (name : String) (elf : Elf) : Discover.DiscoveredObject :=
   { name := name, handle := dummyFile, originDir := none, elf := elf }
@@ -63,7 +47,7 @@ private def dependencyObject (name : String) (elf : Elf) : Discover.DiscoveredOb
 private def fixtureFinder (main libc libm : Elf) :
     Discover.ObjectFinder (Except String) :=
   { findMain := fun path =>
-     .ok (Discover.DiscoveredObject.ofMain path dummyFile none main)
+      .ok (Discover.DiscoveredObject.ofMain path dummyFile none main)
     findDependency := fun work =>
       match work.needed with
       | "libc.so.6" => .ok (some (dependencyObject "libc.so.6" libc))
@@ -71,8 +55,10 @@ private def fixtureFinder (main libc libm : Elf) :
       | _ => .ok none }
 
 private def discovery : Except String Discover.Result := do
-  let main ← parsedFixture
-  Discover.discover (fixtureFinder main (libcElf main) (libmElf main)) 16 mainPath
+  let main ← parsedMain
+  let libc ← parsedLibc
+  let libm ← parsedLibm
+  Discover.discover (fixtureFinder main libc libm) 16 mainPath
 
 private def graph? : Option Discover.LoadGraph :=
   discovery.toOption.map (·.graph)
@@ -161,23 +147,23 @@ private def layoutAdvances? : Option (Array UInt64) :=
 private def layoutBases? : Option (Array UInt64) :=
   withLayout? (fun _ layout => (Layout.assignBases reservationBase layout).toArray)
 
-#guard layoutSpan? == some 0x6000
-#guard layoutAdvances? == some #[0x2000, 0x2000, 0x2000]
-#guard layoutBases? == some #[0x80000000, 0x80002000, 0x80004000]
+#guard layoutSpan? == some 0x4000
+#guard layoutAdvances? == some #[0x2000, 0x1000, 0x1000]
+#guard layoutBases? == some #[0x80000000, 0x80002000, 0x80003000]
 
 private def exampleReservation : Reserve :=
-  { addr := reservationBase, len := 0x6000, noWrap := by decide }
+  { addr := reservationBase, len := 0x4000, noWrap := by decide }
 
 private def boundPlan : Except String Finalize.BoundPlan := do
   let rp ← relocPlan
   let layout ← Layout.Layout.ofRelocResult rp
-  if h : layout.totalSpan = 0x6000 then
+  if h : layout.totalSpan = 0x4000 then
     return {
       rp with
       layout := layout
       rsv := exampleReservation
       h_total := by
-        change (0x6000 : UInt64) = layout.totalSpan
+        change (0x4000 : UInt64) = layout.totalSpan
         exact h.symm }
   else
     .error "fixture layout span changed"
@@ -222,6 +208,6 @@ private def mainDataStoreValues? : Option (Array UInt64) := do
 #guard dtorCallAddrs? == some #[0x80000108]
 #guard loadElfCount? == some 3
 #guard mainDataStoreAddrs? == some #[0x80001410, 0x80001420]
-#guard mainDataStoreValues? == some #[0x80000000, 0x80002220]
+#guard mainDataStoreValues? == some #[0x80000000, 0x80002190]
 
 end LeanLoad.Examples

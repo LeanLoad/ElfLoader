@@ -9,7 +9,7 @@ import LeanLoad.Parse.LoadMap.ProgramHeader.Examples
 namespace LeanLoad.Parse.Examples
 
 /-- 224-byte `.dynamic` fixture: 14 entries (13 real + DT_NULL
-    terminator) describing the consolidated `Parse.Examples.fixtureBytes`
+    terminator) describing the consolidated `Parse.Examples.fixtureMainBytes`
     layout. Dynamic-content locating tags (`DT_STRTAB` / `DT_SYMTAB` /
     ...) carry vaddrs that match the corresponding content's position in
     the consolidated fixture; strtab references (`DT_NEEDED` /

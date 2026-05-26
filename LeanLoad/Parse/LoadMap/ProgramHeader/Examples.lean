@@ -10,7 +10,7 @@ namespace LeanLoad.Parse.Examples
     at `eaddr = offset = 0` (the normal linker shape, though checked parse can
     translate non-identity `p_offset`/`p_vaddr` pairs), plus one PT_DYNAMIC
     pointing at the dynamic section at offset 0x128. Coordinated with
-    `Parse.Examples.fixtureBytes`. -/
+    `Parse.Examples.fixtureMainBytes`. -/
 def programHeaderBytes : ByteArray := ⟨#[
   -- ProgramHeader[0]: PT_LOAD covering [0..0x208] ────────────────────────────────
   0x01, 0x00, 0x00, 0x00,                           -- p_type   = PT_LOAD

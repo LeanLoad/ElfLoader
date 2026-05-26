@@ -83,7 +83,7 @@ def Strtab.resolve? (tab : Strtab) (label : String) :
       pure (some s)
 
 /-- 32-byte string-table fixture holding four NUL-terminated names.
-    Coordinated with the consolidated `Parse.Examples.fixtureBytes`: the
+    Coordinated with the consolidated `Parse.Examples.fixtureMainBytes`: the
     consumed entries are pointed at by `DT_NEEDED` (→ "libc.so.6"),
     `DT_SONAME` (→ "mylib.so"), `DT_RUNPATH` (→ "lib"), and
     `RawSym.fixtureBytes`'s second symbol's `st_name` (→ "printf").

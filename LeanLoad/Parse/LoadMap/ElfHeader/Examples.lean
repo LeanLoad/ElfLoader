@@ -9,7 +9,7 @@ namespace LeanLoad.Parse.Examples
 /-- 64-byte ELF header fixture: 64-bit, little-endian, x86-64, ET_DYN,
     with two program headers at file offset 0x40 (matching
     `programHeaderBytes`). `e_entry = 0x100` points inside the
-    lone PT_LOAD of `Parse.Examples.fixtureBytes` so the checked-parse
+    lone PT_LOAD of `Parse.Examples.fixtureMainBytes` so the checked-parse
     entry-in-segment check passes. Section headers stripped
     (`e_shoff = 0`, `e_shnum = 0`); a loader doesn't need them. -/
 def elfHeaderBytes : ByteArray := ⟨#[
