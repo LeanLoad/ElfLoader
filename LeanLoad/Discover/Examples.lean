@@ -34,13 +34,6 @@ namespace LeanLoad.Discover
 open LeanLoad
 open LeanLoad.Parse (Elf)
 
-private def dummyFile : Runtime.File :=
-  { backing := .virtual
-    size := 0
-    read := fun range =>
-      throw s!"discoverExample dummy file cannot read {range.size.toNat} bytes \
-        at file offset 0x{range.off.toNat}" }
-
 -- ============================================================================
 --- Minimal Elf builder — only the fields Discover reads (`soname`, `runpath`,
 -- `needed`) are interesting. Everything else gets a trivial value; the
@@ -105,9 +98,6 @@ private def lexicalOriginDir (path : String) : Option String :=
       let dir := String.intercalate "/" dirs
       if dir.isEmpty then some "/" else some dir
 
-private def fileAtPath (_path : String) : Runtime.File :=
-  dummyFile
-
 /-- The example `ObjectFinder` instance: simulate production file lookup over an
     `ExampleStore`, with the same SONAME-required policy — `findSome?` skips entries whose elf has no DT_SONAME
     (treats them as "not found"; production throws). Closure captures
@@ -117,8 +107,7 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
   { findMain := fun mainPath =>
       match store.getElf? mainPath with
       | some mainElf =>
-          .ok (DiscoveredObject.ofMain mainPath (fileAtPath mainPath)
-            (lexicalOriginDir mainPath) mainElf)
+          .ok (DiscoveredObject.ofMain mainPath (lexicalOriginDir mainPath) mainElf)
       | none => .error s!"discoverExample: main {mainPath} not in store"
     findDependency := fun work => do
       let ctx : Search.Context :=
@@ -127,7 +116,7 @@ private def exampleFinder (store : ExampleStore) (envPath : Option String := non
       .ok <| paths.findSome? fun path =>
         (store.getElf? path).bind fun elf =>
           elf.soname.map fun name =>
-            { name, handle := fileAtPath path, originDir := lexicalOriginDir path, elf } }
+            { name, path, originDir := lexicalOriginDir path, elf } }
 
 -- ============================================================================
 -- discoverExample — the example-side counterpart to `discover`. Takes the

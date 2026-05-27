@@ -47,9 +47,14 @@ structure BoundPlan extends Reloc.Result where
 -- Finalized op syntax — pure plan records interpreted later by Runtime.Memory.
 -- ============================================================================
 
-/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap plan. -/
+/-- File-backed `MAP_PRIVATE | MAP_FIXED` mmap plan. The `path` is the
+    resolved filesystem path that the discovery search produced and that
+    parse already read once; the runtime executor passes it through
+    `Runtime.Filesystem` at mmap time to obtain the fd. Carried as a
+    string rather than an open `Runtime.File` so plan structures remain
+    pure data (no closures, no `m` parameter). -/
 structure MmapOp where
-  handle : Runtime.File
+  path   : String
   addr   : UInt64
   len    : UInt64
   prot   : UInt32

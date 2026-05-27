@@ -28,10 +28,13 @@ structure DiscoveredObject where
   /-- Canonical dedup key. For NEEDED deps: `elf.soname.get!` (production
       requires DT_SONAME). For the main executable: `basename mainPath`. -/
   name : String
-  /-- Open read-only file, kept for extra parse reads and file-backed mmap.
-      Production paths carry C-backed read/mmap closures plus observed size;
-      examples use a dummy `Runtime.File`. -/
-  handle : Runtime.File
+  /-- Filesystem path that was opened to read this object's bytes
+      (gabi 08 § Shared Object Dependencies). Carried through the plan
+      so `Finalize.MmapOp.path` can reference it deterministically; the
+      runtime executor resolves it again at mmap time via
+      `Runtime.Filesystem`. Pure data — no open `Runtime.File` lives in
+      plan structures. -/
+  path : String
   /-- Canonical directory used to expand this object's `$ORIGIN` dynamic strings
       (gABI 08 § Substitution Sequences), if the provider can supply one. -/
   originDir : Option String

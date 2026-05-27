@@ -53,6 +53,7 @@ import LeanLoad.Reloc.ABI
 
 import LeanLoad.Runtime
 import LeanLoad.Runtime.File
+import LeanLoad.Runtime.Filesystem
 import LeanLoad.Runtime.Memory
 import LeanLoad.Runtime.Exec
 import LeanLoad.Runtime.Run

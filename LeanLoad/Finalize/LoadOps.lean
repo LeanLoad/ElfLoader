@@ -53,13 +53,16 @@ open LeanLoad.Layout (SegmentLayout)
 
 /-- Compute the setup ops for one segment at the chosen base. The
     mmap is widened with `PROT_WRITE` so reloc stores can land before
-    `mprotect` flips to final perms. -/
-def setupSegment (sp : SegmentLayout objCount) (handle : Runtime.File)
+    `mprotect` flips to final perms. The `path` is the source ELF's
+    resolved filesystem path; it is recorded on the `MmapOp` so the
+    runtime executor can re-open the file via `Runtime.Filesystem` at
+    mmap time. -/
+def setupSegment (sp : SegmentLayout objCount) (path : String)
     (base : UInt64) : SegmentSetup :=
   let absEaddr := base + sp.pageEaddr
   { mmap :=
       if sp.hasFileBacked then
-        some { handle, addr := absEaddr, len := sp.fileOverlayLen,
+        some { path, addr := absEaddr, len := sp.fileOverlayLen,
                prot := sp.prot ||| Runtime.PROT_WRITE,
                offset := sp.fileOffset }
       else none
@@ -79,8 +82,8 @@ def setupSegment (sp : SegmentLayout objCount) (handle : Runtime.File)
 
 /-- The mmap op, when present, sits at `base + sp.pageEaddr` of
     length `sp.fileOverlayLen`. -/
-theorem setupSegment_mmap_eq (sp : SegmentLayout objCount) (handle : Runtime.File)
-    (base : UInt64) (m : MmapOp) (h : (setupSegment sp handle base).mmap = some m) :
+theorem setupSegment_mmap_eq (sp : SegmentLayout objCount) (path : String)
+    (base : UInt64) (m : MmapOp) (h : (setupSegment sp path base).mmap = some m) :
     m.addr = base + sp.pageEaddr ∧ m.len = sp.fileOverlayLen := by
   unfold setupSegment at h
   simp only at h
@@ -93,8 +96,8 @@ theorem setupSegment_mmap_eq (sp : SegmentLayout objCount) (handle : Runtime.Fil
 /-- The zero op, when present, sits at
     `base + sp.pageEaddr + sp.pageInset + sp.segment.filesz.val` of length
     `sp.partialBssLen`. -/
-theorem setupSegment_zero_eq (sp : SegmentLayout objCount) (handle : Runtime.File)
-    (base : UInt64) (z : ZeroOp) (h : (setupSegment sp handle base).zero = some z) :
+theorem setupSegment_zero_eq (sp : SegmentLayout objCount) (path : String)
+    (base : UInt64) (z : ZeroOp) (h : (setupSegment sp path base).zero = some z) :
     z.addr = base + sp.pageEaddr + sp.pageInset + sp.segment.filesz.val ∧
     z.len = sp.partialBssLen := by
   unfold setupSegment at h
@@ -107,10 +110,10 @@ theorem setupSegment_zero_eq (sp : SegmentLayout objCount) (handle : Runtime.Fil
 
 /-- The mprotect op always sits at `base + sp.pageEaddr` of length
     `sp.pageLength`. -/
-theorem setupSegment_mprotect_eq (sp : SegmentLayout objCount) (handle : Runtime.File)
+theorem setupSegment_mprotect_eq (sp : SegmentLayout objCount) (path : String)
     (base : UInt64) :
-    (setupSegment sp handle base).mprotect.addr = base + sp.pageEaddr ∧
-    (setupSegment sp handle base).mprotect.len = sp.pageLength := by
+    (setupSegment sp path base).mprotect.addr = base + sp.pageEaddr ∧
+    (setupSegment sp path base).mprotect.len = sp.pageLength := by
   exact ⟨rfl, rfl⟩
 
 -- ============================================================================

@@ -15,6 +15,10 @@ Each provider is a small standalone ELF with its own DT_SONAME. `libc.so.6`
 defines `puts` as a global FUNC (the one symbol the main fixture imports);
 `libm.so.6` exports nothing. Both have no NEEDED entries of their own, so the
 dependency graph is one main + two leaves.
+
+Plan structures store filesystem paths rather than open `Runtime.File`
+handles, so the example never has to fabricate a "dummy" file just to
+populate a field — paths flow through the plan as plain strings.
 -/
 
 import LeanLoad.Parse.Examples
@@ -28,30 +32,24 @@ namespace LeanLoad.Examples
 open LeanLoad.Parse
 
 private def mainPath : String := "/examples/fixture-main"
+private def libcPath : String := "/examples/libc.so.6"
+private def libmPath : String := "/examples/libm.so.6"
 private def reservationBase : UInt64 := 0x80000000
-
-private def dummyFile : Runtime.File :=
-  { backing := .virtual
-    size := 0
-    read := fun range =>
-      throw s!"integration example dummy file cannot read {range.size.toNat} bytes \
-        at file offset 0x{range.off.toNat}" }
 
 private def parsedMain : Except String Elf := Parse.Examples.fixtureMain
 private def parsedLibc : Except String Elf := Parse.Examples.fixtureLibc
 private def parsedLibm : Except String Elf := Parse.Examples.fixtureLibm
 
-private def dependencyObject (name : String) (elf : Elf) : Discover.DiscoveredObject :=
-  { name := name, handle := dummyFile, originDir := none, elf := elf }
-
 private def fixtureFinder (main libc libm : Elf) :
     Discover.ObjectFinder (Except String) :=
   { findMain := fun path =>
-      .ok (Discover.DiscoveredObject.ofMain path dummyFile none main)
+      .ok (Discover.DiscoveredObject.ofMain path none main)
     findDependency := fun work =>
       match work.needed with
-      | "libc.so.6" => .ok (some (dependencyObject "libc.so.6" libc))
-      | "libm.so.6" => .ok (some (dependencyObject "libm.so.6" libm))
+      | "libc.so.6" =>
+          .ok (some { name := "libc.so.6", path := libcPath, originDir := none, elf := libc })
+      | "libm.so.6" =>
+          .ok (some { name := "libm.so.6", path := libmPath, originDir := none, elf := libm })
       | _ => .ok none }
 
 private def discovery : Except String Discover.Result := do

@@ -19,10 +19,11 @@ def mainName (mainPath : String) : String :=
 /-- Construct the main `DiscoveredObject` from a user-supplied path. The canonical
     name is the path basename — executables don't conventionally set
     `DT_SONAME`, and main is path-discovered (not NEEDED-driven), so we don't
-    consult `elf.soname`. -/
-def ofMain (mainPath : String) (handle : Runtime.File) (originDir : Option String)
-    (elf : Parse.Elf) : DiscoveredObject :=
-  { name := mainName mainPath, handle, originDir, elf }
+    consult `elf.soname`. The path is recorded verbatim so downstream stages
+    can refer back to it without re-deriving. -/
+def ofMain (mainPath : String) (originDir : Option String) (elf : Parse.Elf) :
+    DiscoveredObject :=
+  { name := mainName mainPath, path := mainPath, originDir, elf }
 
 end DiscoveredObject
 

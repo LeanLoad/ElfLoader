@@ -39,7 +39,7 @@ private def findDependencyPath (work : Discover.WorkItem) : CliM (Option Discove
             match elf.soname with
             | some name =>
                 let originDir ← Discover.Search.canonicalOriginDir path
-                return some { name, handle := file, originDir := some originDir, elf }
+                return some { name, path, originDir := some originDir, elf }
             | none =>
                 throw s!"discover: '{work.needed}' opened as '{path}' but is missing \
                   DT_SONAME (cannot dedup)"
@@ -60,7 +60,7 @@ private def objectFinder : Discover.ObjectFinder CliM :=
       | some mainFile => do
         let mainElf ← Parse.parseFile mainFile
         let originDir ← Discover.Search.canonicalOriginDir mainPath
-        pure (Discover.DiscoveredObject.ofMain mainPath mainFile (some originDir) mainElf)
+        pure (Discover.DiscoveredObject.ofMain mainPath (some originDir) mainElf)
     findDependency := findDependencyPath }
 
 /-- Stack size for the loaded program. Matches musl's default (8 MiB). -/
@@ -76,7 +76,7 @@ private def realize (bp : Finalize.BoundPlan) (result : Finalize.Result bp)
   let mainBase := bp.mainBase
   let entry  := result.entryCall.addr
   let programHeaderVa := mainBase + mainElf.phdrEaddr.val
-  let _ ← (Runtime.runLoadOps result.loadOps : IO Unit)
+  let _ ← (Runtime.runLoadOps Runtime.Filesystem.io result.loadOps : IO Unit)
   -- Ctors run after the address space is fully realized — they're
   -- user code, not load ops.
   let _ ← (result.ctorCalls.forM (fun call => Runtime.callCtor call.addr) : IO Unit)

@@ -63,18 +63,18 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
     (j : Fin (bp.elfAt i).segmentCount) :
     Except String { so : SegmentOps bp.rsv.addr bp.rsv.len bp.objCount //
       so.mmap =
-        (setupSegment (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap } := do
+        (setupSegment (bp.segAt i j) (bp.pathAt i) (bp.baseAt i)).mmap } := do
   let elfs := bp.objectElfs
   let objCount := bp.objCount
   have h_elfs : elfs.size = objCount := bp.objectElfs_size
   let basesArr := bp.bases.toArray
   have h_bases : basesArr.size = objCount := bp.bases.size_toArray
   let sp := bp.segAt i j
-  let handle := bp.handleAt i
+  let path := bp.pathAt i
   let base := bp.baseAt i
   -- Don't destructure `setupSegment` — keep the projection form so the
   -- characterisation lemmas (`setupSegment_*_eq`) align on the goal.
-  let setup := setupSegment sp handle base
+  let setup := setupSegment sp path base
   -- Use the sized variant so `sp.relocs : Array (Entry objCount sp.segment)`
   -- is accepted directly — no `▸` cast on the relocs array.
   match h_bake : bakeSegmentRelocs bp.formula elfs h_elfs basesArr
@@ -90,12 +90,12 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
         stores := stores
         mmapInRange := by
           intro m h_m
-          have ⟨h_addr, h_len⟩ := setupSegment_mmap_eq sp handle base m h_m
+          have ⟨h_addr, h_len⟩ := setupSegment_mmap_eq sp path base m h_m
           rw [h_addr, h_len]
           exact bp.segment_mmapRange_in_rsv i j
         zeroInRange := by
           intro z h_z
-          have ⟨h_addr, h_len⟩ := setupSegment_zero_eq sp handle base z h_z
+          have ⟨h_addr, h_len⟩ := setupSegment_zero_eq sp path base z h_z
           rw [h_addr, h_len]
           exact bp.segment_zeroRange_in_rsv i j
         storesInRange := by
@@ -113,7 +113,7 @@ def buildSegment (bp : BoundPlan) (i : Fin bp.objCount)
           exact bp.segment_storeRange_in_rsv i j e.r_offset e.covered
             s'.byteLen h_byteLen
         mprotectInRange := by
-          have ⟨h_addr, h_len⟩ := setupSegment_mprotect_eq sp handle base
+          have ⟨h_addr, h_len⟩ := setupSegment_mprotect_eq sp path base
           rw [h_addr, h_len]
           exact bp.segment_mprotectRange_in_rsv i j }
     -- The `mmap_eq` field — `so.mmap = setup.mmap` by construction (rfl).
@@ -133,12 +133,12 @@ def buildElfSegments (bp : BoundPlan) (i : Fin bp.objCount) :
       (∀ k (h_k : k < result.size)
         (h_src : k < (bp.elfAt i).segmentCount),
         (result[k]'h_k).mmap =
-          (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap) } := do
+          (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.pathAt i) (bp.baseAt i)).mmap) } := do
   let built ← buildFinFunction (n := (bp.elfAt i).segmentCount)
     (β := fun j =>
       { so : SegmentOps bp.rsv.addr bp.rsv.len bp.objCount //
         so.mmap =
-          (setupSegment (bp.segAt i j) (bp.handleAt i) (bp.baseAt i)).mmap })
+          (setupSegment (bp.segAt i j) (bp.pathAt i) (bp.baseAt i)).mmap })
     (fun j => buildSegment bp i j)
   let arr : Array (SegmentOps bp.rsv.addr bp.rsv.len bp.objCount) :=
     Array.ofFn fun j => (built j).val
@@ -169,7 +169,7 @@ private def ElfBuildInvariant (bp : BoundPlan) (i : Fin bp.objCount)
   (∀ k (h_k : k < eo.segments.size)
     (h_src : k < (bp.elfAt i).segmentCount),
     (eo.segments[k]'h_k).mmap =
-      (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.handleAt i) (bp.baseAt i)).mmap)
+      (setupSegment (bp.segAt i ⟨k, h_src⟩) (bp.pathAt i) (bp.baseAt i)).mmap)
 
 /-- Build one intrinsic-safe `ElfOps` + `ElfBuildInvariant`. -/
 def buildElf (bp : BoundPlan) (i : Fin bp.objCount) :
@@ -188,16 +188,16 @@ def buildElf (bp : BoundPlan) (i : Fin bp.objCount) :
           rw [h_size] at h_j₂; exact h_j₂
         have h_mmap_eq₁ := h_mmap j₁ h_j₁ h_j₁_src
         have h_mmap_eq₂ := h_mmap j₂ h_j₂ h_j₂_src
-        have h_su₁ : (setupSegment (bp.segAt i ⟨j₁, h_j₁_src⟩) (bp.handleAt i)
+        have h_su₁ : (setupSegment (bp.segAt i ⟨j₁, h_j₁_src⟩) (bp.pathAt i)
               (bp.baseAt i)).mmap = some m₁ := by
           rw [← h_mmap_eq₁]; exact h_m₁
-        have h_su₂ : (setupSegment (bp.segAt i ⟨j₂, h_j₂_src⟩) (bp.handleAt i)
+        have h_su₂ : (setupSegment (bp.segAt i ⟨j₂, h_j₂_src⟩) (bp.pathAt i)
               (bp.baseAt i)).mmap = some m₂ := by
           rw [← h_mmap_eq₂]; exact h_m₂
         have ⟨h_a₁, h_l₁⟩ := setupSegment_mmap_eq (bp.segAt i ⟨j₁, h_j₁_src⟩)
-          (bp.handleAt i) (bp.baseAt i) m₁ h_su₁
+          (bp.pathAt i) (bp.baseAt i) m₁ h_su₁
         have ⟨h_a₂, h_l₂⟩ := setupSegment_mmap_eq (bp.segAt i ⟨j₂, h_j₂_src⟩)
-          (bp.handleAt i) (bp.baseAt i) m₂ h_su₂
+          (bp.pathAt i) (bp.baseAt i) m₂ h_su₂
         have h_disj := bp.within_elf_mmapRange_disjoint i
           ⟨j₁, h_j₁_src⟩ ⟨j₂, h_j₂_src⟩ h_lt
         rw [h_a₁, h_l₁, h_a₂, h_l₂]; exact h_disj }
@@ -266,15 +266,15 @@ private def buildLoadOps (bp : BoundPlan) :
         have h_k_src₂ : k_i₂ < (bp.elfAt fi₂).segmentCount := by
           rw [h_size_eq₂] at h_k_i₂; exact h_k_i₂
         have h_mmap_su₁ : (setupSegment (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
-              (bp.handleAt fi₁) (bp.baseAt fi₁)).mmap = some m₁ := by
+              (bp.pathAt fi₁) (bp.baseAt fi₁)).mmap = some m₁ := by
           rw [← h_mmap_eq₁ k_i₁ h_k_i₁ h_k_src₁]; exact h_m₁
         have h_mmap_su₂ : (setupSegment (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
-              (bp.handleAt fi₂) (bp.baseAt fi₂)).mmap = some m₂ := by
+              (bp.pathAt fi₂) (bp.baseAt fi₂)).mmap = some m₂ := by
           rw [← h_mmap_eq₂ k_i₂ h_k_i₂ h_k_src₂]; exact h_m₂
         have ⟨h_a₁, h_l₁⟩ := setupSegment_mmap_eq (bp.segAt fi₁ ⟨k_i₁, h_k_src₁⟩)
-          (bp.handleAt fi₁) (bp.baseAt fi₁) m₁ h_mmap_su₁
+          (bp.pathAt fi₁) (bp.baseAt fi₁) m₁ h_mmap_su₁
         have ⟨h_a₂, h_l₂⟩ := setupSegment_mmap_eq (bp.segAt fi₂ ⟨k_i₂, h_k_src₂⟩)
-          (bp.handleAt fi₂) (bp.baseAt fi₂) m₂ h_mmap_su₂
+          (bp.pathAt fi₂) (bp.baseAt fi₂) m₂ h_mmap_su₂
         have h_disj := bp.cross_elf_mmapRange_disjoint fi₁ fi₂
           ⟨k_i₁, h_k_src₁⟩ ⟨k_i₂, h_k_src₂⟩ h_lt
         rw [h_a₁, h_l₁, h_a₂, h_l₂]; exact h_disj }

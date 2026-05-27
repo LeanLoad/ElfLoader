@@ -58,9 +58,11 @@ abbrev elfAt (bp : BoundPlan) (i : Fin bp.objCount) : Layout.ElfLayout bp.objCou
 abbrev baseAt (bp : BoundPlan) (i : Fin bp.objCount) : UInt64 :=
   bp.bases[i]
 
-/-- `i`-th elf's open file (held until process exit). -/
-abbrev handleAt (bp : BoundPlan) (i : Fin bp.objCount) : Runtime.File :=
-  (bp.graph.objects[i.val]'i.isLt).handle
+/-- `i`-th elf's resolved filesystem path. Used as the source-of-truth
+    for `MmapOp.path`s the build emits for this elf; the runtime executor
+    resolves it via `Runtime.Filesystem` exactly once per mmap. -/
+abbrev pathAt (bp : BoundPlan) (i : Fin bp.objCount) : String :=
+  (bp.graph.objects[i.val]'i.isLt).path
 
 /-- `(i, j)`-th segment plan. -/
 abbrev segAt (bp : BoundPlan) (i : Fin bp.objCount)
