@@ -21,7 +21,7 @@ clean:
 	if [ -d "$(MUSL_DIR)" ]; then $(MAKE) -C $(MUSL_DIR) distclean; fi
 
 # ==================== Musl ====================
-MUSL_DIR := $(THIRD_PARTY_DIR)/impl/musl
+MUSL_DIR := $(THIRD_PARTY_DIR)/impl-loader/musl
 MUSL_CC := $(BUILD_DIR)/bin/musl-gcc
 
 .PHONY: musl
