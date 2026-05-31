@@ -5,7 +5,7 @@ Each typed field has a `DecodableFromScalar` from its on-disk scalar. Closed tab
 fail on unknown codes during byte decode; open ranges preserve raw
 values that ElfLoader does not currently interpret.
 
-Spec: `third_party/gabi/docsrc/elf/02-eheader.rst`.
+Spec: `third_party/abi/gabi/docsrc/elf/02-eheader.rst`.
 -/
 
 import ElfLoader.Parse.Decode.Decodable

@@ -4,7 +4,7 @@ Typed fields for `ProgramHeader`.
 `p_type` is decoded into a range-aware `ProgramHeaderType`; `p_flags` is decoded
 into the named gABI permission bits plus OS/proc-specific masks.
 
-Spec: `third_party/gabi/docsrc/elf/07-pheader.rst`.
+Spec: `third_party/abi/gabi/docsrc/elf/07-pheader.rst`.
 -/
 
 import ElfLoader.Parse.Decode.Decodable

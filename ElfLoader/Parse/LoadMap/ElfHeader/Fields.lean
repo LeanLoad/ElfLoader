@@ -6,7 +6,7 @@ Closed tables fail on unknown codes during byte decode; sentinel-carrying
 fields classify every raw value into a semantic case. Loader policy such
 as "ET_DYN only" is enforced later.
 
-Spec: `third_party/gabi/docsrc/elf/02-eheader.rst`.
+Spec: `third_party/abi/gabi/docsrc/elf/02-eheader.rst`.
 -/
 
 import ElfLoader.Parse.Decode.Decodable
@@ -44,7 +44,7 @@ instance : DecodableFromScalar ElfType UInt16 where
   | n => .error s!"e_type: unknown value {n} (gabi 02 § Object File Types)"
 
 -- Target ISA / psABI: `e_machine` (gabi 02 § Machine, full list in
--- `third_party/gabi/docsrc/elf/a-emachine.rst`).
+-- `third_party/abi/gabi/docsrc/elf/a-emachine.rst`).
 
 /-- `e_machine`: architectures with relocation tables in ElfLoader. -/
 inductive ElfMachine where

@@ -5,7 +5,7 @@ Checked PT_LOAD segment arrays.
 This file owns the checked array wrapper plus predicates whose subject is the
 whole PT_LOAD array.
 
-Spec: gabi 07 (`third_party/gabi/docsrc/elf/07-pheader.rst`) § Program Loading.
+Spec: gabi 07 (`third_party/abi/gabi/docsrc/elf/07-pheader.rst`) § Program Loading.
 -/
 
 import ElfLoader.Parse.LoadMap.Segment.Basic

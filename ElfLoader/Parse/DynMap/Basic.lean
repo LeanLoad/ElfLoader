@@ -11,7 +11,7 @@ import ElfLoader.Parse.LoadMap.Basic
 interface that keeps string-table references as `.dynstr` offsets and resolves
 dynamic ELF-address ranges through `LoadMap` to file ranges.
 
-Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`).
+Spec: gabi 08 (`third_party/abi/gabi/docsrc/elf/08-dynamic.rst`).
 -/
 
 namespace ElfLoader.Parse

@@ -3,7 +3,7 @@ Symbol-table checking: typed views over `st_info` (binding) and
 `st_shndx` (section index), and the per-symbol `Symbol` bundle that
 post-parse code consumes.
 
-Spec: gabi 05 (`third_party/gabi/docsrc/elf/05-symtab.rst`) § Symbol
+Spec: gabi 05 (`third_party/abi/gabi/docsrc/elf/05-symtab.rst`) § Symbol
 Table.
 
 Where `Parse.RawSym` carries the raw byte-fields, `Symbol` carries

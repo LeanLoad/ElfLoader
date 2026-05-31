@@ -9,7 +9,7 @@ Raw `.dynamic` decoding.
 `RawEntry` / `RawDyntab` are the implementation layer for gABI `Elf64_Dyn`
 records. `DynMap.Basic` interprets them into parse-stage dynamic facts.
 
-Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`).
+Spec: gabi 08 (`third_party/abi/gabi/docsrc/elf/08-dynamic.rst`).
 -/
 
 namespace ElfLoader.Parse

@@ -1,7 +1,7 @@
 /-
 gabi 08 § Dynamic Section — typed field values for `Elf64_Dyn`.
 
-Spec: gabi 08 (`third_party/gabi/docsrc/elf/08-dynamic.rst`) § Dynamic
+Spec: gabi 08 (`third_party/abi/gabi/docsrc/elf/08-dynamic.rst`) § Dynamic
 Array Tags.
 
 The generic gABI names are decoded to constructors. OS-specific and

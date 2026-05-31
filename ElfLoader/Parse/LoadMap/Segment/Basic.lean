@@ -1,7 +1,7 @@
 /-
 Checked PT_LOAD segment — gabi-07 byte fields and per-segment invariants.
 
-Spec: gabi 07 (`third_party/gabi/docsrc/elf/07-pheader.rst`) § Program
+Spec: gabi 07 (`third_party/abi/gabi/docsrc/elf/07-pheader.rst`) § Program
 Header.
 
 Carried as struct fields:

@@ -18,7 +18,7 @@ Use the LeanLoad umbrella checkout for the full fixture/runtime path:
 ```sh
 git clone --recurse-submodules git@github.com:LeanLoad/LeanLoad.git
 cd LeanLoad
-./setup.sh               # install system C toolchain, elan, and third_party/musl
+./setup.sh               # install system C toolchain, elan, and third_party/loader/musl
 make run                 # build elfloader + examples, run on ElfLoader/build/main
 ```
 
@@ -406,5 +406,5 @@ ElfLoader/
   Runtime.c                C shims behind the `@[extern]` declarations
   Examples.lean            cross-stage `#guard` walkthrough (synthetic fixtures)
 examples/                  C sources for showcase binaries (PIE main + libfoo/bar/baz)
-third_party/               submodules (musl, gabi, glibc, elfutils, …)
+../third_party/            umbrella submodules (musl, gabi, glibc, elfutils, …)
 ```

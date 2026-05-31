@@ -218,7 +218,7 @@ end ElfLoader.Reloc.ABI.Aarch64
 -- x86-64 dynamic relocations.
 --
 -- Spec: x86-64 psABI § Relocation Types
--- (`third_party/x86-64-ABI/x86-64-ABI/object-files.tex`, table
+-- (`third_party/abi/x86-64-abi/x86-64-ABI/object-files.tex`, table
 -- `tab-relocations`).
 --
 -- | Type                  | Code | Width | Formula |
