@@ -7,6 +7,7 @@ all: musl examples
 
 BUILD_DIR := build
 ARCH := $(shell uname -m)
+THIRD_PARTY_DIR ?= ../third_party
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -17,15 +18,16 @@ $(BUILD_DIR):
 .PHONY: clean
 clean:
 	rm -rf $(BUILD_DIR)
-	$(MAKE) -C $(MUSL_DIR) distclean
+	if [ -d "$(MUSL_DIR)" ]; then $(MAKE) -C $(MUSL_DIR) distclean; fi
 
 # ==================== Musl ====================
-MUSL_DIR := third_party/musl
+MUSL_DIR := $(THIRD_PARTY_DIR)/musl
 MUSL_CC := $(BUILD_DIR)/bin/musl-gcc
 
 .PHONY: musl
 musl: $(MUSL_CC)
 $(MUSL_CC): | $(BUILD_DIR)
+	@test -x "$(MUSL_DIR)/configure" || { echo "missing musl source at $(MUSL_DIR); run ../setup.sh from the LeanLoad umbrella checkout or set THIRD_PARTY_DIR"; exit 1; }
 	cd $(MUSL_DIR) && ./configure \
 	    --prefix=$(abspath $(BUILD_DIR)) \
 	    --syslibdir=$(abspath $(BUILD_DIR))/lib

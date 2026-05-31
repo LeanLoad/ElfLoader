@@ -12,36 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # musl libc + example fixtures (build/). The musl build is the
-      # slow step — minutes — so this is the high-value cache. Split
-      # restore/save so the build steps can be guarded on cache-miss.
-      - name: Restore build/ cache
-        id: cache-build
-        uses: actions/cache/restore@v5
-        with:
-          path: build
-          key: build-${{ runner.os }}-${{ hashFiles('Makefile', 'examples/**', '.gitmodules') }}
-
-      # Init the build deps (musl; reference submodules like
-      # gabi/x86-64-ABI are not needed here) and build the
-      # fixtures. Skipped on cache hit. Reference docs aren't init'd.
-      - name: Build fixtures (musl + examples)
-        if: steps.cache-build.outputs.cache-hit != 'true'
-        run: |
-          git submodule update --init third_party/musl
-          make
-
-      - name: Save build/ cache
-        if: steps.cache-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: build
-          key: ${{ steps.cache-build.outputs.cache-primary-key }}
-
       # Handles elan + Lean toolchain + `lake build` + `.lake` caching.
-      # `lake build` elaborates every `#guard` block in the library
-      # (unit-level invariants); end-to-end is `./run.sh`.
+      # End-to-end fixture runs live in the LeanLoad umbrella checkout,
+      # which owns third_party/musl.
       - uses: leanprover/lean-action@v1
-
-      - name: Run
-        run: ./run.sh

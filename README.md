@@ -1,4 +1,4 @@
-# ElfLoader [![CI](https://github.com/ShawnZhong/ElfLoader/actions/workflows/ci.yml/badge.svg)](https://github.com/ShawnZhong/ElfLoader/actions/workflows/ci.yml)
+# ElfLoader [![CI](https://github.com/LeanLoad/ElfLoader/actions/workflows/ci.yml/badge.svg)](https://github.com/LeanLoad/ElfLoader/actions/workflows/ci.yml)
 
 A verified ELF loader in Lean 4 for PIE Linux ELF binaries
 (static-PIE + dynamically-linked), targeting AArch64 + x86-64 with
@@ -9,14 +9,23 @@ Architecture: an **invariant-carrying Lean middle** — `Parse` → `Discover` �
 the CLI's production object finder (open/path-search/read) at the front and
 `Runtime.Run` + `execAndJump` (mmap + writes + control transfer) at the back.
 
-https://github.com/ShawnZhong/ElfLoader/blob/9cd11cb68b8c1f46b14de6a8cbedd64a811e9055/run.log#L1-L322
+See [`run.log`](run.log) for a committed end-to-end debug trace.
 
 ## Quick start
 
+Use the LeanLoad umbrella checkout for the full fixture/runtime path:
+
 ```sh
-./setup.sh               # one-shot: install system C toolchain, init submodules
-./run.sh                 # build elfloader + examples, run on build/main
+git clone --recurse-submodules git@github.com:LeanLoad/LeanLoad.git
+cd LeanLoad
+./setup.sh               # install system C toolchain, elan, and third_party/musl
+make run                 # build elfloader + examples, run on ElfLoader/build/main
 ```
+
+For package-only work in this repo, `lake build elfloader` does not require
+the umbrella third_party checkout. `./run.sh` and `make` expect
+`THIRD_PARTY_DIR` to point at the umbrella's `third_party` directory
+(`../third_party` when checked out as `LeanLoad/ElfLoader`).
 
 Unit-level invariants live as `#guard` blocks in implementation
 and example files (`Discover/Examples.lean`, `Examples.lean`, …) and elaborate during

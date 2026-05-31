@@ -70,6 +70,6 @@ Lean refactors, read `third_party/lean4-skills/plugins/lean4/skills/lean4/SKILL.
 carefully and follow its workflow guidance.
 
 Environment, from the repository root:
-- `LEAN4_PLUGIN_ROOT=$PWD/third_party/lean4-skills/plugins/lean4`
+- `LEAN4_PLUGIN_ROOT=$PWD/../third_party/lean4-skills/plugins/lean4` when checked out as `LeanLoad/ElfLoader`
 - `LEAN4_SCRIPTS=$LEAN4_PLUGIN_ROOT/lib/scripts`
 - `LEAN4_REFS=$LEAN4_PLUGIN_ROOT/skills/lean4/references`
