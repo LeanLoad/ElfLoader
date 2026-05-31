@@ -31,13 +31,13 @@ $(MUSL_CC): | $(BUILD_DIR)
 	    --syslibdir=$(abspath $(BUILD_DIR))/lib
 	# `LDSO_OBJS=` strips musl's dynamic-loader bootstrap (`dlstart`)
 	# from libc.so. Native `exec` of these binaries does not work as
-	# a result; they are intended to be loaded by leanload, which
+	# a result; they are intended to be loaded by elfloader, which
 	# does the dynamic-loader's job itself. Differential testing
 	# against the kernel exec path is forfeited; that's the
 	# tradeoff.
 	#
 	# `LDFLAGS=-Wl,-soname,libc.so` sets DT_SONAME on the produced
-	# libc.so — required by leanload's discover stage (`Effects.io`
+	# libc.so — required by elfloader's discover stage (`Effects.io`
 	# fails loud on SONAME-less .so files; dedup by SONAME is the
 	# only sound key without realpath/inode tracking). Stock musl
 	# (with the `dlstart` bootstrap intact) sets SONAME implicitly

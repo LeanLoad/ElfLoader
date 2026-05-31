@@ -1,12 +1,12 @@
 import Lake
 open Lake DSL System
 
-package leanload
+package ElfLoader
 
 -- ============================================================================
--- Native runtime (FFI shim — `LeanLoad/Runtime.c`, counterpart to the runtime
+-- Native runtime (FFI shim — `ElfLoader/Runtime.c`, counterpart to the runtime
 -- capability modules). Single C file → object file → static lib
--- linked into the AOT `leanload` binary. No shared library: nothing
+-- linked into the AOT `elfloader` binary. No shared library: nothing
 -- in this project calls FFI from the Lean interpreter (`#eval` / LSP),
 -- so the `.so` would be unused.
 -- ============================================================================
@@ -14,25 +14,25 @@ package leanload
 def cFlags : Array String := #["-O2", "-fPIC", "-Wall", "-Wextra"]
 
 def runtimeLinkArgs : Array String :=
-  #["-L.lake/build/lib", "-Wl,-Bstatic", "-lleanload_runtime", "-Wl,-Bdynamic"]
+  #["-L.lake/build/lib", "-Wl,-Bstatic", "-lelfloader_runtime", "-Wl,-Bdynamic"]
 
-target libleanload_runtime (pkg : NPackage __name__) : FilePath := do
+target libelfloader_runtime (pkg : NPackage __name__) : FilePath := do
   let lean ← getLeanInstall
-  let oFile := pkg.buildDir / "LeanLoad" / "Runtime.o"
-  let src ← inputFile (pkg.dir / "LeanLoad" / "Runtime.c") false
+  let oFile := pkg.buildDir / "ElfLoader" / "Runtime.o"
+  let src ← inputFile (pkg.dir / "ElfLoader" / "Runtime.c") false
   let obj ← buildO oFile src (weakArgs := #[s!"-I{lean.includeDir}"])
               (traceArgs := cFlags) (compiler := "cc")
-  buildStaticLib (pkg.staticLibDir / nameToStaticLib "leanload_runtime") #[obj]
+  buildStaticLib (pkg.staticLibDir / nameToStaticLib "elfloader_runtime") #[obj]
 
 -- ============================================================================
 -- Lean libraries and executables
 -- ============================================================================
 
 @[default_target]
-lean_lib LeanLoad where
-  extraDepTargets := #[`libleanload_runtime]
+lean_lib ElfLoader where
+  extraDepTargets := #[`libelfloader_runtime]
 
-lean_exe leanload where
+lean_exe elfloader where
   root := `Main
-  extraDepTargets := #[`libleanload_runtime]
+  extraDepTargets := #[`libelfloader_runtime]
   moreLinkArgs := runtimeLinkArgs

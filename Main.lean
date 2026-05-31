@@ -1,5 +1,5 @@
 /-
-LeanLoad CLI + IO orchestration.
+ElfLoader CLI + IO orchestration.
 
 `main` is the binary entry point; everything else in this file is
 glue that ties the invariant-carrying core (`Parse` + `Discover` + `Reloc` +
@@ -12,11 +12,11 @@ finalizers (`mmapAnon` for the stack + `execAndJump`) transfer control. Doesn't
 return.
 -/
 
-import LeanLoad
+import ElfLoader
 
 namespace Main
 
-open LeanLoad
+open ElfLoader
 
 private abbrev CliM := ExceptT String IO
 
@@ -279,7 +279,7 @@ private def runCli (action : CliM Unit) : IO UInt32 := do
 
 end Main
 
-/-- LeanLoad CLI. -/
+/-- ElfLoader CLI. -/
 def main (args : List String) : IO UInt32 := do
   match args with
   | ["--debug", path] =>
@@ -287,5 +287,5 @@ def main (args : List String) : IO UInt32 := do
   | [path] =>
     Main.runCli (Main.load path)
   | _ =>
-    IO.eprintln "usage: leanload [--debug] <path-to-elf>"
+    IO.eprintln "usage: elfloader [--debug] <path-to-elf>"
     return 1

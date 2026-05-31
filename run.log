@@ -7,10 +7,10 @@
 
 == 2. Parse (per-object checked Elf views) ==
 [0] main
-  machine    = LeanLoad.Parse.ElfMachine.x86_64
+  machine    = ElfLoader.Parse.ElfMachine.x86_64
   entry      = 0x10e0
   phnum      = 10
-  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
+  runpath    = /users/szhong/ElfLoader/build/lib:/users/szhong/ElfLoader/build
   needed     = #[libfoo.so, libbar.so, libc.so]
   symtab     = 18 entries
   init      = 2 ctor(s)
@@ -21,11 +21,11 @@
     [2] eaddr=0x000000002000 offset=0x2000 filesz=0x1c4 memsz=0x1c4 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
     [3] eaddr=0x000000003d58 offset=0x2d58 filesz=0x2b0 memsz=0x2b8 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=8  jmprel=11
 [1] libfoo.so
-  machine    = LeanLoad.Parse.ElfMachine.x86_64
+  machine    = ElfLoader.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 7
   soname     = libfoo.so
-  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
+  runpath    = /users/szhong/ElfLoader/build/lib:/users/szhong/ElfLoader/build
   needed     = #[libc.so]
   symtab     = 8 entries
   init      = 2 ctor(s)
@@ -36,7 +36,7 @@
     [2] eaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
     [3] eaddr=0x000000003df8 offset=0x2df8 filesz=0x218 memsz=0x220 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=7  jmprel=1
 [2] libc.so
-  machine    = LeanLoad.Parse.ElfMachine.x86_64
+  machine    = ElfLoader.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 9
   soname     = libc.so
@@ -49,11 +49,11 @@
     [2] eaddr=0x000000066000 offset=0x66000 filesz=0x35344 memsz=0x35344 prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
     [3] eaddr=0x00000009cb60 offset=0x9bb60 filesz=0x8cc memsz=0x2f50 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=87  jmprel=6
 [3] libbar.so
-  machine    = LeanLoad.Parse.ElfMachine.x86_64
+  machine    = ElfLoader.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 7
   soname     = libbar.so
-  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
+  runpath    = /users/szhong/ElfLoader/build/lib:/users/szhong/ElfLoader/build
   needed     = #[libbaz.so, libc.so]
   symtab     = 10 entries
   init      = 2 ctor(s)
@@ -64,11 +64,11 @@
     [2] eaddr=0x000000002000 offset=0x2000 filesz=0xbc memsz=0xbc prot={ read := true, write := false, exec := false, osSpecific := 0, procSpecific := 0 }  rela=0  jmprel=0
     [3] eaddr=0x000000003de8 offset=0x2de8 filesz=0x238 memsz=0x240 prot={ read := true, write := true, exec := false, osSpecific := 0, procSpecific := 0 }  rela=7  jmprel=3
 [4] libbaz.so
-  machine    = LeanLoad.Parse.ElfMachine.x86_64
+  machine    = ElfLoader.Parse.ElfMachine.x86_64
   entry      = 0x0
   phnum      = 7
   soname     = libbaz.so
-  runpath    = /users/szhong/LeanLoad/build/lib:/users/szhong/LeanLoad/build
+  runpath    = /users/szhong/ElfLoader/build/lib:/users/szhong/ElfLoader/build
   needed     = #[libbar.so, libc.so]
   symtab     = 10 entries
   init      = 2 ctor(s)

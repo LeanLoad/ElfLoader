@@ -1,6 +1,6 @@
-# LeanLoad Design
+# ElfLoader Design
 
-LeanLoad is an ELF64 loader whose core stages are Lean data transformations.
+ElfLoader is an ELF64 loader whose core stages are Lean data transformations.
 Each stage adds data and/or witnesses; later stages consume those witnesses
 instead of re-checking the same facts. Native IO is isolated in `Runtime`.
 
@@ -40,7 +40,7 @@ graph/init-order pair to Reloc → Layout → Finalize → Runtime.
 Verified Lean code has no direct `@[extern]` calls: `Parse/`, `Discover/`,
 `Reloc/`, `Layout/`, `Finalize/`, and `Runtime/Basic.lean`.
 
-Trusted code is the runtime edge: `LeanLoad/Runtime.c`,
+Trusted code is the runtime edge: `ElfLoader/Runtime.c`,
 `Runtime/{File,Memory,Exec}.lean`, `Runtime/Run.lean`, and `Main.lean`.
 The current formal boundary is `Finalize.Result`: the finalized `LoadOps` tree
 plus user-code transfer witnesses. Syscall semantics and the final process
@@ -54,7 +54,7 @@ handoff are trusted by inspection.
 - **Parsed data**: selected ELF-header metadata (`e_machine`, program-header
   table location/count), program headers, `PT_DYNAMIC`, dynstr, dynsym sized by
   `DT_HASH.nchain`, RELA/JMPREL, and init/fini arrays.
-- **Memory model**: in-process loading. Segments are mapped into leanload's
+- **Memory model**: in-process loading. Segments are mapped into elfloader's
   address space, then `Runtime.execAndJump` transfers control without
   `execve(2)`.
 
@@ -62,7 +62,7 @@ handoff are trusted by inspection.
 
 The IO load path assumes:
 
-1. The kernel-picked reservation does not overlap existing leanload mappings.
+1. The kernel-picked reservation does not overlap existing elfloader mappings.
 2. No other thread mutates the address space between reservation and jump.
 3. No libc locks are held across the trampoline.
 4. The loaded binary exits with `exit_group`; thread-scoped `_exit` would leave
@@ -76,7 +76,7 @@ host auxv values needed by libc, and jumps to the parsed entry point.
 ## Out of scope
 
 - TLS (`PT_TLS`, TLS relocations, TLSDESC).
-- Lazy PLT binding; LeanLoad eagerly resolves relocation records.
+- Lazy PLT binding; ElfLoader eagerly resolves relocation records.
 - RELR-format relocations.
 - `IFUNC` / `STT_GNU_IFUNC`.
 - `dlopen` / `dlsym`.
