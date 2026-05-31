@@ -66,10 +66,10 @@ audit surfaces.
 ## Lean 4 Workflows
 
 Before Lean proof work, build debugging, mathlib search, or larger
-Lean refactors, read `../third_party/lean/lean4-skills/plugins/lean4/skills/lean4/SKILL.md`
+Lean refactors, read `../third_party/lean-ref/lean4-skills/plugins/lean4/skills/lean4/SKILL.md`
 carefully and follow its workflow guidance.
 
 Environment, from the repository root:
-- `LEAN4_PLUGIN_ROOT=$PWD/../third_party/lean/lean4-skills/plugins/lean4` when checked out as `LeanLoad/ElfLoader`
+- `LEAN4_PLUGIN_ROOT=$PWD/../third_party/lean-ref/lean4-skills/plugins/lean4` when checked out as `LeanLoad/ElfLoader`
 - `LEAN4_SCRIPTS=$LEAN4_PLUGIN_ROOT/lib/scripts`
 - `LEAN4_REFS=$LEAN4_PLUGIN_ROOT/skills/lean4/references`

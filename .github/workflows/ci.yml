@@ -14,5 +14,5 @@ jobs:
 
       # Handles elan + Lean toolchain + `lake build` + `.lake` caching.
       # End-to-end fixture runs live in the LeanLoad umbrella checkout,
-      # which owns third_party/loader/musl.
+      # which owns third_party/impl/musl.
       - uses: leanprover/lean-action@v1
